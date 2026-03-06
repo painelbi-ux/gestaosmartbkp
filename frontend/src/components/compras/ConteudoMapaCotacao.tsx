@@ -140,7 +140,7 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
   };
 
   const fmtMoeda = (v: number) => v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const fmtPerc = (v: number) => (v === 0 ? '0%' : `${v.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`);
+  const fmtPerc = (v: number) => (v === 0 ? '0,00%' : `${Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`);
 
   /** Largura do conteúdo em px = largura útil A4 paisagem (297mm - 16mm margem ≈ 1061px). Preenche 100% da largura do papel. */
   const PDF_CONTENT_WIDTH_PX = 1061;

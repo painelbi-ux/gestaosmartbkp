@@ -1,0 +1,20 @@
+ACESSO AO BANCO SQLITE PELA REDE
+================================
+
+Esta pasta (backend/prisma) contém o arquivo dev.db do SQLite.
+
+Para deixá-la acessível na rede:
+1. Na máquina onde o projeto está instalado, execute como Administrador:
+   scripts\compartilhar-pasta-sqlite.ps1
+   (PowerShell: clique direito no script -> Executar com PowerShell, como Admin)
+
+2. Em outro PC na mesma rede, abra o Explorador de Arquivos e digite:
+   \\NOME_DO_PC\SoAcoSQLite
+   (substitua NOME_DO_PC pelo nome do computador que tem o projeto, ou pelo IP)
+
+3. Copie o arquivo dev.db para o seu PC ou abra diretamente em um cliente SQLite
+   (DBeaver, DB Browser for SQLite, etc.) usando o caminho de rede.
+
+Atenção: se a aplicação estiver gravando no banco no mesmo momento em que você
+abre/copia pela rede, evite escrever no arquivo de outro PC para não corromper o banco.
+Para apenas consultar (leitura), abrir pelo caminho de rede é seguro.
