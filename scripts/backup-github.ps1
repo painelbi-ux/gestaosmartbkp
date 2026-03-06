@@ -14,5 +14,7 @@ if (-not $status) {
 }
 
 $msg = "Backup automatico " + (Get-Date -Format "yyyy-MM-dd HH:mm")
-& $GitExe commit -m $msg 2>&1
-& $GitExe push 2>&1
+& $GitExe commit -m $msg 2>&1 | Out-Null
+$null = & $GitExe push 2>&1
+if ($LASTEXITCODE -ne 0) { exit 1 }
+Write-Host "Backup enviado ao GitHub com sucesso."
