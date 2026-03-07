@@ -16,6 +16,7 @@ import evolutionRoutes from './routes/evolutionRoutes.js';
 import comprasRoutes from './routes/comprasRoutes.js';
 import integracaoRoutes from './routes/integracaoRoutes.js';
 import motivosAlteracaoDataEntregaCompraRoutes from './routes/motivosAlteracaoDataEntregaCompraRoutes.js';
+import engenhariaRoutes from './routes/engenhariaRoutes.js';
 import { csrfProtect } from './middleware/csrf.js';
 
 const app = express();
@@ -104,6 +105,7 @@ app.use('/api/evolution', evolutionRoutes);
 app.use('/api/compras', comprasRoutes);
 app.use('/api/integracao', integracaoRoutes);
 app.use('/api/integracao/motivos-alteracao-data-entrega-compra', motivosAlteracaoDataEntregaCompraRoutes);
+app.use('/api/engenharia', engenhariaRoutes);
 
 // Header em todas as respostas para conferir na outra máquina se está rodando o build novo
 export const BUILD_ID = 'pedidos-no-csrf-v1';

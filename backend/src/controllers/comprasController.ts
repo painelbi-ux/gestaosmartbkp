@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import { resolve } from 'path';
 import bcrypt from 'bcryptjs';
 import { listarProdutosColeta, buscarRegistroColetaNomus, listarFornecedoresAtivos, listarCondicoesPagamentoNomus, listarFormasPagamentoNomus } from '../data/comprasRepository.js';
 import { prisma } from '../config/prisma.js';
@@ -234,6 +235,38 @@ export async function postCienciaColeta(req: Request, res: Response): Promise<vo
 }
 
 /**
+ * GET /api/compras/coletas/debug
+ * Diagnóstico: URL do banco, caminho resolvido e quantidade de linhas em coleta_precos (para conferir se o app está usando o arquivo certo).
+ */
+export async function getColetasPrecosDebug(_req: Request, res: Response): Promise<void> {
+  try {
+    const dbUrl = process.env.DB_URL ?? '';
+    let resolvedPath = '';
+    const m = dbUrl.match(/^file:(.+)$/);
+    if (m) {
+      const p = m[1].trim().replace(/^\.\//, '');
+      resolvedPath = resolve(process.cwd(), p);
+    } else {
+      resolvedPath = dbUrl || '(não definido)';
+    }
+    const rows = await prisma.$queryRaw<[{ total: number | bigint }]>(
+      'SELECT COUNT(*) as total FROM coleta_precos'
+    );
+    const raw = rows?.[0]?.total;
+    const coletaPrecosCount = typeof raw === 'bigint' ? Number(raw) : (raw ?? 0);
+    res.json({
+      dbUrl: dbUrl || '(não definido)',
+      resolvedPath,
+      cwd: process.cwd(),
+      coletaPrecosCount,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(503).json({ error: msg, coletaPrecosCount: null });
+  }
+}
+
+/**
  * GET /api/compras/coletas
  * Lista coletas de preços (id, data de criação, qtd itens e registros). Inclui codigosProduto e descricoesProduto para filtro.
  */
@@ -268,6 +301,7 @@ export async function getColetasPrecos(_req: Request, res: Response): Promise<vo
           status: true,
           justificativaCancelamento: true,
           dataEnvioAprovacao: true,
+          dataCancelamento: true,
           dataFinalizacao: true,
           observacoes: true,
           jaEnviadaAprovacao: true,
@@ -289,6 +323,7 @@ export async function getColetasPrecos(_req: Request, res: Response): Promise<vo
             status: true,
             justificativaCancelamento: true,
             dataEnvioAprovacao: true,
+            dataCancelamento: true,
             dataFinalizacao: true,
             observacoes: true,
             jaEnviadaAprovacao: true,

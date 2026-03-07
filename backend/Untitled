@@ -1,0 +1,1 @@
+Invalid `prisma.coletaPrecos.findMany()` invocation: The column `main.coleta_precos.status` does not exist in the current database.

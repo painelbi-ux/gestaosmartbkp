@@ -27,6 +27,7 @@ const SECOES_PERMISSOES: Record<string, string> = {
   pedidos: 'PEDIDOS',
   heatmap: 'HEATMAP',
   compras: 'COMPRAS',
+  precificacao: 'ENGENHARIA',
   relatorios: 'RELATÓRIOS',
   integracao: 'INTEGRAÇÃO',
   usuarios: 'USUÁRIOS E GRUPOS',

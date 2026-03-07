@@ -2,7 +2,7 @@ import { Router, type RequestHandler } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/requirePermission.js';
 import { PERMISSOES } from '../config/permissoes.js';
-import { getProdutosColeta, getColetasPrecos, getOpcoesFiltroColetas, getColetasBloqueantes, postCienciaColeta, postConfirmarColeta, getFornecedores, getCondicoesPagamento, getFormasPagamento, putColetaFornecedores, getPrecosColeta, getPrecosCotacao, postPrecosCotacao, patchObservacoesColeta, patchEnviarAprovacao, patchCancelarCotacao, patchReabrirColeta, patchFinalizarCotacao, patchRegistroQtdeAprovada, patchEnviarFinanceiro, deleteColetaPrecos, deleteColetaItem, deleteColetaTodosItens, postColetaItens } from '../controllers/comprasController.js';
+import { getProdutosColeta, getColetasPrecos, getColetasPrecosDebug, getOpcoesFiltroColetas, getColetasBloqueantes, postCienciaColeta, postConfirmarColeta, getFornecedores, getCondicoesPagamento, getFormasPagamento, putColetaFornecedores, getPrecosColeta, getPrecosCotacao, postPrecosCotacao, patchObservacoesColeta, patchEnviarAprovacao, patchCancelarCotacao, patchReabrirColeta, patchFinalizarCotacao, patchRegistroQtdeAprovada, patchEnviarFinanceiro, deleteColetaPrecos, deleteColetaItem, deleteColetaTodosItens, postColetaItens } from '../controllers/comprasController.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -27,6 +27,11 @@ router.get(
   '/coletas/opcoes-filtro',
   requirePermission(PERMISSOES.COMPRAS_VER),
   async503(getOpcoesFiltroColetas)
+);
+router.get(
+  '/coletas/debug',
+  requirePermission(PERMISSOES.COMPRAS_VER),
+  async503(getColetasPrecosDebug)
 );
 router.get(
   '/coletas',

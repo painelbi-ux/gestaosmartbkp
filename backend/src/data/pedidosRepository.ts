@@ -167,7 +167,7 @@ async function obterUltimoEPenultimoPorPedido(ids: string[]): Promise<Map<string
   return result;
 }
 
-/** Mapeia linha do Nomus para formato do app; aplica último e penúltimo ajuste (SQLite). */
+/** Mapeia linha do Nomus para formato do app; aplica último e penúltimo ajuste (SQLite). Retorna todos os campos do banco (row) mais os calculados. */
 function rowNomusToPedido(
   row: Record<string, unknown>,
   ajustePorId: Map<string, AjusteInfo>
@@ -189,7 +189,9 @@ function rowNomusToPedido(
       ? statusSql.trim()
       : computarStatus(row);
 
-  const base = {
+  // Todos os dados do banco (row) primeiro; em seguida campos calculados/ajustes (prioridade)
+  return {
+    ...row,
     id_pedido: idChave,
     cliente,
     produto,
@@ -199,9 +201,8 @@ function rowNomusToPedido(
     previsao_anterior: previsaoAnterior,
     motivo_ultimo_ajuste: motivoAjuste,
     observacao_ultimo_ajuste: observacaoAjuste,
-    ...row,
-  };
-  return { ...base, Status: status };
+    Status: status,
+  } as PedidoRow;
 }
 
 const BATCH_SIZE_AJUSTES = 500;

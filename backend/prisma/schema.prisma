@@ -194,3 +194,40 @@ model ColetaPrecosCotacao {
   @@index([idProduto])
   @@map("coleta_precos_cotacao")
 }
+
+// Precificação (Engenharia): registro de uma precificação iniciada por produto
+model Precificacao {
+  id               Int      @id @default(autoincrement())
+  idProduto         Int      // id do produto no Nomus
+  codigoProduto     String?  // nome no Nomus (código)
+  descricaoProduto  String?
+  data             DateTime @default(now())
+  usuario          String?  // login de quem iniciou
+  valoresCampos     String?  // JSON com os campos % (sucata, fosfatizacao, lucro, etc.)
+
+  itens PrecificacaoItem[]
+
+  @@index([idProduto])
+  @@index([data])
+  @@map("precificacao")
+}
+
+// Linhas do resultado do SQL de precificação (lista de materiais / componentes)
+model PrecificacaoItem {
+  id                Int     @id @default(autoincrement())
+  precificacaoId    Int
+  idprodutopai      Int?
+  codigopai         String?
+  descricaopai      String?
+  idcomponente      Int?
+  codigocomponente  String?
+  componente        String?
+  qtd               Float   // quantidade (round 5 decimais)
+  valorUnitario     Float?  // da segunda consulta Nomus (por idcomponente)
+  valorTotal        Float?  // qtd * valorUnitario
+
+  precificacao Precificacao @relation(fields: [precificacaoId], references: [id], onDelete: Cascade)
+
+  @@index([precificacaoId])
+  @@map("precificacao_item")
+}

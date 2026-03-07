@@ -53,13 +53,13 @@ export async function sincronizar(_req: Request, res: Response): Promise<void> {
 }
 
 /**
- * GET /api/pedidos - lista pedidos com filtros e paginação (page, limit=100).
+ * GET /api/pedidos - lista pedidos com filtros e paginação (page, limit=500). Retorna todos os campos do banco (Nomus + ajustes SQLite).
  */
 export async function getPedidos(req: Request, res: Response): Promise<void> {
   const parsed = listarPedidosQuerySchema.safeParse(req.query);
   const filtros = parsed.success ? parsed.data : {};
   const page = (filtros as { page?: number }).page ?? 1;
-  const limit = (filtros as { limit?: number }).limit ?? 100;
+  const limit = (filtros as { limit?: number }).limit ?? 500;
   try {
     const result = await listarPedidos({ ...filtros, page, limit });
     res.json(result);

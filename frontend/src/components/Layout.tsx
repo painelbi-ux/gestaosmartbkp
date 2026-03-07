@@ -28,6 +28,10 @@ const COMPRAS_SUBMENUS: { to: string; label: string }[] = [
   { to: '/compras/coletas-precos', label: 'Coletas de Preços' },
 ];
 
+const ENGENHARIA_SUBMENUS: { to: string; label: string }[] = [
+  { to: '/engenharia/precificacao', label: 'Precificação' },
+];
+
 const INTEGRACAO_SUBMENUS: { to: string; label: string }[] = [
   { to: '/integracao/alteracao-data-entrega-compra', label: 'Alteração da Data de Entrega do Pedido de Compra' },
 ];
@@ -40,6 +44,8 @@ const PATH_LABELS: Record<string, string> = {
   '/compras': 'Compras',
   '/compras/dashboard': 'Dashboard',
   '/compras/coletas-precos': 'Coletas de Preços',
+  '/engenharia': 'Engenharia',
+  '/engenharia/precificacao': 'Precificação',
   '/relatorios': 'Relatórios',
   '/integracao': 'Integração',
   '/integracao/alteracao-data-entrega-compra': 'Alteração Data Entrega',
@@ -61,9 +67,12 @@ export default function Layout() {
   const comprasRef = useRef<HTMLDivElement>(null);
   const [integracaoOpen, setIntegracaoOpen] = useState(false);
   const integracaoRef = useRef<HTMLDivElement>(null);
+  const [engenhariaOpen, setEngenhariaOpen] = useState(false);
+  const engenhariaRef = useRef<HTMLDivElement>(null);
 
   const isComprasActive = location.pathname.startsWith('/compras');
   const isIntegracaoActive = location.pathname.startsWith('/integracao');
+  const isEngenhariaActive = location.pathname.startsWith('/engenharia');
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const syncPanelRef = useRef<HTMLDivElement>(null);
 
@@ -152,6 +161,9 @@ export default function Layout() {
       }
       if (integracaoRef.current && !integracaoRef.current.contains(e.target as Node)) {
         setIntegracaoOpen(false);
+      }
+      if (engenhariaRef.current && !engenhariaRef.current.contains(e.target as Node)) {
+        setEngenhariaOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
@@ -245,6 +257,50 @@ export default function Layout() {
                         key={item.to}
                         to={item.to}
                         onClick={() => setComprasOpen(false)}
+                        className={({ isActive }) =>
+                          `block px-4 py-2 text-sm transition ${
+                            isActive
+                              ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200 font-medium'
+                              : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                          }`
+                        }
+                      >
+                        {item.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {hasPermission(PERMISSOES.PRECIFICACAO_VER) && (
+              <div className="relative" ref={engenhariaRef}>
+                <button
+                  type="button"
+                  onClick={() => setEngenhariaOpen((v) => !v)}
+                  onMouseEnter={() => setEngenhariaOpen(true)}
+                  className={`inline-flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium transition ${
+                    isEngenhariaActive
+                      ? 'bg-primary-600 text-white'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700/50'
+                  }`}
+                  aria-expanded={engenhariaOpen}
+                  aria-haspopup="true"
+                >
+                  Engenharia
+                  <svg className="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {engenhariaOpen && (
+                  <div
+                    className="absolute left-0 top-full mt-1 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseLeave={() => setEngenhariaOpen(false)}
+                  >
+                    {ENGENHARIA_SUBMENUS.map((item) => (
+                      <NavLink
+                        key={item.to}
+                        to={item.to}
+                        onClick={() => setEngenhariaOpen(false)}
                         className={({ isActive }) =>
                           `block px-4 py-2 text-sm transition ${
                             isActive
