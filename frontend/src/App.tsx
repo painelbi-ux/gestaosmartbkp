@@ -16,6 +16,7 @@ import ComprasPage from './pages/ComprasPage';
 import ColetasPrecosPage from './pages/compras/ColetasPrecosPage';
 import ComprasDashboardPage from './pages/compras/ComprasDashboardPage';
 import PrecificacaoPage from './pages/PrecificacaoPage';
+import ResumoFinanceiroPage from './pages/financeiro/ResumoFinanceiroPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { getStoredToken } from './api/client';
 import { checkAuth } from './api/auth';
@@ -66,6 +67,8 @@ export default function App() {
           <Route path="compras/coletas-precos" element={<ColetasPrecosPage />} />
           <Route path="precificacao" element={<Navigate to="/engenharia/precificacao" replace />} />
           <Route path="engenharia/precificacao" element={<PrecificacaoPage />} />
+          <Route path="financeiro" element={<ResumoFinanceiroPage />} />
+          <Route path="financeiro/resumo" element={<ResumoFinanceiroPage />} />
           <Route path="relatorios" element={<RelatoriosPage />} />
           <Route path="integracao" element={<IntegracaoPage />} />
           <Route path="integracao/alteracao-data-entrega-compra" element={<AlteracaoDataEntregaCompraPage />} />

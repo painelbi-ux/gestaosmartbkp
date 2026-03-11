@@ -83,7 +83,8 @@ app.use(cookieParser());
 
 // Body JSON: em erro de parsing definimos req.body = {} (nunca repassar erro)
 app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
-  express.json()(req, res, (err: unknown) => {
+  // Aumentamos o limite para suportar uploads de importação (arquivos de pedidos em lote).
+  express.json({ limit: '1mb' })(req, res, (err: unknown) => {
     if (err) (req as express.Request & { body?: unknown }).body = {};
     next();
   });

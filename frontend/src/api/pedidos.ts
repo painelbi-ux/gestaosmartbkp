@@ -177,6 +177,39 @@ export async function obterResumoFinanceiro(filtros: FiltrosPedidos = {}): Promi
   return apiJson<ResumoFinanceiro>(`/api/pedidos/resumo-financeiro${qs ? `?${qs}` : ''}`);
 }
 
+export interface ResumoFinanceiroGradeCondicao {
+  condicao: string;
+  porData: Record<string, number>;
+  total: number;
+}
+
+export interface ResumoFinanceiroGradeRota {
+  rota: string;
+  condicoes: ResumoFinanceiroGradeCondicao[];
+  totalPorData: Record<string, number>;
+  totalGeral: number;
+}
+
+export interface ResumoFinanceiroGradeResponse {
+  datas: string[];
+  rotas: ResumoFinanceiroGradeRota[];
+  erroConexao?: string;
+}
+
+/** Grade do Resumo Financeiro (Rota x Condição x datas + Total Geral). Mesmos filtros de pedidos; data_ini/data_fim = período das colunas (padrão: semana corrente). */
+export async function getResumoFinanceiroGrade(
+  filtros: FiltrosPedidos & { data_ini?: string; data_fim?: string } = {}
+): Promise<ResumoFinanceiroGradeResponse> {
+  const params = new URLSearchParams();
+  Object.entries(filtros).forEach(([k, v]) => {
+    if (v !== undefined && v !== '' && k !== 'page' && k !== 'limit') params.set(k, String(v));
+  });
+  const qs = params.toString();
+  return apiJson<ResumoFinanceiroGradeResponse>(
+    `/api/pedidos/resumo-financeiro-grade${qs ? `?${qs}` : ''}`
+  );
+}
+
 export async function obterResumoObservacoes(): Promise<ObservacaoResumo[]> {
   return apiJson<ObservacaoResumo[]>('/api/pedidos/observacoes-resumo');
 }

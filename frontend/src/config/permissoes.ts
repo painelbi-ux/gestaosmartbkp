@@ -14,6 +14,7 @@ export const PERMISSOES = {
   INTEGRACAO_VER: 'integracao.ver',
   INTEGRACAO_EDITAR: 'integracao.editar',
   USUARIOS_GERENCIAR: 'usuarios.gerenciar',
+  FINANCEIRO_VER: 'financeiro.ver',
 } as const;
 
 export type CodigoPermissao = (typeof PERMISSOES)[keyof typeof PERMISSOES];

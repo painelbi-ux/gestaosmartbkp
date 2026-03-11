@@ -796,6 +796,220 @@ export async function obterResumoFinanceiro(filtros: FiltrosPedidos = {}): Promi
   };
 }
 
+/** Retorna segunda e sexta da semana da data (ou semana corrente se não informada). */
+function getSemanaSegundaSexta(ref?: Date): { data_ini: string; data_fim: string } {
+  const d = ref ?? new Date();
+  const day = d.getDay();
+  const seg = new Date(d);
+  seg.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+  const sex = new Date(seg);
+  sex.setDate(seg.getDate() + 4);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return {
+    data_ini: `${seg.getFullYear()}-${pad(seg.getMonth() + 1)}-${pad(seg.getDate())}`,
+    data_fim: `${sex.getFullYear()}-${pad(sex.getMonth() + 1)}-${pad(sex.getDate())}`,
+  };
+}
+
+/** Lista datas (YYYY-MM-DD) entre data_ini e data_fim, apenas dias úteis (segunda a sexta). */
+function listarDiasUteis(dataIni: string, dataFim: string): string[] {
+  const ini = parseLocalDate(dataIni);
+  const fim = parseLocalDate(dataFim);
+  const out: string[] = [];
+  const pad = (n: number) => String(n).padStart(2, '0');
+  for (let d = new Date(ini); d <= fim; d.setDate(d.getDate() + 1)) {
+    const day = d.getDay();
+    if (day >= 1 && day <= 5) {
+      out.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
+    }
+  }
+  return out;
+}
+
+/** Rotas que usam Valor Pendente - Adiantamento Rateio; demais usam Valor Romaneado - Adiantamento Rateio. */
+function rotaUsaValorPendente(rota: string): boolean {
+  const r = (rota || '').trim();
+  return (
+    r.startsWith('1-') ||
+    r.startsWith('2-') ||
+    r.startsWith('3-') ||
+    r.startsWith('4-') ||
+    r.startsWith('5-')
+  );
+}
+
+export interface ResumoFinanceiroGradeCondicao {
+  condicao: string;
+  porData: Record<string, number>;
+  total: number;
+}
+
+export interface ResumoFinanceiroGradeRota {
+  rota: string;
+  condicoes: ResumoFinanceiroGradeCondicao[];
+  totalPorData: Record<string, number>;
+  totalGeral: number;
+}
+
+export interface ResumoFinanceiroGradeResponse {
+  datas: string[];
+  rotas: ResumoFinanceiroGradeRota[];
+  erroConexao?: string;
+}
+
+/**
+ * MEMÓRIA DE CÁLCULO - Resumo Financeiro (grade)
+ * ==============================================
+ *
+ * 1) Fonte dos dados
+ *    - Listagem de pedidos (mesma base da aba Pedidos), sem paginação, com os mesmos filtros.
+ *
+ * 2) Agrupamento
+ *    - Linhas: agrupado por Rota (coluna Observações) e, dentro da rota, por Condição de Pagamento.
+ *    - Colunas: uma coluna por dia útil no período (segunda a sexta), mais coluna "Total Geral".
+ *    - Período das colunas: data_ini e data_fim (padrão = semana corrente seg–sex).
+ *
+ * 3) Data usada para alocar o valor na coluna
+ *    - Previsão Atual (previsao_entrega_atualizada) do registro.
+ *    - Só entram na soma os registros cuja Previsão Atual está dentro do período (data_ini a data_fim).
+ *
+ * 4) Fórmula do valor (por linha de pedido)
+ *    - Valor exibido = Valor Romaneado - ((Valor Romaneado / Valor Pendente) * Valor Adiantamento)
+ *    - Onde:
+ *      • Valor Romaneado: valor romaneado da linha (coluna do ERP/Nomus).
+ *      • Valor Pendente: valor pendente da linha (coluna do ERP/Nomus).
+ *      • Valor Adiantamento: valor total do adiantamento do pedido (coluna do ERP/Nomus).
+ *    - Se Valor Pendente = 0: usa Valor Romaneado - Valor Adiantamento (evita divisão por zero).
+ *    - O valor é limitado a >= 0 antes de somar (Math.max(0, valor)).
+ *
+ * 5) Agregação
+ *    - Para cada (Rota, Condição de Pagamento, data): soma dos "Valor exibido" de todas as linhas
+ *      que tenham essa rota, essa condição e Previsão Atual = data.
+ *    - Total por data = soma dos valores daquela data em todas as (rota, condição).
+ *    - Total Geral da linha = soma dos valores em todas as datas do período.
+ *
+ * 6) Exibição
+ *    - Todas as rotas/condições que aparecem nos pedidos filtrados entram na grade (valor 0,00 quando não há soma).
+ */
+export async function obterResumoFinanceiroGrade(
+  filtros: FiltrosPedidos = {}
+): Promise<ResumoFinanceiroGradeResponse> {
+  const { page: _p, limit: _l, data_ini: _di, data_fim: _df, ...filtrosListagem } = filtros as {
+    page?: number;
+    limit?: number;
+    data_ini?: string;
+    data_fim?: string;
+    [k: string]: unknown;
+  };
+  const { data: pedidos, erroConexao } = await listarPedidos(filtrosListagem as FiltrosPedidos);
+  if (erroConexao) {
+    return { datas: [], rotas: [], erroConexao };
+  }
+
+  const dataIni = filtros.data_ini ?? getSemanaSegundaSexta().data_ini;
+  const dataFim = filtros.data_fim ?? getSemanaSegundaSexta().data_fim;
+  const datas = listarDiasUteis(dataIni, dataFim);
+  const setDatas = new Set(datas);
+
+  const keysValorRomaneado = ['Valor Romaneado', 'valor romaneado'];
+  const keysValorPendente = ['Saldo a Faturar Real', 'Valor Pendente Real', 'Valor Pendente', 'valor pendente real', 'valor pendente'];
+  const keysValorAdiantamento = ['Valor Adiantamento', 'valor adiantamento'];
+  const keyCondicao = 'Condicao de pagamento do pedido de venda';
+
+  type KeyRotaCond = string;
+  const porRotaCond: Map<
+    KeyRotaCond,
+    { rota: string; condicao: string; porData: Record<string, number>; total: number }
+  > = new Map();
+
+  function getKey(rota: string, condicao: string): KeyRotaCond {
+    return `${rota}\t${condicao}`;
+  }
+
+  /** Primeiro: registrar todas as (rota, condição) que existem nos pedidos, para que todas as rotas apareçam na grade. */
+  for (const p of pedidos) {
+    const rota = getField(p, ['Observacoes', 'Observacoes ', 'Observações']).trim() || 'Sem Rota';
+    const condicao =
+      (p[keyCondicao] != null ? String(p[keyCondicao]) : getField(p, [keyCondicao])).trim() || 'Sem Condição';
+    const key = getKey(rota, condicao);
+    if (!porRotaCond.has(key)) {
+      const porData: Record<string, number> = {};
+      for (const d of datas) porData[d] = 0;
+      porRotaCond.set(key, { rota, condicao, porData, total: 0 });
+    }
+  }
+
+  /** Segundo: somar valores pela Previsão Atual (previsao_entrega_atualizada) no período das colunas. */
+  for (const p of pedidos) {
+    const rota = getField(p, ['Observacoes', 'Observacoes ', 'Observações']).trim() || 'Sem Rota';
+    const condicao =
+      (p[keyCondicao] != null ? String(p[keyCondicao]) : getField(p, [keyCondicao])).trim() || 'Sem Condição';
+    const rawPrevisao = p.previsao_entrega_atualizada ?? p.previsao_entrega;
+    const dataPrevisao =
+      rawPrevisao instanceof Date
+        ? rawPrevisao
+        : rawPrevisao != null
+          ? new Date(rawPrevisao as string)
+          : null;
+    const dataStr =
+      dataPrevisao && !Number.isNaN(dataPrevisao.getTime())
+        ? `${dataPrevisao.getFullYear()}-${String(dataPrevisao.getMonth() + 1).padStart(2, '0')}-${String(dataPrevisao.getDate()).padStart(2, '0')}`
+        : '';
+    if (!dataStr || !setDatas.has(dataStr)) continue;
+
+    const valorRomaneado = getNumberFromRowLoose(p, keysValorRomaneado);
+    const valorPendente = getNumberFromRowLoose(p, keysValorPendente);
+    const valorAdiantamento = getNumberFromRowLoose(p, keysValorAdiantamento);
+    // Fórmula: Valor Romaneado - ((Valor Romaneado / Valor Pendente) * Valor Adiantamento)
+    let valor: number;
+    if (valorPendente > 0) {
+      valor = valorRomaneado - (valorRomaneado / valorPendente) * valorAdiantamento;
+    } else {
+      valor = valorRomaneado - valorAdiantamento;
+    }
+    const rounded = Math.round(Math.max(0, valor) * 100) / 100;
+
+    const key = getKey(rota, condicao);
+    const row = porRotaCond.get(key);
+    if (row) {
+      row.porData[dataStr] = (row.porData[dataStr] ?? 0) + rounded;
+      row.total += rounded;
+    }
+  }
+
+  const rotasOrder = new Map<string, ResumoFinanceiroGradeRota>();
+  for (const [, row] of porRotaCond) {
+    let rotaRow = rotasOrder.get(row.rota);
+    if (!rotaRow) {
+      rotaRow = {
+        rota: row.rota,
+        condicoes: [],
+        totalPorData: {},
+        totalGeral: 0,
+      };
+      rotasOrder.set(row.rota, rotaRow);
+    }
+    rotaRow.condicoes.push({
+      condicao: row.condicao,
+      porData: row.porData,
+      total: Math.round(row.total * 100) / 100,
+    });
+    for (const [d, v] of Object.entries(row.porData)) {
+      rotaRow.totalPorData[d] = (rotaRow.totalPorData[d] ?? 0) + v;
+    }
+    rotaRow.totalGeral += row.total;
+  }
+  for (const rotaRow of rotasOrder.values()) {
+    rotaRow.totalGeral = Math.round(rotaRow.totalGeral * 100) / 100;
+    for (const k of Object.keys(rotaRow.totalPorData)) {
+      rotaRow.totalPorData[k] = Math.round(rotaRow.totalPorData[k] * 100) / 100;
+    }
+  }
+
+  const rotas = [...rotasOrder.values()].sort((a, b) => a.rota.localeCompare(b.rota));
+  return { datas, rotas, erroConexao: undefined };
+}
+
 /** Resumo por Observacoes (quantidade de pedidos). */
 export async function obterResumoObservacoes(): Promise<ObservacaoResumo[]> {
   const { data: pedidos } = await listarPedidos({});

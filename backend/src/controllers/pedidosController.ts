@@ -3,6 +3,7 @@ import {
   listarPedidos,
   obterResumoDashboard,
   obterResumoFinanceiro,
+  obterResumoFinanceiroGrade,
   obterResumoStatusPorTipoF,
   obterTabelaStatusPorTipoF,
   obterResumoObservacoes,
@@ -117,6 +118,22 @@ export async function getResumoFinanceiro(req: Request, res: Response): Promise<
   } catch (err) {
     console.error('getResumoFinanceiro', err);
     res.status(503).json({ error: 'Erro ao obter resumo financeiro.' });
+  }
+}
+
+/**
+ * GET /api/pedidos/resumo-financeiro-grade - grade Resumo Financeiro (Rota x Condição x datas + Total Geral).
+ * Aceita os mesmos query params de listar pedidos; data_ini/data_fim definem o período das colunas (padrão: semana corrente seg–sex).
+ */
+export async function getResumoFinanceiroGrade(req: Request, res: Response): Promise<void> {
+  const parsed = listarPedidosQuerySchema.safeParse(req.query);
+  const filtros = parsed.success ? parsed.data : {};
+  try {
+    const grade = await obterResumoFinanceiroGrade(filtros as Parameters<typeof obterResumoFinanceiroGrade>[0]);
+    res.json(grade);
+  } catch (err) {
+    console.error('getResumoFinanceiroGrade', err);
+    res.status(503).json({ error: 'Erro ao obter grade do resumo financeiro.' });
   }
 }
 
@@ -293,7 +310,11 @@ export async function ajustarPrevisao(req: Request, res: Response): Promise<void
  * POST /api/pedidos/ajustar-previsao-lote - registra vários ajustes em uma requisição (createMany, otimizado).
  */
 export async function ajustarPrevisaoLote(req: Request, res: Response): Promise<void> {
-  const parsed = ajustarPrevisaoLoteSchema.safeParse(req.body);
+  // Compatibilidade: aceitar tanto { ajustes: [...] } quanto um array direto [...],
+  // para funcionar mesmo se o frontend estiver enviando apenas o array.
+  const raw = req.body;
+  const body = Array.isArray(raw) ? { ajustes: raw } : (raw ?? {});
+  const parsed = ajustarPrevisaoLoteSchema.safeParse(body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Payload inválido', details: parsed.error.flatten() });
     return;

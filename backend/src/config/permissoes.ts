@@ -14,6 +14,7 @@ export const PERMISSOES = {
   INTEGRACAO_VER: 'integracao.ver',
   INTEGRACAO_EDITAR: 'integracao.editar',
   USUARIOS_GERENCIAR: 'usuarios.gerenciar',
+  FINANCEIRO_VER: 'financeiro.ver',
 } as const;
 
 export type CodigoPermissao = (typeof PERMISSOES)[keyof typeof PERMISSOES];
@@ -30,6 +31,7 @@ export const TODAS_PERMISSOES: CodigoPermissao[] = [
   PERMISSOES.INTEGRACAO_VER,
   PERMISSOES.INTEGRACAO_EDITAR,
   PERMISSOES.USUARIOS_GERENCIAR,
+  PERMISSOES.FINANCEIRO_VER,
 ];
 
 export const LABELS_PERMISSOES: Record<CodigoPermissao, string> = {
@@ -44,4 +46,5 @@ export const LABELS_PERMISSOES: Record<CodigoPermissao, string> = {
   [PERMISSOES.INTEGRACAO_VER]: 'Ver Integração',
   [PERMISSOES.INTEGRACAO_EDITAR]: 'Todas as funcionalidades (Integração)',
   [PERMISSOES.USUARIOS_GERENCIAR]: 'Gerenciar usuários e grupos',
+  [PERMISSOES.FINANCEIRO_VER]: 'Ver Financeiro',
 };

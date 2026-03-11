@@ -453,8 +453,21 @@ export function parsePedidosXlsxForImport(file: File): Promise<LinhaImportacao[]
           return;
         }
         const wb = XLSX.read(data, { type: 'binary' });
-        const firstSheet = wb.SheetNames[0];
-        const ws = wb.Sheets[firstSheet];
+        // Tenta sempre usar a aba "Pedidos" (como no arquivo de exportação).
+        // Se não encontrar, cai para a primeira aba disponível.
+        const sheetNames = wb.SheetNames;
+        if (!sheetNames || sheetNames.length === 0) {
+          reject(new Error('Upload bloqueado. Arquivo sem abas válidas. Certifique-se de usar o arquivo exportado pelo sistema.'));
+          return;
+        }
+        const pedidosSheetName =
+          sheetNames.find((name) => name.toLowerCase() === 'pedidos') ??
+          sheetNames[0];
+        const ws = wb.Sheets[pedidosSheetName];
+        if (!ws) {
+          reject(new Error('Upload bloqueado. Não foi possível localizar a aba "Pedidos" no arquivo. Use o arquivo exportado pelo sistema.'));
+          return;
+        }
         const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws);
         const linhas: LinhaImportacao[] = [];
         for (const row of json) {

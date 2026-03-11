@@ -8,6 +8,7 @@ import {
   getPedidosExport,
   getResumo,
   getResumoFinanceiro,
+  getResumoFinanceiroGrade,
   getResumoStatusPorTipoF,
   getTabelaStatusPorTipoF,
   getResumoObservacoes,
@@ -26,6 +27,7 @@ router.use(requireAuth);
 
 // Permissão "Ver pedidos" para todas as rotas GET
 const verPedidos = requirePermission(PERMISSOES.PEDIDOS_VER);
+const verFinanceiro = requirePermission(PERMISSOES.FINANCEIRO_VER);
 
 // Rate limit para rotas de escrita (ajustar previsão)
 const writeLimiter = rateLimit({
@@ -40,6 +42,7 @@ router.get('/', verPedidos, getPedidos);
 router.get('/export', editar, getPedidosExport);
 router.get('/resumo', verPedidos, getResumo);
 router.get('/resumo-financeiro', verPedidos, getResumoFinanceiro);
+router.get('/resumo-financeiro-grade', verFinanceiro, getResumoFinanceiroGrade);
 router.get('/resumo-status-tipof', verPedidos, getResumoStatusPorTipoF);
 router.get('/tabela-status-tipof', verPedidos, getTabelaStatusPorTipoF);
 router.get('/observacoes-resumo', verPedidos, getResumoObservacoes);

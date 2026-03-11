@@ -418,11 +418,9 @@ export default function PedidosPage() {
       } catch (err) {
         setImportStatus('erro');
         const msg = err instanceof Error ? err.message : '';
-        setImportMensagemErro(
-          msg && (msg.includes('Upload bloqueado') || msg.includes('motivo') || msg.includes('nova previsão') || msg.includes('carrada'))
-            ? msg
-            : 'Não foi possível ler o arquivo ou processar a importação. Verifique o formato e tente novamente.'
-        );
+        // Sempre que houver uma mensagem vinda do backend/util, exibimos ela diretamente
+        // para ficar mais intuitivo (em vez de cair em um texto genérico).
+        setImportMensagemErro(msg || 'Não foi possível ler o arquivo ou processar a importação. Verifique o formato e tente novamente.');
         setImportResultado(null);
       } finally {
         setImportLoading(false);
