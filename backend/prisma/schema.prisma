@@ -65,6 +65,9 @@ model Usuario {
   createdAt DateTime     @default(now())
 
   grupo GrupoUsuario? @relation(fields: [grupoId], references: [id], onDelete: SetNull)
+  sycroOrdersCriados    SycroOrderOrder[]
+  sycroOrderHistory     SycroOrderHistory[]
+  sycroOrderNotifications SycroOrderNotification[]
 
   @@map("usuario")
 }
@@ -230,4 +233,61 @@ model PrecificacaoItem {
 
   @@index([precificacaoId])
   @@map("precificacao_item")
+}
+
+// --- SycroOrder (migrado do sincroorder-crm): pedidos, histórico e notificações ---
+model SycroOrderOrder {
+  id                    Int      @id @default(autoincrement())
+  order_number           String
+  delivery_method       String
+  current_promised_date  String   // YYYY-MM-DD
+  status                 String   @default("PENDING") // PENDING | FINISHED | ESCALATED
+  is_urgent              Int      @default(0) // 0 ou 1
+  created_by             Int?     // Usuario.id (quem criou)
+  creator_name           String?  // nome para exibição (migração ou fallback)
+  created_at             DateTime @default(now())
+
+  usuarioCriador Usuario?              @relation(fields: [created_by], references: [id], onDelete: SetNull)
+  history        SycroOrderHistory[]
+  notifications  SycroOrderNotification[]
+
+  @@index([created_by])
+  @@index([status])
+  @@index([created_at])
+  @@map("sycro_order_order")
+}
+
+model SycroOrderHistory {
+  id             Int      @id @default(autoincrement())
+  order_id       Int
+  user_id        Int?     // Usuario.id (quem fez a ação)
+  user_name      String?  // para exibição quando user_id null (migração)
+  action_type    String   // CREATE | UPDATE
+  previous_date  String?
+  new_date       String?
+  observation    String?
+  created_at     DateTime @default(now())
+
+  order SycroOrderOrder @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  usuario Usuario?      @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  @@index([order_id])
+  @@index([user_id])
+  @@map("sycro_order_history")
+}
+
+model SycroOrderNotification {
+  id         Int      @id @default(autoincrement())
+  user_id    Int      // Usuario.id (destinatário)
+  message    String
+  order_id   Int?
+  is_read    Int      @default(0) // 0 ou 1
+  created_at DateTime @default(now())
+
+  usuario Usuario?       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  order   SycroOrderOrder? @relation(fields: [order_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id])
+  @@index([order_id])
+  @@map("sycro_order_notification")
 }

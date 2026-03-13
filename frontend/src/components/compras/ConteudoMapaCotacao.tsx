@@ -315,14 +315,18 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
     );
   }
 
+  const statusColeta = coleta.status ?? '';
+  const podeImprimirExportar = statusColeta !== 'Em cotação';
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-end gap-2 pb-3 shrink-0">
         <button
           type="button"
           onClick={exportarPDF}
-          disabled={exportando}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50"
+          disabled={exportando || !podeImprimirExportar}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          title={!podeImprimirExportar ? 'Exportar/imprimir disponível quando a coleta não estiver mais em cotação' : undefined}
         >
           {exportando ? 'Gerando PDF…' : 'Exportar PDF'}
         </button>

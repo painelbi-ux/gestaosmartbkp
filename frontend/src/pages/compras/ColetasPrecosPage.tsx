@@ -357,7 +357,9 @@ export default function ColetasPrecosPage() {
                 const statusColeta = c.status ?? 'Em cotação';
                 const emAprovacao = statusColeta === 'Em Aprovação';
                 const finalizada = statusColeta === 'Finalizada';
-                const podeAbrirMapaCotacao = emAprovacao || finalizada;
+                const rejeitada = statusColeta === 'Rejeitada';
+                const emCotacao = statusColeta === 'Em cotação';
+                const podeAbrirMapaCotacao = emAprovacao || finalizada || rejeitada || emCotacao;
                 const dataRefTempo = emAprovacao && c.dataEnvioAprovacao ? c.dataEnvioAprovacao : c.dataCriacao;
                 return (
                 <tr key={c.id} className="border-t border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/30">
@@ -417,7 +419,7 @@ export default function ColetasPrecosPage() {
                         onClick={() => { if (podeAbrirMapaCotacao) setColetaMapaCotacao(c); }}
                         disabled={!podeAbrirMapaCotacao}
                         className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 text-xs font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={podeAbrirMapaCotacao ? 'Mapa de Cotação' : 'Disponível quando a coleta estiver em aprovação ou finalizada'}
+                        title="Abrir mapa de cotação (impressão/PDF disponível quando a coleta não estiver mais em cotação)"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <path d="M2 6l6 4 8-4 6 4v12l-6-4-8 4-6-4z" />

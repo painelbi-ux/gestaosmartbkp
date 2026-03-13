@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useState, useRef, useEffect, useMemo, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 
 export interface OptionItem {
   id: number;
@@ -44,8 +45,11 @@ export default function SingleSelectWithSearch({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const inputSearchRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [dropdownStyle, setDropdownStyle] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
 
   const filteredOptions = useMemo(() => {
     if (onSearchChange) return options;
@@ -70,10 +74,41 @@ export default function SingleSelectWithSearch({
     };
   }, [search, onSearchChange]);
 
+  useLayoutEffect(() => {
+    if (!open || !buttonRef.current) {
+      setDropdownStyle(null);
+      return;
+    }
+    const update = () => {
+      const btn = buttonRef.current;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      const listMaxPx = parseInt(String(listMaxHeight).replace(/px$/i, ''), 10) || 180;
+      const defaultMax = listMaxPx + 52;
+      const spaceBelow = window.innerHeight - rect.bottom - 8;
+      const maxHeight = Math.min(defaultMax, Math.max(120, spaceBelow));
+      setDropdownStyle({
+        top: rect.bottom + 4,
+        left: rect.left,
+        width: Math.max(rect.width, 280),
+        maxHeight,
+      });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [open]);
+
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       const target = e.target as Node;
-      if (ref.current && target && !ref.current.contains(target)) setOpen(false);
+      const inButton = ref.current?.contains(target);
+      const inDropdown = dropdownRef.current?.contains(target);
+      if (target && !inButton && !inDropdown) setOpen(false);
     };
     document.addEventListener('click', handler);
     return () => document.removeEventListener('click', handler);
@@ -106,10 +141,62 @@ export default function SingleSelectWithSearch({
 
   const labelText = value ? value.nome : placeholder;
 
+  const dropdownContent = open && dropdownStyle && (
+    <div
+      ref={dropdownRef}
+      className="fixed z-[9999] rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 shadow-xl flex flex-col overflow-hidden"
+      style={{
+        top: dropdownStyle.top,
+        left: dropdownStyle.left,
+        width: dropdownStyle.width,
+        maxHeight: dropdownStyle.maxHeight,
+      }}
+    >
+      <div className="p-2 border-b border-slate-200 dark:border-slate-600 shrink-0">
+        <input
+          ref={inputSearchRef}
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Pesquisar..."
+          className="w-full rounded-md bg-slate-100 dark:bg-slate-600 border border-slate-300 dark:border-slate-500 text-slate-800 dark:text-slate-100 px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+        />
+      </div>
+      <div className="overflow-y-auto py-1 flex flex-col" style={{ maxHeight: Math.min(dropdownStyle.maxHeight - 52, parseInt(String(listMaxHeight).replace(/px$/i, ''), 10) || 180) }}>
+        {searchLoading ? (
+          <p className="px-3 py-4 text-sm text-slate-500 dark:text-slate-400 text-center">Carregando...</p>
+        ) : filteredOptions.length === 0 ? (
+          <p className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Nenhum resultado</p>
+        ) : (
+          filteredOptions.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => handleSelect(opt)}
+              className={`w-full text-left px-3 py-1.5 text-sm transition ${
+                value?.id === opt.id
+                  ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200 font-medium'
+                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600'
+              }`}
+            >
+              <span className="truncate block">{opt.nome}</span>
+              {opt.descricao && (
+                <span className="text-xs text-slate-500 dark:text-slate-400 truncate block">
+                  {opt.descricao}
+                </span>
+              )}
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className="relative" style={{ minWidth }} ref={ref}>
       <label className={labelClass}>{label}</label>
       <button
+        ref={buttonRef}
         type="button"
         onClick={handleToggleOpen}
         className={inputClass + ' w-full text-left flex items-center justify-between gap-2'}
@@ -117,47 +204,7 @@ export default function SingleSelectWithSearch({
         <span className="truncate">{labelText}</span>
         <span className="text-slate-400 shrink-0">{open ? '▲' : '▼'}</span>
       </button>
-      {open && (
-        <div className="absolute z-50 mt-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 shadow-lg min-w-full max-h-[240px] flex flex-col">
-          <div className="p-2 border-b border-slate-200 dark:border-slate-600 shrink-0">
-            <input
-              ref={inputSearchRef}
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Pesquisar..."
-              className="w-full rounded-md bg-slate-100 dark:bg-slate-600 border border-slate-300 dark:border-slate-500 text-slate-800 dark:text-slate-100 px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            />
-          </div>
-          <div className="overflow-y-auto py-1 flex flex-col" style={{ maxHeight: listMaxHeight }}>
-            {searchLoading ? (
-              <p className="px-3 py-4 text-sm text-slate-500 dark:text-slate-400 text-center">Carregando...</p>
-            ) : filteredOptions.length === 0 ? (
-              <p className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Nenhum resultado</p>
-            ) : (
-              filteredOptions.map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => handleSelect(opt)}
-                  className={`w-full text-left px-3 py-1.5 text-sm transition ${
-                    value?.id === opt.id
-                      ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200 font-medium'
-                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600'
-                  }`}
-                >
-                  <span className="truncate block">{opt.nome}</span>
-                  {opt.descricao && (
-                    <span className="text-xs text-slate-500 dark:text-slate-400 truncate block">
-                      {opt.descricao}
-                    </span>
-                  )}
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      )}
+      {typeof document !== 'undefined' && dropdownContent && createPortal(dropdownContent, document.body)}
     </div>
   );
 }

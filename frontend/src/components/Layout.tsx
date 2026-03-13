@@ -23,6 +23,13 @@ function MoonIcon() {
   );
 }
 
+const PCP_SUBMENUS: { to: string; label: string }[] = [
+  { to: '/pedidos', label: 'Gerenciador de Pedidos' },
+  { to: '/pedidos/sycroorder', label: 'SycroOrder' },
+  { to: '/pedidos/mrp', label: 'MRP' },
+  { to: '/pedidos/mpp', label: 'MPP' },
+];
+
 const COMPRAS_SUBMENUS: { to: string; label: string }[] = [
   { to: '/compras/dashboard', label: 'Dashboard' },
   { to: '/compras/coletas-precos', label: 'Coletas de Preços' },
@@ -43,7 +50,10 @@ const INTEGRACAO_SUBMENUS: { to: string; label: string }[] = [
 /** Rotas que podem ser abertas em abas (path → label). Usado na barra de abas. */
 const PATH_LABELS: Record<string, string> = {
   '/': 'Dashboard',
-  '/pedidos': 'Pedidos',
+  '/pedidos': 'Gerenciador de Pedidos',
+  '/pedidos/sycroorder': 'SycroOrder',
+  '/pedidos/mrp': 'MRP',
+  '/pedidos/mpp': 'MPP',
   '/heatmap': 'Heatmap',
   '/compras': 'Compras',
   '/compras/dashboard': 'Dashboard',
@@ -69,6 +79,8 @@ export default function Layout() {
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
   const { hasPermission, isMaster } = useAuth();
+  const [pcpOpen, setPcpOpen] = useState(false);
+  const pcpRef = useRef<HTMLDivElement>(null);
   const [comprasOpen, setComprasOpen] = useState(false);
   const comprasRef = useRef<HTMLDivElement>(null);
   const [integracaoOpen, setIntegracaoOpen] = useState(false);
@@ -78,6 +90,7 @@ export default function Layout() {
   const [financeiroOpen, setFinanceiroOpen] = useState(false);
   const financeiroRef = useRef<HTMLDivElement>(null);
 
+  const isPcpActive = location.pathname.startsWith('/pedidos');
   const isComprasActive = location.pathname.startsWith('/compras');
   const isIntegracaoActive = location.pathname.startsWith('/integracao');
   const isEngenhariaActive = location.pathname.startsWith('/engenharia');
@@ -165,6 +178,9 @@ export default function Layout() {
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
+      if (pcpRef.current && !pcpRef.current.contains(e.target as Node)) {
+        setPcpOpen(false);
+      }
       if (comprasRef.current && !comprasRef.current.contains(e.target as Node)) {
         setComprasOpen(false);
       }
@@ -213,18 +229,48 @@ export default function Layout() {
               </NavLink>
             )}
             {hasPermission(PERMISSOES.PEDIDOS_VER) && (
-              <NavLink
-                to="/pedidos"
-                className={({ isActive }) =>
-                  `px-4 py-2 rounded-lg text-sm font-medium transition ${
-                    isActive
+              <div className="relative" ref={pcpRef}>
+                <button
+                  type="button"
+                  onClick={() => setPcpOpen((v) => !v)}
+                  onMouseEnter={() => setPcpOpen(true)}
+                  className={`inline-flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium transition ${
+                    isPcpActive
                       ? 'bg-primary-600 text-white'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700/50'
-                  }`
-                }
-              >
-                Pedidos
-              </NavLink>
+                  }`}
+                  aria-expanded={pcpOpen}
+                  aria-haspopup="true"
+                >
+                  PCP
+                  <svg className="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {pcpOpen && (
+                  <div
+                    className="absolute left-0 top-full mt-1 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseLeave={() => setPcpOpen(false)}
+                  >
+                    {PCP_SUBMENUS.map((item) => (
+                      <NavLink
+                        key={item.to}
+                        to={item.to}
+                        onClick={() => setPcpOpen(false)}
+                        className={({ isActive }) =>
+                          `block px-4 py-2 text-sm transition ${
+                            isActive
+                              ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200 font-medium'
+                              : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                          }`
+                        }
+                      >
+                        {item.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
             {hasPermission(PERMISSOES.HEATMAP_VER) && (
               <NavLink

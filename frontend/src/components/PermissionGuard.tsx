@@ -6,6 +6,9 @@ import type { ReactNode } from 'react';
 const ROTA_PERMISSAO: Record<string, string> = {
   '/': PERMISSOES.DASHBOARD_VER,
   '/pedidos': PERMISSOES.PEDIDOS_VER,
+  '/pedidos/sycroorder': PERMISSOES.PEDIDOS_VER,
+  '/pedidos/mrp': PERMISSOES.PEDIDOS_VER,
+  '/pedidos/mpp': PERMISSOES.PEDIDOS_VER,
   '/heatmap': PERMISSOES.HEATMAP_VER,
   '/compras': PERMISSOES.COMPRAS_VER,
   '/compras/dashboard': PERMISSOES.COMPRAS_VER,
@@ -25,7 +28,7 @@ const ROTA_PERMISSAO: Record<string, string> = {
 /** Rotas que só o master pode acessar (menu já escondido para não-master). */
 const ROTAS_APENAS_MASTER = ['/situacao-api', '/whatsapp'];
 
-const ROTAS_ORDEM = ['/', '/pedidos', '/heatmap', '/compras', '/compras/dashboard', '/compras/coletas-precos', '/engenharia', '/engenharia/precificacao', '/financeiro', '/financeiro/resumo', '/relatorios', '/integracao', '/integracao/alteracao-data-entrega-compra', '/usuarios', '/situacao-api', '/whatsapp'];
+const ROTAS_ORDEM = ['/', '/pedidos', '/pedidos/sycroorder', '/pedidos/mrp', '/pedidos/mpp', '/heatmap', '/compras', '/compras/dashboard', '/compras/coletas-precos', '/engenharia', '/engenharia/precificacao', '/financeiro', '/financeiro/resumo', '/relatorios', '/integracao', '/integracao/alteracao-data-entrega-compra', '/usuarios', '/situacao-api', '/whatsapp'];
 
 function primeiraRotaPermitida(hasPermission: (codigo: string) => boolean): string | null {
   for (const path of ROTAS_ORDEM) {

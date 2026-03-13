@@ -48,7 +48,8 @@ const DEFAULT_COFINS = '7.60';
 /**
  * Preço Base = Preço NF c/ IPI / (1 + IPI%)
  * Descontos dos créditos = Preço Base × (PIS% + COFINS% + ICMS%)
- * Preço Total = Preço Base - Descontos dos créditos; depois aplica % de desconto.
+ * Preço após créditos e desconto = (Preço Base - Descontos dos créditos) × (1 - % desconto)
+ * Preço Total = Preço após créditos e desconto + frete (% sobre esse preço ou valor fixo em R$)
  */
 function precoTotal(preco: PrecosFornecedor): number {
   const precoNFcIPI = parseFloat(preco.precoNF) || 0;
@@ -61,7 +62,16 @@ function precoTotal(preco: PrecosFornecedor): number {
   const percTotal = pis / 100 + cofins / 100 + icms / 100;
   const descontosCreditos = base * percTotal;
   const totalAntesDesconto = base - descontosCreditos;
-  return totalAntesDesconto * (1 - desconto / 100);
+  const totalSemFrete = totalAntesDesconto * (1 - desconto / 100);
+  const valorFreteNum = parseFloat(String(preco.valorFrete || '').replace(',', '.')) || 0;
+  if (valorFreteNum <= 0) return totalSemFrete;
+  if (preco.valorFreteTipo === '%') {
+    return totalSemFrete * (1 + valorFreteNum / 100);
+  }
+  if (preco.valorFreteTipo === 'R$') {
+    return totalSemFrete + valorFreteNum;
+  }
+  return totalSemFrete;
 }
 
 export default function ModalCadastrarPrecos({

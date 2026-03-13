@@ -17,6 +17,9 @@ import ColetasPrecosPage from './pages/compras/ColetasPrecosPage';
 import ComprasDashboardPage from './pages/compras/ComprasDashboardPage';
 import PrecificacaoPage from './pages/PrecificacaoPage';
 import ResumoFinanceiroPage from './pages/financeiro/ResumoFinanceiroPage';
+import SycroOrderPage from './pages/pedidos/SycroOrderPage';
+import MRPPage from './pages/pedidos/MRPPage';
+import MPPPage from './pages/pedidos/MPPPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { getStoredToken } from './api/client';
 import { checkAuth } from './api/auth';
@@ -61,6 +64,9 @@ export default function App() {
         >
           <Route index element={<DashboardPage />} />
           <Route path="pedidos" element={<ErrorBoundary><PedidosPage /></ErrorBoundary>} />
+          <Route path="pedidos/sycroorder" element={<ErrorBoundary><SycroOrderPage /></ErrorBoundary>} />
+          <Route path="pedidos/mrp" element={<ErrorBoundary><MRPPage /></ErrorBoundary>} />
+          <Route path="pedidos/mpp" element={<ErrorBoundary><MPPPage /></ErrorBoundary>} />
           <Route path="heatmap" element={<HeatmapPage />} />
           <Route path="compras" element={<ComprasPage />} />
           <Route path="compras/dashboard" element={<ComprasDashboardPage />} />
