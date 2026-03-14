@@ -1,32 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getMpp, type MppRow } from '../../api/mpp';
 
-const COLUNAS: { key: string; label: string; integer?: boolean; decimal?: number }[] = [
-  { key: 'idChave', label: 'Chave' },
+const COLUNAS: { key: string; label: string; integer?: boolean; decimal?: number; lastColumn?: boolean }[] = [
   { key: 'Codigo_pedido', label: 'Código pedido' },
   { key: 'Codigo_produto', label: 'Código produto' },
-  { key: 'DataEmissao', label: 'Data Emissão' },
-  { key: 'Quantidade', label: 'Quantidade', integer: true },
-  { key: 'Valor total com desconto', label: 'Valor total c/ desconto', decimal: 2 },
-  { key: 'StatusPedido', label: 'Status' },
-  { key: 'REQUISITADO', label: 'Requisitado' },
-  { key: 'MetodoEntrega', label: 'Método entrega' },
-  { key: 'Cliente', label: 'Cliente' },
-  { key: 'UF', label: 'UF' },
-  { key: 'Municipios', label: 'Municípios' },
-  { key: 'Regiao', label: 'Região' },
-  { key: 'Codigo romaneio', label: 'Cód. romaneio' },
-  { key: 'Rota', label: 'Rota' },
-  { key: 'OBS_Romaneio', label: 'OBS Romaneio' },
-  { key: 'Retirada_loja_fabrica', label: 'Retirada loja/fábrica' },
-  { key: 'Segmentacao_carradas', label: 'Segmentação' },
-  { key: 'dataEntrega', label: 'Data entrega' },
   { key: 'codigoComponente', label: 'Cód. componente' },
   { key: 'componente', label: 'Componente' },
   { key: 'unidademedida', label: 'UM' },
-  { key: 'qtd', label: 'Qtd', integer: true },
-  { key: 'qtdTotalComponente', label: 'Qtd total componente', integer: true },
-  { key: 'dataPrevisao', label: 'Data Previsão' },
+  { key: 'qtdTotalComponente', label: 'Qtd total componente', decimal: 3 },
+  { key: 'qtd', label: 'Qtd', decimal: 3 },
+  { key: 'qtdAcumulado', label: 'Quantidade acumulado', decimal: 3 },
+  { key: 'dataPrevisao', label: 'Data de Previsão', lastColumn: true },
 ];
 
 function formatCell(val: unknown, opts?: { integer?: boolean; decimal?: number }): string {
@@ -51,20 +35,46 @@ function formatCell(val: unknown, opts?: { integer?: boolean; decimal?: number }
   return s;
 }
 
+const PAGE_SIZE = 200;
+
+/** Cache da última carga: ao voltar na aba, restaura sem nova requisição. Só recarrega ao clicar em Atualizar. */
+let mppCache: { data: MppRow[]; page: number; total?: number; hasMore: boolean } | null = null;
+
 export default function MPPPage() {
-  const [data, setData] = useState<MppRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<MppRow[]>(() => mppCache?.data ?? []);
+  const [page, setPage] = useState(() => mppCache?.page ?? 1);
+  const [total, setTotal] = useState<number | undefined>(() => mppCache?.total);
+  const [hasMore, setHasMore] = useState(() => mppCache?.hasMore ?? false);
+  const [loading, setLoading] = useState(() => !mppCache);
   const [erro, setErro] = useState<string | null>(null);
   const [filterCodigoPedido, setFilterCodigoPedido] = useState('');
   const [filterCliente, setFilterCliente] = useState('');
   const [filterSegmentacao, setFilterSegmentacao] = useState('');
+  const [filterCodigoComponente, setFilterCodigoComponente] = useState('');
+  const [filterComponente, setFilterComponente] = useState('');
+  const [apenasComPrevisao, setApenasComPrevisao] = useState(false);
 
-  const carregar = useCallback(async () => {
+  const getFiltros = () => ({
+    codigo_pedido: filterCodigoPedido.trim() || undefined,
+    cliente: filterCliente.trim() || undefined,
+    segmentacao: filterSegmentacao.trim() || undefined,
+    codigo_componente: filterCodigoComponente.trim() || undefined,
+    componente: filterComponente.trim() || undefined,
+    apenas_com_previsao: apenasComPrevisao || undefined,
+  });
+
+  const carregar = useCallback(async (pagina: number, filtros?: { codigo_pedido?: string; cliente?: string; segmentacao?: string; codigo_componente?: string; componente?: string; apenas_com_previsao?: boolean }) => {
     setLoading(true);
     setErro(null);
+    const f = filtros ?? getFiltros();
     try {
-      const res = await getMpp();
-      setData(Array.isArray(res.data) ? res.data : []);
+      const res = await getMpp({ page: pagina, pageSize: PAGE_SIZE, ...f });
+      const newData = Array.isArray(res.data) ? res.data : [];
+      setData(newData);
+      setHasMore(res.hasMore ?? false);
+      setTotal(res.total);
+      setPage(res.page ?? pagina);
+      mppCache = { data: newData, page: res.page ?? pagina, total: res.total, hasMore: res.hasMore ?? false };
     } catch (e) {
       setData([]);
       setErro(e instanceof Error ? e.message : 'Erro ao carregar MPP.');
@@ -74,26 +84,45 @@ export default function MPPPage() {
   }, []);
 
   useEffect(() => {
-    carregar();
-  }, [carregar]);
+    if (mppCache) {
+      setData(mppCache.data);
+      setPage(mppCache.page);
+      setTotal(mppCache.total);
+      setHasMore(mppCache.hasMore);
+      setLoading(false);
+    } else {
+      carregar(1, getFiltros());
+    }
+  }, []);
 
-  const filteredData = data.filter((row) => {
-    const codPed = (row.Codigo_pedido ?? '').toString().toLowerCase();
-    const cliente = (row.Cliente ?? '').toString().toLowerCase();
-    const seg = (row.Segmentacao_carradas ?? '').toString().toLowerCase();
-    if (filterCodigoPedido.trim() && !codPed.includes(filterCodigoPedido.trim().toLowerCase())) return false;
-    if (filterCliente.trim() && !cliente.includes(filterCliente.trim().toLowerCase())) return false;
-    if (filterSegmentacao.trim() && !seg.includes(filterSegmentacao.trim().toLowerCase())) return false;
-    return true;
-  });
+  const irParaPagina = (novaPagina: number) => {
+    if (novaPagina < 1) return;
+    setPage(novaPagina);
+    carregar(novaPagina, getFiltros());
+  };
+
+  const aplicarFiltros = () => {
+    setPage(1);
+    carregar(1, getFiltros());
+  };
 
   const temFiltros =
-    filterCodigoPedido.trim() !== '' || filterCliente.trim() !== '' || filterSegmentacao.trim() !== '';
+    filterCodigoPedido.trim() !== '' ||
+    filterCliente.trim() !== '' ||
+    filterSegmentacao.trim() !== '' ||
+    filterCodigoComponente.trim() !== '' ||
+    filterComponente.trim() !== '' ||
+    apenasComPrevisao;
 
   const limparFiltros = () => {
     setFilterCodigoPedido('');
     setFilterCliente('');
     setFilterSegmentacao('');
+    setFilterCodigoComponente('');
+    setFilterComponente('');
+    setApenasComPrevisao(false);
+    setPage(1);
+    carregar(1, {});
   };
 
   if (loading) {
@@ -127,7 +156,7 @@ export default function MPPPage() {
           <p className="text-amber-800 dark:text-amber-200">{erro}</p>
           <button
             type="button"
-            onClick={carregar}
+            onClick={() => irParaPagina(1)}
             className="mt-3 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
           >
             Tentar novamente
@@ -141,13 +170,37 @@ export default function MPPPage() {
     <div className="p-6">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-200">MPP</h1>
-        <button
-          type="button"
-          onClick={carregar}
-          className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
-        >
-          Atualizar
-        </button>
+        <div className="flex items-center gap-3">
+          <nav className="flex items-center gap-2" aria-label="Paginação">
+            <button
+              type="button"
+              onClick={() => irParaPagina(page - 1)}
+              disabled={page <= 1 || loading}
+              className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Anterior
+            </button>
+            <span className="text-sm text-slate-600 dark:text-slate-400 min-w-[100px] text-center">
+              Página {page}
+            </span>
+            <button
+              type="button"
+              onClick={() => irParaPagina(page + 1)}
+              disabled={!hasMore || loading}
+              className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Próxima
+            </button>
+          </nav>
+          <button
+            type="button"
+            onClick={() => irParaPagina(1)}
+            disabled={loading}
+            className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50"
+          >
+            Atualizar
+          </button>
+        </div>
       </div>
 
       <div className="mb-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 p-4">
@@ -182,6 +235,43 @@ export default function MPPPage() {
               className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             />
           </label>
+          <label className="flex flex-col gap-1 min-w-[140px]">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Cód. componente</span>
+            <input
+              type="text"
+              placeholder="Filtrar..."
+              value={filterCodigoComponente}
+              onChange={(e) => setFilterCodigoComponente(e.target.value)}
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </label>
+          <label className="flex flex-col gap-1 min-w-[180px]">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Descrição componente</span>
+            <input
+              type="text"
+              placeholder="Filtrar..."
+              value={filterComponente}
+              onChange={(e) => setFilterComponente(e.target.value)}
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={apenasComPrevisao}
+              onChange={(e) => setApenasComPrevisao(e.target.checked)}
+              className="rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+            />
+            <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Apenas com Data de Previsão</span>
+          </label>
+          <button
+            type="button"
+            onClick={aplicarFiltros}
+            className="text-sm px-3 py-2 rounded-lg bg-primary-600 text-white hover:bg-primary-700"
+            title="Pesquisar em todas as páginas"
+          >
+            Filtrar
+          </button>
           {temFiltros && (
             <button
               type="button"
@@ -193,11 +283,13 @@ export default function MPPPage() {
             </button>
           )}
         </div>
-        {temFiltros && (
-          <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-            Exibindo {filteredData.length} de {data.length} registro(s)
-          </p>
-        )}
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          {typeof total === 'number'
+            ? `${data.length} de ${total} registro(s) nesta página${hasMore ? ' — use Anterior/Próxima para mais' : ''}`
+            : temFiltros
+              ? 'Filtros aplicados. Use Anterior/Próxima para navegar.'
+              : `${data.length} registro(s) nesta página${hasMore ? ' — use Anterior/Próxima para mais' : ''}`}
+        </p>
       </div>
 
       <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden shadow-sm">
@@ -206,30 +298,36 @@ export default function MPPPage() {
             <thead className="bg-primary-600 text-white">
               <tr>
                 {COLUNAS.map((col) => (
-                  <th key={col.key} className="py-3 px-4 font-semibold whitespace-nowrap">
+                  <th
+                    key={col.key}
+                    className={`py-3 px-4 font-semibold whitespace-nowrap ${col.lastColumn ? 'sticky right-0 bg-primary-600 shadow-[-4px_0_8px_rgba(0,0,0,0.15)]' : ''}`}
+                  >
                     {col.label}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody className="text-slate-700 dark:text-slate-200 divide-y divide-slate-200 dark:divide-slate-600">
-              {filteredData.length === 0 ? (
+              {data.length === 0 ? (
                 <tr>
                   <td colSpan={COLUNAS.length} className="py-8 px-4 text-center text-slate-500 dark:text-slate-400">
-                    {data.length === 0
-                      ? 'Nenhum registro encontrado.'
-                      : 'Nenhum registro encontrado com os filtros aplicados.'}
+                    {temFiltros
+                      ? 'Nenhum registro encontrado com os filtros aplicados.'
+                      : 'Nenhum registro encontrado.'}
                   </td>
                 </tr>
               ) : (
-                filteredData.map((row, idx) => (
-                  <tr key={(row.idChave ?? idx) as string} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
+                data.map((row, idx) => (
+                  <tr key={(row.idChave ?? row.idchave ?? idx) as string} className="group hover:bg-slate-50 dark:hover:bg-slate-700/50">
                     {COLUNAS.map((col) => (
-                      <td key={col.key} className="py-2 px-4">
-                        {formatCell(row[col.key], {
-                          integer: col.integer,
-                          decimal: col.decimal,
-                        })}
+                      <td
+                        key={col.key}
+                        className={`py-2 px-4 ${col.lastColumn ? 'sticky right-0 bg-white dark:bg-slate-800 shadow-[-4px_0_8px_rgba(0,0,0,0.08)] group-hover:bg-slate-50 dark:group-hover:bg-slate-700/50' : ''}`}
+                      >
+                        {formatCell(
+                          col.key === 'dataPrevisao' ? (row.dataPrevisao ?? row.DataPrevisao) : col.key === 'qtdAcumulado' ? row.qtdAcumulado : row[col.key],
+                          { integer: col.integer, decimal: col.decimal }
+                        )}
                       </td>
                     ))}
                   </tr>

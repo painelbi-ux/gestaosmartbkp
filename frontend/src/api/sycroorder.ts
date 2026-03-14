@@ -41,17 +41,24 @@ export interface SycroOrderPedidoErp {
   cliente: string | null;
   dataEmissao: string;
   dataEntregaPadrao: string | null;
+  /** Data original de entrega do pedido (Gerenciador de Pedidos). */
+  dataOriginalEntrega: string | null;
+  /** Rota / forma de entrega (Observacoes no Gerenciador). */
+  rota: string | null;
 }
 
 export async function getSycroOrderPedidosErp(filtros?: {
   cliente?: string;
   data_emissao_ini?: string;
   data_emissao_fim?: string;
+  /** Busca por número do pedido (ex.: PD 47015); traz também pedidos em cargas de anos anteriores. */
+  nome?: string;
 }): Promise<SycroOrderPedidoErp[]> {
   const params = new URLSearchParams();
   if (filtros?.cliente) params.set('cliente', filtros.cliente);
   if (filtros?.data_emissao_ini) params.set('data_emissao_ini', filtros.data_emissao_ini);
   if (filtros?.data_emissao_fim) params.set('data_emissao_fim', filtros.data_emissao_fim);
+  if (filtros?.nome?.trim()) params.set('nome', filtros.nome.trim());
   const qs = params.toString();
   return apiJson<SycroOrderPedidoErp[]>(`/api/sycroorder/pedidos-erp${qs ? `?${qs}` : ''}`);
 }

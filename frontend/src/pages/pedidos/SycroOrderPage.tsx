@@ -10,6 +10,7 @@ import {
   type SycroOrderOrder as Order,
   type SycroOrderHistoryItem,
   type SycroOrderNotification,
+  type SycroOrderPedidoErp,
 } from '../../api/sycroorder';
 import SingleSelectWithSearch, { type OptionItem } from '../../components/SingleSelectWithSearch';
 
@@ -430,14 +431,18 @@ function ModalNovoPedido({
   saving: boolean;
   setSaving: (v: boolean) => void;
 }) {
+  const [pedidosErpList, setPedidosErpList] = useState<SycroOrderPedidoErp[]>([]);
   const [pedidosErpOptions, setPedidosErpOptions] = useState<OptionItem[]>([]);
   const [selectedPedido, setSelectedPedido] = useState<OptionItem | null>(null);
   const [loadingPedidos, setLoadingPedidos] = useState(false);
+  const [searchPedidoLoading, setSearchPedidoLoading] = useState(false);
   const [delivery_method, setDelivery_method] = useState('');
   const [promised_date, setPromised_date] = useState('');
   const [observation, setObservation] = useState('');
   const [is_urgent, setIs_urgent] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+
+  const selectedPedidoFull = selectedPedido ? pedidosErpList.find((p) => p.id === selectedPedido.id) : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -445,6 +450,7 @@ function ModalNovoPedido({
     getSycroOrderPedidosErp()
       .then((list) => {
         if (cancelled) return;
+        setPedidosErpList(list);
         const opts: OptionItem[] = list.map((p) => ({
           id: p.id,
           nome: p.nome,
@@ -453,6 +459,7 @@ function ModalNovoPedido({
         setPedidosErpOptions(opts);
       })
       .catch(() => {
+        if (!cancelled) setPedidosErpList([]);
         if (!cancelled) setPedidosErpOptions([]);
       })
       .finally(() => {
@@ -460,6 +467,43 @@ function ModalNovoPedido({
       });
     return () => { cancelled = true; };
   }, []);
+
+  const handleSearchPedido = useCallback((term: string) => {
+    const t = term.trim();
+    if (!t) {
+      setSearchPedidoLoading(false);
+      getSycroOrderPedidosErp().then((list) => {
+        setPedidosErpList(list);
+        setPedidosErpOptions(list.map((p) => ({
+          id: p.id,
+          nome: p.nome,
+          descricao: `Cliente: ${p.cliente ?? '—'} — Emissão: ${formatDate(p.dataEmissao)}`,
+        })));
+      }).catch(() => {});
+      return;
+    }
+    setSearchPedidoLoading(true);
+    getSycroOrderPedidosErp({ nome: t })
+      .then((list) => {
+        setPedidosErpList(list);
+        setPedidosErpOptions(list.map((p) => ({
+          id: p.id,
+          nome: p.nome,
+          descricao: `Cliente: ${p.cliente ?? '—'} — Emissão: ${formatDate(p.dataEmissao)}`,
+        })));
+      })
+      .catch(() => {
+        setPedidosErpList([]);
+        setPedidosErpOptions([]);
+      })
+      .finally(() => setSearchPedidoLoading(false));
+  }, []);
+
+  const handleSelectPedido = (value: OptionItem | null) => {
+    setSelectedPedido(value);
+    const pedido = value ? pedidosErpList.find((p) => p.id === value.id) : null;
+    setDelivery_method(pedido?.rota ?? '');
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -499,17 +543,40 @@ function ModalNovoPedido({
               placeholder="Pesquisar e selecionar pedido (ERP)..."
               options={pedidosErpOptions}
               value={selectedPedido}
-              onChange={setSelectedPedido}
+              onChange={handleSelectPedido}
+              onSearchChange={handleSearchPedido}
+              searchLoading={searchPedidoLoading}
               labelClass="sr-only"
               inputClass="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm"
               listMaxHeight="180px"
               clearable
             />
-            {loadingPedidos && <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Carregando pedidos do ERP...</p>}
+            {(loadingPedidos || searchPedidoLoading) && (
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                {loadingPedidos ? 'Carregando pedidos do ERP...' : 'Buscando...'}
+              </p>
+            )}
           </div>
+          {selectedPedidoFull && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Data Original de Entrega</label>
+              <p className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 text-sm">
+                {selectedPedidoFull.dataOriginalEntrega ? formatDate(selectedPedidoFull.dataOriginalEntrega) : '—'}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Conforme Gerenciador de Pedidos</p>
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Forma de entrega *</label>
-            <input type="text" value={delivery_method} onChange={(e) => setDelivery_method(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" required />
+            <input
+              type="text"
+              value={delivery_method}
+              onChange={(e) => setDelivery_method(e.target.value)}
+              placeholder="Preenchido pela rota do pedido ao selecionar"
+              disabled={!!selectedPedidoFull}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 disabled:opacity-80 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800/70"
+              required
+            />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Data prometida *</label>

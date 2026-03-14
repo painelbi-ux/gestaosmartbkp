@@ -24,19 +24,52 @@ async function getUsuarioAtual(login: string) {
   return u;
 }
 
-/** Lista pedidos do ERP (Nomus) para o dropdown do Novo Pedido — filtros como no Gestor de Pedidos */
+/** Lista pedidos do ERP (Nomus) para o dropdown do Novo Pedido. Rota = mesma regra do Gerenciador (Observacoes): com romaneio usa de.observacoes; sem romaneio usa Método de entrega (591) e demais condições. */
 const SQL_PEDIDOS_ERP = `
-  SELECT p.id, p.nome, pe.nome AS cliente, p.dataEmissao, p.dataEntregaPadrao
+  SELECT
+    p.id,
+    p.nome,
+    pe.nome AS cliente,
+    p.dataEmissao,
+    p.dataEntregaPadrao,
+    (SELECT MIN(ip.dataEntrega) FROM itempedido ip WHERE ip.idPedido = p.id) AS dataOriginalEntrega,
+    (SELECT CASE
+       WHEN (de.observacoes IS NULL AND me.opcao = 'Retirada na Só Móveis') THEN '2-Retirada na So Moveis'
+       WHEN (de.observacoes IS NULL AND me.opcao = 'Retirada na Só Aço') THEN '1-Retirada na So Aço'
+       WHEN (de.observacoes IS NULL AND IFNULL(m.nome, mc.nome) = 'Teresina' AND aloreq.opcao = 'Sim') THEN '5-Requisicao'
+       WHEN (de.observacoes IS NULL AND (IFNULL(m.nome, mc.nome) IN ('Timon', 'Teresina', 'Nazaria', 'Demerval Lobão', 'Curralinhos')) AND (aloreq.opcao = 'Não' OR aloreq.opcao IS NULL)) THEN '3-Entrega em Grande Teresina'
+       WHEN (de.observacoes IS NULL) THEN '4-Inserir em Romaneio'
+       ELSE de.observacoes
+     END
+     FROM itempedido ip
+     LEFT JOIN itempedidoromaneio prm ON prm.idItemPedido = ip.id
+     LEFT JOIN documentoestoque de ON de.id = prm.idRomaneio
+     LEFT JOIN atributopedidovalor apv_me ON apv_me.idPedido = p.id AND apv_me.idAtributo = 591
+     LEFT JOIN atributolistaopcao me ON me.id = apv_me.idListaOpcao
+     LEFT JOIN atributopedidovalor apv_req ON apv_req.idPedido = p.id AND apv_req.idAtributo = 313
+     LEFT JOIN atributolistaopcao aloreq ON aloreq.id = apv_req.idListaOpcao
+     LEFT JOIN pessoa pe2 ON pe2.id = p.idCliente
+     LEFT JOIN municipio mc ON mc.id = pe2.idMunicipio
+     LEFT JOIN endereco ed ON ed.id = p.idEnderecoLocalEntrega
+     LEFT JOIN municipio m ON m.id = ed.idMunicipio
+     WHERE ip.idPedido = p.id
+     LIMIT 1) AS rota
   FROM pedido p
   LEFT JOIN pessoa pe ON pe.id = p.idCliente
   WHERE p.idEmpresa = 1 AND p.dataEmissao >= '2025-01-01'
 `;
 
-/** GET /api/sycroorder/pedidos-erp — lista pedidos do ERP para seleção (filtros: cliente, data_emissao_ini, data_emissao_fim) */
+const PEDIDOS_ERP_DEFAULT_LIMIT = 2000;
+const PEDIDOS_ERP_SEARCH_LIMIT = 200;
+/** Data mínima quando busca por nome (inclui pedidos em cargas de anos anteriores). */
+const PEDIDOS_ERP_SEARCH_DATA_MIN = '2023-01-01';
+
+/** GET /api/sycroorder/pedidos-erp — lista pedidos do ERP para seleção (filtros: cliente, data_emissao_ini, data_emissao_fim, nome para busca por número) */
 export async function getPedidosErp(req: Request, res: Response): Promise<void> {
   const cliente = typeof req.query.cliente === 'string' ? req.query.cliente.trim() : '';
   const dataEmissaoIni = typeof req.query.data_emissao_ini === 'string' ? req.query.data_emissao_ini.trim() : '';
   const dataEmissaoFim = typeof req.query.data_emissao_fim === 'string' ? req.query.data_emissao_fim.trim() : '';
+  const nome = typeof req.query.nome === 'string' ? req.query.nome.trim() : '';
 
   const pool = getNomusPool();
   if (!pool || !isNomusEnabled()) {
@@ -59,8 +92,15 @@ export async function getPedidosErp(req: Request, res: Response): Promise<void> 
       conditions.push(' p.dataEmissao <= ? ');
       params.push(dataEmissaoFim);
     }
+    if (nome) {
+      conditions.push(' (p.nome LIKE ? OR p.nome = ?) ');
+      params.push(`%${nome}%`, nome);
+    }
     const whereExtra = conditions.length ? ' AND ' + conditions.join(' AND ') : '';
-    const sql = SQL_PEDIDOS_ERP.trim() + whereExtra + ' ORDER BY p.dataEmissao DESC, p.id DESC LIMIT 500';
+    const dataMin = nome ? PEDIDOS_ERP_SEARCH_DATA_MIN : '2025-01-01';
+    const baseWhere = ` WHERE p.idEmpresa = 1 AND p.dataEmissao >= '${dataMin}'`;
+    const limit = nome ? PEDIDOS_ERP_SEARCH_LIMIT : PEDIDOS_ERP_DEFAULT_LIMIT;
+    const sql = SQL_PEDIDOS_ERP.trim().replace(' WHERE p.idEmpresa = 1 AND p.dataEmissao >= \'2025-01-01\'', baseWhere) + whereExtra + ` ORDER BY p.dataEmissao DESC, p.id DESC LIMIT ${limit}`;
     const [rows] = await pool.query(sql, params);
     const list = (Array.isArray(rows) ? rows : []) as Array<{
       id: number;
@@ -68,15 +108,22 @@ export async function getPedidosErp(req: Request, res: Response): Promise<void> 
       cliente: string | null;
       dataEmissao: Date | string;
       dataEntregaPadrao: Date | string | null;
+      dataOriginalEntrega: Date | string | null;
+      rota: string | null;
     }>;
+    const toDateStr = (v: Date | string | null | undefined): string | null => {
+      if (v == null) return null;
+      const s = v instanceof Date ? v.toISOString().slice(0, 10) : String(v).trim().slice(0, 10);
+      return s || null;
+    };
     const data = list.map((r) => ({
       id: Number(r.id),
       nome: String(r.nome ?? ''),
       cliente: r.cliente != null ? String(r.cliente) : null,
       dataEmissao: r.dataEmissao instanceof Date ? r.dataEmissao.toISOString().slice(0, 10) : String(r.dataEmissao ?? '').slice(0, 10),
-      dataEntregaPadrao: r.dataEntregaPadrao != null
-        ? (r.dataEntregaPadrao instanceof Date ? r.dataEntregaPadrao.toISOString().slice(0, 10) : String(r.dataEntregaPadrao).slice(0, 10))
-        : null,
+      dataEntregaPadrao: toDateStr(r.dataEntregaPadrao),
+      dataOriginalEntrega: toDateStr(r.dataOriginalEntrega),
+      rota: r.rota != null && String(r.rota).trim() !== '' ? String(r.rota).trim() : null,
     }));
     res.json(data);
   } catch (e) {
