@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getStatus, sincronizar, formatarDataHora, type StatusResponse } from '../api/status';
+import { useOnSincronizado } from '../hooks/useOnSincronizado';
 import { useAuth } from '../contexts/AuthContext';
 import { PERMISSOES } from '../config/permissoes';
 
@@ -44,6 +45,8 @@ export default function StatusApiPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useOnSincronizado(load);
 
   const handleSincronizar = async () => {
     setSyncError(null);

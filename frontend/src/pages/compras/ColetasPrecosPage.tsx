@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useOnSincronizado } from '../../hooks/useOnSincronizado';
 import { useAuth } from '../../contexts/AuthContext';
 import { PERMISSOES } from '../../config/permissoes';
 import ModalCriarColetaPrecos from '../../components/compras/ModalCriarColetaPrecos';
@@ -161,6 +162,8 @@ export default function ColetasPrecosPage() {
   useEffect(() => {
     carregarColetas();
   }, [carregarColetas]);
+
+  useOnSincronizado(carregarColetas);
 
   useEffect(() => {
     obterOpcoesFiltroColetas()

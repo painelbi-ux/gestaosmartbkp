@@ -307,6 +307,8 @@ export interface PrecosColetaDebug {
   nomusErro?: string;
 }
 
+const PRECOS_COLETA_TIMEOUT_MS = 25000;
+
 export async function listarPrecosColeta(coletaId: number): Promise<{
   data: Record<string, unknown>[];
   solicitacoesPorProduto?: Record<number, number[]>;
@@ -314,7 +316,19 @@ export async function listarPrecosColeta(coletaId: number): Promise<{
   error?: string;
   debug?: PrecosColetaDebug;
 }> {
-  const res = await apiFetch(`/api/compras/coletas/${coletaId}/precos`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PRECOS_COLETA_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await apiFetch(`/api/compras/coletas/${coletaId}/precos`, { signal: controller.signal });
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e instanceof Error && e.name === 'AbortError') {
+      throw new Error('A requisição demorou muito. Tente novamente ou verifique a conexão com o ERP (Nomus).');
+    }
+    throw e;
+  }
+  clearTimeout(timeoutId);
   const text = await res.text();
   let body: { data?: Record<string, unknown>[]; solicitacoesPorProduto?: Record<number, number[]>; message?: string; error?: string; debug?: PrecosColetaDebug } = {};
   if (text) {

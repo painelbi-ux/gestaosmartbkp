@@ -1161,6 +1161,13 @@ export async function getPrecosColeta(req: Request, res: Response): Promise<void
     const rawRows = Array.isArray(rows) ? rows : [];
     debug.registrosSalvos = rawRows.length;
 
+    const keyRegistro = (r: Record<string, unknown>) => {
+      const pid = Number(r.idProduto ?? r.idproduto ?? 0);
+      const sid = r.idSolicitacao != null ? Number(r.idSolicitacao) : null;
+      return `${pid}-${sid ?? 'n'}`;
+    };
+    const setRegistrosExistentes = new Set(rawRows.map((r) => keyRegistro(r as Record<string, unknown>)));
+
     for (const r of rawRows) {
       const row = r as Record<string, unknown>;
       const dadosStr = String(row.dados ?? row.Dados ?? '');
@@ -1182,24 +1189,105 @@ export async function getPrecosColeta(req: Request, res: Response): Promise<void
       }
     }
 
+    const itensDb = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+      'SELECT idProduto, idSolicitacao FROM coleta_precos_item WHERE coletaPrecosId = ? ORDER BY id',
+      id
+    );
+    const todosItens = (Array.isArray(itensDb) ? itensDb : [])
+      .map((i) => ({
+        idProduto: Number(i.idProduto ?? i.idproduto ?? 0),
+        idSolicitacao: i.idSolicitacao != null ? Number(i.idSolicitacao) : null,
+      }))
+      .filter((n) => n.idProduto > 0);
+    debug.itensNaColeta = todosItens.length;
+
+    const itensSemRegistro = todosItens.filter(
+      (i) => !setRegistrosExistentes.has(`${i.idProduto}-${i.idSolicitacao ?? 'n'}`)
+    );
+    const NOMUS_FILL_TIMEOUT_MS = 15000;
+    if (itensSemRegistro.length > 0) {
+      let nomusRows: Record<string, unknown>[] = [];
+      let erroNomus: string | undefined;
+      try {
+        const nomusPromise = buscarRegistroColetaNomus(itensSemRegistro);
+        const timeoutPromise = new Promise<{ rows: Record<string, unknown>[]; erro?: string }>((_, rej) => {
+          setTimeout(() => rej(new Error('Timeout ao buscar dados do ERP (Nomus)')), NOMUS_FILL_TIMEOUT_MS);
+        });
+        const result = await Promise.race([nomusPromise, timeoutPromise]);
+        nomusRows = result.rows ?? [];
+        erroNomus = result.erro;
+      } catch (err) {
+        erroNomus = err instanceof Error ? err.message : 'Erro ao buscar itens faltantes no ERP';
+        console.warn('[comprasController] getPrecosColeta preencher itens sem registro:', erroNomus);
+      }
+      if (erroNomus) debug.nomusErro = erroNomus;
+      if (nomusRows.length > 0) {
+        const keyIdProduto = (r: Record<string, unknown>) => {
+          const k = Object.keys(r).find((key) => /^id\s*produto$/i.test(key.trim()));
+          return k ? r[k] : r['Id Produto'] ?? r['id produto'] ?? r.idProduto;
+        };
+        const values = (nomusRows as Record<string, unknown>[]).map((r, idx) => {
+          const plain = { ...r };
+          const idProduto = Number(keyIdProduto(plain) ?? 0);
+          const idSolicitacao = idx < itensSemRegistro.length ? itensSemRegistro[idx].idSolicitacao : null;
+          return { coletaPrecosId: id, idProduto, idSolicitacao, dados: JSON.stringify(plain), qtdeAprovada: null, idFornecedorVencedor: null };
+        }).filter((v) => v.idProduto > 0);
+        if (values.length > 0) {
+          const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+          const params = values.flatMap((v) => [v.coletaPrecosId, v.idProduto, v.idSolicitacao ?? null, v.dados, v.qtdeAprovada, v.idFornecedorVencedor]);
+          await prisma.$executeRawUnsafe(
+            `INSERT INTO coleta_precos_registro (coletaPrecosId, idProduto, idSolicitacao, dados, qtdeAprovada, idFornecedorVencedor) VALUES ${placeholders}`,
+            ...params
+          );
+          const rowsAfter = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+            'SELECT id, coletaPrecosId, idProduto, idSolicitacao, dados, qtdeAprovada, idFornecedorVencedor FROM coleta_precos_registro WHERE coletaPrecosId = ? ORDER BY id',
+            id
+          );
+          data = [];
+          for (const r of Array.isArray(rowsAfter) ? rowsAfter : []) {
+            const row = r as Record<string, unknown>;
+            const dadosStr = String(row.dados ?? row.Dados ?? '');
+            const registroId = Number(row.id ?? row.Id ?? 0);
+            const qtdeAprovadaVal = row.qtdeAprovada != null ? Number(row.qtdeAprovada) : (row.qtdeaprovada != null ? Number(row.qtdeaprovada) : null);
+            const idFornecedorVencedorVal = row.idFornecedorVencedor != null ? Number(row.idFornecedorVencedor) : (row.idfornecedorvencedor != null ? Number(row.idfornecedorvencedor) : null);
+            try {
+              const parsed = JSON.parse(dadosStr || '{}');
+              if (parsed !== null && typeof parsed === 'object') {
+                const obj = parsed as Record<string, unknown>;
+                obj['_registroId'] = registroId;
+                obj['Qtde Aprovada'] = qtdeAprovadaVal;
+                obj['Id Fornecedor Vencedor'] = idFornecedorVencedorVal;
+                data.push(obj);
+              }
+            } catch {
+              const idProduto = Number(row.idProduto ?? row.idproduto ?? 0);
+              data.push({ 'Id Produto': idProduto, dados: dadosStr.slice(0, 100), _registroId: registroId, 'Qtde Aprovada': qtdeAprovadaVal, 'Id Fornecedor Vencedor': idFornecedorVencedorVal });
+            }
+          }
+          debug.registrosSalvos = data.length;
+        }
+      }
+    }
+
     let message: string | undefined;
     if (data.length === 0) {
-      const itensDb = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
-        'SELECT idProduto, idSolicitacao FROM coleta_precos_item WHERE coletaPrecosId = ? ORDER BY id',
-        id
-      );
-      const itensNomus = (Array.isArray(itensDb) ? itensDb : [])
-        .map((i) => ({
-          idProduto: Number(i.idProduto ?? i.idproduto ?? 0),
-          idSolicitacao: i.idSolicitacao != null ? Number(i.idSolicitacao) : null,
-        }))
-        .filter((n) => n.idProduto > 0);
-      debug.itensNaColeta = itensNomus.length;
-
-      if (itensNomus.length === 0) {
+      if (todosItens.length === 0) {
         message = 'Esta coleta não possui produtos cadastrados. Adicione produtos ao criar a coleta.';
       } else {
-        const { rows: nomusRows, erro: erroNomus } = await buscarRegistroColetaNomus(itensNomus);
+        let nomusRows: Record<string, unknown>[] = [];
+        let erroNomus: string | undefined;
+        try {
+          const nomusPromise = buscarRegistroColetaNomus(todosItens);
+          const timeoutPromise = new Promise<{ rows: Record<string, unknown>[]; erro?: string }>((_, rej) => {
+            setTimeout(() => rej(new Error('Timeout ao buscar dados do ERP (Nomus)')), NOMUS_FILL_TIMEOUT_MS);
+          });
+          const result = await Promise.race([nomusPromise, timeoutPromise]);
+          nomusRows = result.rows ?? [];
+          erroNomus = result.erro;
+        } catch (err) {
+          erroNomus = err instanceof Error ? err.message : 'Erro ao buscar dados no ERP';
+          console.warn('[comprasController] getPrecosColeta fallback Nomus:', erroNomus);
+        }
         if (erroNomus) debug.nomusErro = erroNomus;
         if (nomusRows.length > 0) {
           data = nomusRows as Record<string, unknown>[];
@@ -1212,7 +1300,7 @@ export async function getPrecosColeta(req: Request, res: Response): Promise<void
               const plain = { ...r };
               const raw = keyIdProduto(plain);
               const idProduto = Number(raw ?? 0);
-              const idSolicitacao = idx < itensNomus.length ? itensNomus[idx].idSolicitacao : null;
+              const idSolicitacao = idx < todosItens.length ? todosItens[idx].idSolicitacao : null;
               return { coletaPrecosId: id, idProduto, idSolicitacao, dados: JSON.stringify(plain), qtdeAprovada: null, idFornecedorVencedor: null };
             }).filter((v) => v.idProduto > 0);
             if (values.length > 0) {

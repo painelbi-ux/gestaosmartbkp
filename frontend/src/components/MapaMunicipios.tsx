@@ -90,20 +90,23 @@ function PopupConteudo({
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const detalhesBruto = item.detalhes ?? [];
 
-  /** Agrupa por pedido (PD): uma linha por pedido, mantendo colunas e somando VENDA. */
+  /** Uma linha por (pedido + rota): mesmo pedido em duas rotas vira duas linhas, com somatório do valor por rota. */
   const detalhesPorPedido = useMemo(() => {
     if (detalhesBruto.length === 0) return [];
-    const byPedido = new Map<string, TooltipDetalheRow & { valorPendente: number }>();
+    const byPedidoRota = new Map<string, TooltipDetalheRow & { valorPendente: number }>();
     for (const row of detalhesBruto) {
-      const key = String(row.pedido ?? '').trim() || `_${row.codigo ?? ''}_${row.produto ?? ''}`;
-      const existing = byPedido.get(key);
+      const pedido = String(row.pedido ?? '').trim() || `_${row.codigo ?? ''}_${row.produto ?? ''}`;
+      const rota = (row.rota ?? '').trim();
+      const rm = (row.rm ?? '').trim();
+      const key = `${pedido}|${rota}|${rm}`;
+      const existing = byPedidoRota.get(key);
       if (existing) {
         existing.valorPendente += row.valorPendente ?? 0;
       } else {
-        byPedido.set(key, { ...row, valorPendente: row.valorPendente ?? 0 });
+        byPedidoRota.set(key, { ...row, valorPendente: row.valorPendente ?? 0 });
       }
     }
-    return [...byPedido.values()];
+    return [...byPedidoRota.values()];
   }, [detalhesBruto]);
 
   const toggleSort = useCallback((col: SortCol) => {

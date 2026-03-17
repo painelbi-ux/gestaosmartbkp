@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { useOnSincronizado } from '../../hooks/useOnSincronizado';
 import { listarColetasPrecos, type ColetaPrecosListItem } from '../../api/compras';
 
 const STATUS_ORDEM = ['Em cotação', 'Em Aprovação', 'Rejeitada', 'Finalizada', 'Enviado para Financeiro'] as const;
@@ -137,6 +138,8 @@ export default function ComprasDashboardPage() {
   useEffect(() => {
     carregar();
   }, [carregar]);
+
+  useOnSincronizado(carregar);
 
   const contagem = agregarPorStatus(coletas);
   const total = coletas.length;
