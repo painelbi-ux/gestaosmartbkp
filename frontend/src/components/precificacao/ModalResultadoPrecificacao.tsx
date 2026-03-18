@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
 import type { PrecificacaoItemRow } from '../../api/engenharia';
 import { salvarPrecificacaoValores } from '../../api/engenharia';
+import { listarTickets, obterTicketPorId, type TicketItem, type TicketDetalhe } from '../../api/integracao';
+import SelectWithSearch from '../SelectWithSearch';
 import { MensagemSemRegistrosInline } from '../MensagemSemRegistros';
+import { downloadFichaPrecificacaoPdf } from './FichaPrecificacaoReport';
 
 const btnSecondary =
   'inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 text-sm font-medium';
@@ -68,6 +71,10 @@ export interface ModalResultadoPrecificacaoProps {
   idPrecificacao: number;
   codigoProduto: string;
   descricaoProduto: string;
+  /** Data da precificação (ISO ou formatada) para o relatório */
+  dataPrecificacao?: string;
+  /** Usuário que criou a precificação */
+  usuario?: string;
   itens: PrecificacaoItemRow[];
   initialValores?: Record<string, string> | null;
   onClose: () => void;
@@ -77,6 +84,8 @@ export default function ModalResultadoPrecificacao({
   idPrecificacao,
   codigoProduto,
   descricaoProduto,
+  dataPrecificacao,
+  usuario,
   itens,
   initialValores,
   onClose,
@@ -90,11 +99,43 @@ export default function ModalResultadoPrecificacao({
   const [salvando, setSalvando] = useState(false);
   const [mensagemSalvar, setMensagemSalvar] = useState<'ok' | 'erro' | null>(null);
 
+  const [tickets, setTickets] = useState<TicketItem[]>([]);
+  const [ticketId, setTicketId] = useState<string>('');
+  const [ticketDetalhe, setTicketDetalhe] = useState<TicketDetalhe | null>(null);
+  const [loadingTickets, setLoadingTickets] = useState(false);
+  const [loadingTicketDetalhe, setLoadingTicketDetalhe] = useState(false);
+
+  const [subaba, setSubaba] = useState<'materiais' | 'markup'>('materiais');
+
   useEffect(() => {
     if (initialValores && typeof initialValores === 'object') {
       setValores((prev) => ({ ...prev, ...initialValores } as Record<CampoKey, string>));
     }
   }, [idPrecificacao, initialValores]);
+
+  useEffect(() => {
+    setLoadingTickets(true);
+    listarTickets()
+      .then((data) => {
+        setTickets(data);
+        if (data.length > 0 && !ticketId) setTicketId(String(data[0].id));
+      })
+      .catch(() => setTickets([]))
+      .finally(() => setLoadingTickets(false));
+  }, []);
+
+  useEffect(() => {
+    const id = ticketId ? parseInt(ticketId, 10) : 0;
+    if (!Number.isFinite(id) || id < 1) {
+      setTicketDetalhe(null);
+      return;
+    }
+    setLoadingTicketDetalhe(true);
+    obterTicketPorId(id)
+      .then((d) => setTicketDetalhe(d ?? null))
+      .catch(() => setTicketDetalhe(null))
+      .finally(() => setLoadingTicketDetalhe(false));
+  }, [ticketId]);
 
   const handleChange = (key: CampoKey, value: string) => {
     setValores((prev) => ({ ...prev, [key]: value }));
@@ -111,6 +152,20 @@ export default function ModalResultadoPrecificacao({
       return;
     }
     setMensagemSalvar('ok');
+  };
+
+  const handleBaixarPdf = () => {
+    downloadFichaPrecificacaoPdf({
+      idPrecificacao,
+      codigoProduto,
+      descricaoProduto,
+      dataPrecificacao,
+      usuario,
+      itens,
+      valores,
+      ticketDetalhe,
+      ticketId: ticketId || undefined,
+    });
   };
 
   return (
@@ -141,15 +196,86 @@ export default function ModalResultadoPrecificacao({
           </dl>
         </header>
 
+        {/* Subabas dentro do modal: Materiais | Markup */}
+        <div className="shrink-0 border-b border-slate-200 dark:border-slate-600 px-6">
+          <nav className="flex gap-1" aria-label="Abas da precificação">
+            <button
+              type="button"
+              onClick={() => setSubaba('materiais')}
+              className={`px-4 py-3 text-sm font-medium border-b-2 transition -mb-px ${
+                subaba === 'materiais'
+                  ? 'border-primary-600 text-primary-600 dark:text-primary-400'
+                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              Materiais
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubaba('markup')}
+              className={`px-4 py-3 text-sm font-medium border-b-2 transition -mb-px ${
+                subaba === 'markup'
+                  ? 'border-primary-600 text-primary-600 dark:text-primary-400'
+                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              Markup
+            </button>
+          </nav>
+        </div>
+
         <div className="flex-1 min-h-0 flex flex-col px-6 py-4 gap-4 overflow-hidden">
-          {/* Grade: altura limitada com rolagem interna; assim os campos ficam visíveis abaixo */}
-          <div className="shrink-0 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50 overflow-auto" style={{ maxHeight: '42vh' }}>
+          {subaba === 'materiais' && (
+            <>
+          {/* Acima da grade: select Ticket (ID) + Cliente, Vendedor, Município, UF */}
+          <div className="shrink-0 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50 p-4 space-y-3">
+            <div>
+              <SelectWithSearch
+                id="modal-precificacao-ticket"
+                label="Ticket (ID)"
+                placeholder="Selecione..."
+                options={tickets.map((t) => ({
+                  value: String(t.id),
+                  label: `#${t.id}${t.titulo ? ` — ${t.titulo.length > 50 ? t.titulo.slice(0, 50) + '…' : t.titulo}` : ''}`,
+                }))}
+                value={ticketId}
+                onChange={setTicketId}
+                disabled={loadingTickets}
+                labelClass={labelClass}
+                maxListHeight={260}
+              />
+            </div>
+            {loadingTicketDetalhe && ticketId && (
+              <p className="text-xs text-slate-500 dark:text-slate-400">Carregando informações do ticket...</p>
+            )}
+            {!loadingTicketDetalhe && ticketDetalhe && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div>
+                  <span className={labelClass}>Cliente</span>
+                  <p className="text-sm text-slate-800 dark:text-slate-200">{ticketDetalhe.cliente ?? '—'}</p>
+                </div>
+                <div>
+                  <span className={labelClass}>Vendedor</span>
+                  <p className="text-sm text-slate-800 dark:text-slate-200">{ticketDetalhe.vendedorrep ?? '—'}</p>
+                </div>
+                <div>
+                  <span className={labelClass}>Município</span>
+                  <p className="text-sm text-slate-800 dark:text-slate-200">{ticketDetalhe.municipio ?? '—'}</p>
+                </div>
+                <div>
+                  <span className={labelClass}>UF</span>
+                  <p className="text-sm text-slate-800 dark:text-slate-200">{ticketDetalhe.UF ?? '—'}</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Grade de materiais */}
+          <div className="flex-1 min-h-0 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50 overflow-auto" style={{ maxHeight: '50vh' }}>
               <table className="w-full text-sm text-left min-w-[800px]">
                 <thead className="bg-primary-600 text-white">
                   <tr>
                     <th className="py-3 px-4 font-semibold">#</th>
-                    <th className="py-3 px-4 font-semibold">Cód. pai</th>
-                    <th className="py-3 px-4 font-semibold">Desc. pai</th>
                     <th className="py-3 px-4 font-semibold">Id comp.</th>
                     <th className="py-3 px-4 font-semibold">Cód. comp.</th>
                     <th className="py-3 px-4 font-semibold">Componente</th>
@@ -161,7 +287,7 @@ export default function ModalResultadoPrecificacao({
                 <tbody className="text-slate-700 dark:text-slate-200">
                   {itens.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="py-12 px-4 text-center">
+                      <td colSpan={7} className="py-12 px-4 text-center">
                         <MensagemSemRegistrosInline />
                       </td>
                     </tr>
@@ -172,8 +298,6 @@ export default function ModalResultadoPrecificacao({
                       className="border-t border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/30"
                     >
                       <td className="py-3 px-4 font-medium tabular-nums">{idx + 1}</td>
-                      <td className="py-3 px-4">{item.codigopai ?? '—'}</td>
-                      <td className="py-3 px-4">{item.descricaopai ?? '—'}</td>
                       <td className="py-3 px-4 tabular-nums">{item.idcomponente ?? '—'}</td>
                       <td className="py-3 px-4">{item.codigocomponente ?? '—'}</td>
                       <td className="py-3 px-4">{item.componente ?? '—'}</td>
@@ -195,8 +319,10 @@ export default function ModalResultadoPrecificacao({
                 </tbody>
               </table>
           </div>
+            </>
+          )}
 
-          {/* Campos — sempre visível abaixo da grade; rolagem só se a janela for pequena */}
+          {subaba === 'markup' && (
           <div className="flex-1 min-h-0 overflow-auto">
             <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2">Campos % (valores e percentuais)</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -230,6 +356,7 @@ export default function ModalResultadoPrecificacao({
             ))}
             </div>
           </div>
+          )}
         </div>
 
         <div className="shrink-0 flex flex-wrap items-center justify-end gap-2 px-6 py-4 border-t border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/30 rounded-b-xl">
@@ -239,6 +366,17 @@ export default function ModalResultadoPrecificacao({
           {mensagemSalvar === 'erro' && (
             <span className="text-sm text-red-600 dark:text-red-400 font-medium">Erro ao salvar. Tente novamente.</span>
           )}
+          <button
+            type="button"
+            onClick={handleBaixarPdf}
+            className={btnSecondary}
+            title="Baixa a ficha de precificação em PDF"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            Baixar PDF
+          </button>
           <button
             type="button"
             onClick={handleSalvar}

@@ -20,6 +20,7 @@ import {
   getHistorico,
   limparHistorico,
   sincronizar,
+  checkIdPedidosEmSycro,
 } from '../controllers/pedidosController.js';
 
 const router = Router();
@@ -50,6 +51,7 @@ router.get('/resumo-motivos', verPedidos, getResumoMotivos);
 router.get('/filtros-opcoes', verPedidos, getFiltrosOpcoes);
 router.get('/mapa-municipios', verPedidos, getMapaMunicipios);
 router.get('/:id/historico', verPedidos, getHistorico);
+router.post('/check-sycro', verPedidos, checkIdPedidosEmSycro);
 
 // Sincronizar: qualquer usuário autenticado (evita 403 ao acessar por IP externo)
 router.post('/sincronizar', writeLimiter, sincronizar);

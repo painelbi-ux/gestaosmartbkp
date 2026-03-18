@@ -35,6 +35,8 @@ export default function PrecificacaoPage() {
     idPrecificacao: number;
     codigoProduto: string;
     descricaoProduto: string;
+    dataPrecificacao?: string;
+    usuario?: string;
     itens: PrecificacaoIniciarResponse['itens'];
     valoresCampos?: Record<string, string> | null;
   } | null>(null);
@@ -73,6 +75,8 @@ export default function PrecificacaoPage() {
       idPrecificacao: data.precificacao.id,
       codigoProduto: data.precificacao.codigoProduto ?? '',
       descricaoProduto: data.precificacao.descricaoProduto ?? '',
+      dataPrecificacao: data.precificacao.data ?? '',
+      usuario: data.precificacao.usuario ?? '',
       itens: data.itens,
       valoresCampos: undefined,
     });
@@ -88,6 +92,8 @@ export default function PrecificacaoPage() {
       idPrecificacao: data.precificacao.id,
       codigoProduto: data.precificacao.codigoProduto ?? '',
       descricaoProduto: data.precificacao.descricaoProduto ?? '',
+      dataPrecificacao: data.precificacao.data ?? '',
+      usuario: data.precificacao.usuario ?? '',
       itens: data.itens,
       valoresCampos: data.precificacao.valoresCampos ?? null,
     });
@@ -196,6 +202,8 @@ export default function PrecificacaoPage() {
           idPrecificacao={resultadoModal.idPrecificacao}
           codigoProduto={resultadoModal.codigoProduto}
           descricaoProduto={resultadoModal.descricaoProduto}
+          dataPrecificacao={resultadoModal.dataPrecificacao}
+          usuario={resultadoModal.usuario}
           itens={resultadoModal.itens}
           initialValores={resultadoModal.valoresCampos ?? undefined}
           onClose={() => setResultadoModal(null)}

@@ -414,6 +414,8 @@ export async function downloadPedidosXlsx(
 
 export interface LinhaImportacao {
   id_pedido: string;
+  /** Número do pedido (PD) quando presente no arquivo — usado para bloquear importação se pedido está no Sycro. */
+  pd?: string;
   nova_previsao: string;
   motivo: string;
   /** Observação do ajuste (coluna Observação). Armazenada na tabela de previsão e exibida no histórico. */
@@ -472,6 +474,8 @@ export function parsePedidosXlsxForImport(file: File): Promise<LinhaImportacao[]
         const linhas: LinhaImportacao[] = [];
         for (const row of json) {
           const id = row['id_pedido'] ?? row['idChave'] ?? '';
+          const pdRaw = row['PD'] ?? row['pd'] ?? '';
+          const pdStr: string = typeof pdRaw === 'string' ? pdRaw.trim() : String(pdRaw ?? '').trim();
           const novaRaw = row['Nova previsão'] ?? row['Nova previsao'] ?? row['nova_previsao'] ?? row['Previsão atual'] ?? '';
           const atualRaw = row['Previsão anterior'] ?? row['Previsão atual'] ?? row['Previsão'] ?? row['Previsao'] ?? row['previsao'] ?? '';
           const motivoRaw = row['Motivo'] ?? row['motivo'] ?? '';
@@ -492,6 +496,7 @@ export function parsePedidosXlsxForImport(file: File): Promise<LinhaImportacao[]
             const previsao_atual = normalizarDataExcel(atualRaw);
             linhas.push({
               id_pedido: String(id).trim(),
+              pd: pdStr || undefined,
               nova_previsao: nova,
               motivo: motivoStr,
               observacao: observacaoStr || undefined,

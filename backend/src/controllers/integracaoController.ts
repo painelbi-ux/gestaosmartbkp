@@ -6,6 +6,10 @@ import {
   atualizarDataEntregaItemPedidoCompra,
   type FiltrosPedidoCompraDataEntrega,
 } from '../data/pedidoCompraDataEntregaRepository.js';
+import { listarTickets, obterTicketPorId } from '../data/ticketRepository.js';
+import { obterDadosFaturamentoDiario } from '../data/faturamentoDiarioRepository.js';
+import { sendWhatsAppTextTo } from '../services/evolutionApi.js';
+import { montarMensagemFaturamentoDiario } from '../services/faturamentoDiarioMensagem.js';
 /**
  * GET /api/integracao/pedido-compra-data-entrega
  * Lista itens de pedido de compra para alteração de data de entrega (grade sem colunas ID).
@@ -170,5 +174,104 @@ export async function getHistoricoAlteracaoDataEntregaItem(req: Request, res: Re
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[integracaoController] getHistoricoAlteracaoDataEntregaItem:', msg);
     res.status(503).json({ error: msg, data: [] });
+  }
+}
+
+/**
+ * GET /api/integracao/tickets
+ * Lista tickets (id, titulo) para o select (fonte Nomus).
+ */
+export async function getTickets(_req: Request, res: Response): Promise<void> {
+  try {
+    const result = await listarTickets();
+    if (result.erro) {
+      res.status(503).json({ error: result.erro, data: [] });
+      return;
+    }
+    res.json({ data: result.data });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[integracaoController] getTickets:', msg);
+    res.status(503).json({ error: msg, data: [] });
+  }
+}
+
+/**
+ * GET /api/integracao/tickets/:id
+ * Retorna detalhe do ticket: cliente, vendedor, municipio, UF (fonte Nomus).
+ */
+export async function getTicketById(req: Request, res: Response): Promise<void> {
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'ID do ticket inválido.' });
+    return;
+  }
+  try {
+    const result = await obterTicketPorId(id);
+    if (result.erro) {
+      res.status(503).json({ error: result.erro });
+      return;
+    }
+    if (!result.data) {
+      res.status(404).json({ error: 'Ticket não encontrado.' });
+      return;
+    }
+    res.json(result.data);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[integracaoController] getTicketById:', msg);
+    res.status(503).json({ error: msg });
+  }
+}
+
+/**
+ * GET /api/integracao/faturamento-diario/mensagem
+ * Retorna a mensagem montada (preview) sem enviar.
+ */
+export async function getMensagemFaturamentoDiario(_req: Request, res: Response): Promise<void> {
+  try {
+    const result = await obterDadosFaturamentoDiario();
+    if (result.erro || !result.dados) {
+      res.status(503).json({ error: result.erro ?? 'Erro ao consultar dados no Nomus.', mensagem: null });
+      return;
+    }
+    const mensagem = montarMensagemFaturamentoDiario(result.dados);
+    res.json({ mensagem, dados: result.dados });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[integracaoController] getMensagemFaturamentoDiario:', msg);
+    res.status(503).json({ error: msg, mensagem: null });
+  }
+}
+
+/**
+ * POST /api/integracao/faturamento-diario/enviar
+ * Body: { numero: string } — envia a mensagem de faturamento para o número informado (teste).
+ */
+export async function postEnviarFaturamentoDiario(req: Request, res: Response): Promise<void> {
+  const numero = typeof req.body?.numero === 'string' ? req.body.numero.trim() : '';
+  if (!numero) {
+    res.status(400).json({ error: 'Campo "numero" é obrigatório.' });
+    return;
+  }
+  try {
+    const result = await obterDadosFaturamentoDiario();
+    if (result.erro || !result.dados) {
+      res.status(503).json({ error: result.erro ?? 'Erro ao consultar dados no Nomus.' });
+      return;
+    }
+    const mensagem = montarMensagemFaturamentoDiario(result.dados);
+    const numeroLimpo = numero.replace(/\D/g, '');
+    const numeroComDdd = numeroLimpo.startsWith('55') ? numeroLimpo : '55' + numeroLimpo;
+    const sendResult = await sendWhatsAppTextTo(numeroComDdd, mensagem);
+    if (!sendResult.ok) {
+      res.status(503).json({ error: sendResult.error ?? 'Erro ao enviar WhatsApp.' });
+      return;
+    }
+    res.json({ ok: true, mensagem });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[integracaoController] postEnviarFaturamentoDiario:', msg);
+    res.status(503).json({ error: msg });
   }
 }

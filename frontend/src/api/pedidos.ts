@@ -315,6 +315,14 @@ export async function obterHistorico(idPedido: string): Promise<HistoricoItem[]>
   return apiJson<HistoricoItem[]>(`/api/pedidos/${encodeURIComponent(idPedido)}/historico`);
 }
 
+/** Verifica quais dos id_pedidos informados têm PD (número do pedido) no Sycro. Usado para bloquear importação. */
+export async function checkPedidosEmSycro(id_pedidos: string[]): Promise<{ pd_em_sycro: string[] }> {
+  return apiJson<{ pd_em_sycro: string[] }>('/api/pedidos/check-sycro', {
+    method: 'POST',
+    body: { id_pedidos },
+  });
+}
+
 export async function ajustarPrevisao(
   idPedido: string,
   payload: { previsao_nova: string; motivo: string; observacao?: string | null }

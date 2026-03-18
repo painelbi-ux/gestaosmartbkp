@@ -18,6 +18,7 @@ import { promisify } from 'util';
 import { loadEnv } from './config/env.js';
 import { prisma } from './config/prisma.js';
 import app, { BUILD_ID } from './app.js';
+import { iniciarCronFaturamentoDiario } from './scheduler/faturamentoDiarioCron.js';
 
 const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -77,6 +78,7 @@ function main(): void {
     ensureDbReady()
       .then(() => {
         console.log('[startup] Banco verificado.');
+        iniciarCronFaturamentoDiario();
       })
       .catch((e) => {
         console.warn('[startup] ensureDbReady falhou (servidor já no ar):', (e as Error)?.message ?? e);

@@ -103,3 +103,56 @@ export async function listarHistoricoAlteracaoDataEntregaCompra(
   if (res.error) throw new Error(res.error);
   return res.data ?? [];
 }
+
+// --- Consulta Ticket (id, cliente, vendedor, municipio, UF) ---
+
+export interface TicketItem {
+  id: number;
+  titulo: string | null;
+}
+
+export interface TicketDetalhe {
+  id: number;
+  titulo: string | null;
+  cliente: string | null;
+  vendedorrep: string | null;
+  municipio: string | null;
+  UF: string | null;
+  datacriacao: string | null;
+  tipopessoa: string | null;
+}
+
+export async function listarTickets(): Promise<TicketItem[]> {
+  const res = await apiJson<{ data: TicketItem[]; error?: string }>('/api/integracao/tickets');
+  if (res.error) throw new Error(res.error);
+  return res.data ?? [];
+}
+
+export async function obterTicketPorId(id: number): Promise<TicketDetalhe | null> {
+  const res = await apiFetch(`/api/integracao/tickets/${id}`);
+  if (!res.ok) {
+    if (res.status === 404) return null;
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as { error?: string }).error ?? 'Erro ao carregar ticket');
+  }
+  return res.json();
+}
+
+// --- Faturamento Diário (mensagem WhatsApp) ---
+
+export async function getMensagemFaturamentoDiario(): Promise<{ mensagem: string; dados?: unknown }> {
+  const res = await apiFetch('/api/integracao/faturamento-diario/mensagem');
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error ?? 'Erro ao carregar mensagem');
+  return { mensagem: (body as { mensagem: string }).mensagem ?? '', dados: (body as { dados?: unknown }).dados };
+}
+
+export async function enviarFaturamentoDiario(numero: string): Promise<{ ok: boolean; mensagem?: string }> {
+  const res = await apiFetch('/api/integracao/faturamento-diario/enviar', {
+    method: 'POST',
+    body: { numero },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error ?? 'Erro ao enviar');
+  return body as { ok: boolean; mensagem?: string };
+}

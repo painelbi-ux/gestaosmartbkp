@@ -68,6 +68,7 @@ model Usuario {
   sycroOrdersCriados    SycroOrderOrder[]
   sycroOrderHistory     SycroOrderHistory[]
   sycroOrderNotifications SycroOrderNotification[]
+  sycroOrderOrderReads    SycroOrderOrderRead[]
 
   @@map("usuario")
 }
@@ -250,11 +251,26 @@ model SycroOrderOrder {
   usuarioCriador Usuario?              @relation(fields: [created_by], references: [id], onDelete: SetNull)
   history        SycroOrderHistory[]
   notifications  SycroOrderNotification[]
+  reads          SycroOrderOrderRead[]
 
   @@index([created_by])
   @@index([status])
   @@index([created_at])
   @@map("sycro_order_order")
+}
+
+model SycroOrderOrderRead {
+  order_id  Int
+  user_id   Int
+  read_at   DateTime? // quando preenchido = lido; null = não lido (usuário pode marcar como não lida)
+  updated_at DateTime @updatedAt
+
+  order SycroOrderOrder @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  usuario Usuario       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@id([order_id, user_id])
+  @@index([user_id])
+  @@map("sycro_order_order_read")
 }
 
 model SycroOrderHistory {

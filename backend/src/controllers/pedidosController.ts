@@ -499,7 +499,44 @@ export async function limparHistorico(req: Request, res: Response): Promise<void
 }
 
 /**
- * GET /api/pedidos/:id/historico - histórico de ajustes (SQLite).
+ * POST /api/pedidos/check-sycro - retorna PDs (números de pedido) que estão no Sycro entre os id_pedidos informados.
+ * Usado na importação para bloquear upload quando a planilha contém pedidos que devem ser alterados no Sycro.
+ */
+export async function checkIdPedidosEmSycro(req: Request, res: Response): Promise<void> {
+  const ids = req.body?.id_pedidos;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    res.json({ pd_em_sycro: [] });
+    return;
+  }
+  const idSet = new Set(ids.map((id: unknown) => String(id ?? '').trim()).filter(Boolean));
+  if (idSet.size === 0) {
+    res.json({ pd_em_sycro: [] });
+    return;
+  }
+  try {
+    const { data: pedidos } = await listarPedidos({});
+    const pdDosPedidos = new Set<string>();
+    for (const p of pedidos) {
+      const idPedido = String((p as Record<string, unknown>).id_pedido ?? '').trim();
+      if (!idSet.has(idPedido)) continue;
+      const pd = (p as Record<string, unknown>).PD ?? (p as Record<string, unknown>).pd;
+      const pdStr = pd != null ? String(pd).trim() : '';
+      if (pdStr) pdDosPedidos.add(pdStr);
+    }
+    const sycroOrders = await prisma.sycroOrderOrder.findMany({
+      select: { order_number: true },
+    });
+    const sycroSet = new Set(sycroOrders.map((o) => (o.order_number ?? '').trim()).filter(Boolean));
+    const pd_em_sycro = [...pdDosPedidos].filter((pd) => sycroSet.has(pd));
+    res.json({ pd_em_sycro });
+  } catch (err) {
+    console.error('checkIdPedidosEmSycro', err);
+    res.status(503).json({ error: 'Erro ao verificar pedidos no Sycro.' });
+  }
+}
+
+/**
+ * GET /api/pedidos/:id/historico - histórico de ajustes unificado (SQLite + Sycro).
  */
 export async function getHistorico(req: Request, res: Response): Promise<void> {
   let idPedido = req.params.id ?? '';
@@ -513,7 +550,56 @@ export async function getHistorico(req: Request, res: Response): Promise<void> {
   }
   try {
     const historico = await listarHistoricoAjustes(idPedido);
-    res.json(historico);
+    const itens: Array<{ id: number; id_pedido: string; previsao_nova: Date; motivo: string; observacao: string | null; usuario: string; data_ajuste: Date }> = historico.map((h) => ({
+      id: h.id,
+      id_pedido: h.id_pedido,
+      previsao_nova: h.previsao_nova,
+      motivo: h.motivo,
+      observacao: h.observacao,
+      usuario: h.usuario,
+      data_ajuste: h.data_ajuste,
+    }));
+
+    try {
+      const pedido = await buscarPedidoPorId(idPedido);
+      const pd = pedido ? String((pedido as Record<string, unknown>).PD ?? (pedido as Record<string, unknown>).pd ?? '').trim() : '';
+      if (pd) {
+        const sycroOrder = await prisma.sycroOrderOrder.findFirst({
+          where: { order_number: pd },
+          select: { id: true },
+        });
+        if (sycroOrder) {
+          const sycroHistory = await prisma.sycroOrderHistory.findMany({
+            where: { order_id: sycroOrder.id },
+            orderBy: { created_at: 'desc' },
+            include: { usuario: { select: { nome: true } } },
+          });
+          const seen = new Set<string>();
+          for (const h of sycroHistory) {
+            const user_name = h.user_name ?? h.usuario?.nome ?? null;
+            const key = `${h.action_type}\0${user_name ?? ''}\0${h.created_at.getTime()}\0${h.previous_date ?? ''}\0${h.new_date ?? ''}\0${h.observation ?? ''}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const created = h.created_at;
+            const previsaoNova = h.new_date ? new Date(h.new_date + 'T12:00:00') : new Date(0);
+            itens.push({
+              id: -h.id,
+              id_pedido,
+              previsao_nova: previsaoNova,
+              motivo: h.action_type === 'AJUSTE_PREVISAO' ? 'Ajuste de previsão' : h.action_type,
+              observacao: h.observation,
+              usuario: user_name ?? 'Sistema',
+              data_ajuste: created,
+            });
+          }
+          itens.sort((a, b) => b.data_ajuste.getTime() - a.data_ajuste.getTime());
+        }
+      }
+    } catch (_) {
+      // Se falhar ao buscar pedido ou histórico Sycro, segue só com o histórico da gestão (SQLite)
+    }
+
+    res.json(itens);
   } catch (err) {
     console.error('getHistorico', err);
     res.status(503).json({ error: 'Erro ao obter histórico.' });

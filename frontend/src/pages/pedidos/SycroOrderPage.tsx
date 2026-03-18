@@ -7,12 +7,17 @@ import {
   getSycroOrderHistory,
   getSycroOrderNotifications,
   markSycroOrderNotificationsRead,
+  setSycroOrderRead,
   type SycroOrderOrder as Order,
   type SycroOrderHistoryItem,
   type SycroOrderNotification,
   type SycroOrderPedidoErp,
 } from '../../api/sycroorder';
+import { listarMotivosSugestao, type MotivoSugestao } from '../../api/motivosSugestao';
+import { listarPedidos } from '../../api/pedidos';
 import SingleSelectWithSearch, { type OptionItem } from '../../components/SingleSelectWithSearch';
+import ModalGerenciarMotivos from '../../components/ModalGerenciarMotivos';
+import { useAuth } from '../../contexts/AuthContext';
 
 function formatDate(iso: string): string {
   try {
@@ -51,8 +56,8 @@ function formatDateTime(iso: string): string {
 /** Faixas do Kanban: status do backend e cor do cabeçalho */
 const KANBAN_LANES: { status: Order['status']; label: string; headerClass: string }[] = [
   { status: 'PENDING', label: 'Aberto', headerClass: 'bg-red-500 text-white border-red-600 dark:bg-red-600 dark:border-red-700' },
-  { status: 'ESCALATED', label: 'Respondido', headerClass: 'bg-amber-400 text-slate-900 border-amber-500 dark:bg-amber-500 dark:text-slate-900 dark:border-amber-600' },
-  { status: 'FINISHED', label: 'Atendido', headerClass: 'bg-green-500 text-white border-green-600 dark:bg-green-600 dark:border-green-700' },
+  { status: 'ESCALATED', label: 'Em andamento', headerClass: 'bg-amber-400 text-slate-900 border-amber-500 dark:bg-amber-500 dark:text-slate-900 dark:border-amber-600' },
+  { status: 'FINISHED', label: 'Faturado/Entregue', headerClass: 'bg-green-500 text-white border-green-600 dark:bg-green-600 dark:border-green-700' },
 ];
 
 export default function SycroOrderPage() {
@@ -67,8 +72,20 @@ export default function SycroOrderPage() {
   const [notifications, setNotifications] = useState<SycroOrderNotification[]>([]);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [draggedId, setDraggedId] = useState<number | null>(null);
-  const [dropTargetLane, setDropTargetLane] = useState<Order['status'] | null>(null);
+  const [filtros, setFiltros] = useState<{
+    pedido: string[];
+    criadoPor: string[];
+    ultimaRespostaPor: string[];
+    formaEntrega: string[];
+    responsavel: string[];
+  }>({ pedido: [], criadoPor: [], ultimaRespostaPor: [], formaEntrega: [], responsavel: [] });
+  const [buscaFiltro, setBuscaFiltro] = useState<{
+    pedido: string;
+    criadoPor: string;
+    ultimaRespostaPor: string;
+    formaEntrega: string;
+    responsavel: string;
+  }>({ pedido: '', criadoPor: '', ultimaRespostaPor: '', formaEntrega: '', responsavel: '' });
 
   const carregar = useCallback(async () => {
     setLoading(true);
@@ -86,7 +103,7 @@ export default function SycroOrderPage() {
     carregar();
   }, [carregar]);
 
-  const filtered = orders.filter((o) => {
+  const filteredBySearch = orders.filter((o) => {
     if (!search.trim()) return true;
     const term = search.trim().toLowerCase();
     return (
@@ -96,38 +113,38 @@ export default function SycroOrderPage() {
     );
   });
 
-  /** Pedidos por faixa, com entrega em 7 dias e urgentes no topo */
+  const hasResponsavel = (dm: string) => {
+    const fm = (dm ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+    return (
+      (fm.includes('entrega') && fm.includes('grande')) ||
+      (fm.includes('retirada') && fm.includes('moveis')) ||
+      fm.includes('so aco')
+    );
+  };
+
+  const filtered = filteredBySearch.filter((o) => {
+    if (filtros.pedido.length > 0 && !filtros.pedido.includes(o.order_number)) return false;
+    const criador = (o.creator_name ?? '').trim() || '—';
+    if (filtros.criadoPor.length > 0 && !filtros.criadoPor.includes(criador)) return false;
+    const ultimaResp = (o.last_responder_name ?? '').trim() || '—';
+    if (filtros.ultimaRespostaPor.length > 0 && !filtros.ultimaRespostaPor.includes(ultimaResp)) return false;
+    const forma = (o.delivery_method ?? '').trim() || '—';
+    if (filtros.formaEntrega.length > 0 && !filtros.formaEntrega.includes(forma)) return false;
+    const resp = hasResponsavel(o.delivery_method ?? '') ? 'josenildo' : 'outros';
+    if (filtros.responsavel.length > 0 && !filtros.responsavel.includes(resp)) return false;
+    return true;
+  });
+
+  /** Pedidos por faixa: no topo os mais recentes (criados ou atualizados) */
   const ordersByLane = (status: Order['status']) => {
     const lane = filtered.filter((o) => o.status === status);
     return [...lane].sort((a, b) => {
-      const aPrioridade = (isPromisedWithin7Days(a.current_promised_date) || a.is_urgent) ? 1 : 0;
-      const bPrioridade = (isPromisedWithin7Days(b.current_promised_date) || b.is_urgent) ? 1 : 0;
-      return bPrioridade - aPrioridade;
+      const aAt = a.last_response_at || a.created_at;
+      const bAt = b.last_response_at || b.created_at;
+      return new Date(bAt).getTime() - new Date(aAt).getTime();
     });
   };
 
-  const moveOrder = useCallback(async (orderId: number, newStatus: Order['status']) => {
-    const order = orders.find((o) => o.id === orderId);
-    if (!order || order.status === newStatus) return;
-    if (newStatus === 'PENDING' && order.status !== 'PENDING') {
-      setToast('Não é possível voltar para Aberto após a primeira resposta.');
-      setTimeout(() => setToast(null), 4000);
-      return;
-    }
-    setSaving(true);
-    try {
-      await updateSycroOrderOrder(orderId, { status: newStatus, new_date: order.current_promised_date });
-      await carregar();
-      setToast('Status atualizado.');
-      setTimeout(() => setToast(null), 3000);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Erro ao atualizar status.';
-      setToast(msg.includes('primeira resposta') ? msg : 'Erro ao atualizar status.');
-      setTimeout(() => setToast(null), 4000);
-    } finally {
-      setSaving(false);
-    }
-  }, [orders, carregar]);
 
   const abrirHistorico = async (order: Order) => {
     setModalHistorico(order);
@@ -198,6 +215,121 @@ export default function SycroOrderPage() {
         />
       </div>
 
+      {(() => {
+        const opPedido = [...new Set(filteredBySearch.map((o) => o.order_number))].sort();
+        const opCriadoPor = [...new Set(filteredBySearch.map((o) => (o.creator_name ?? '').trim() || '—'))].sort();
+        const opUltimaResposta = [...new Set(filteredBySearch.map((o) => (o.last_responder_name ?? '').trim() || '—'))].sort();
+        const opFormaEntrega = [...new Set(filteredBySearch.map((o) => (o.delivery_method ?? '').trim() || '—'))].sort();
+        const toggle = (key: keyof typeof filtros, value: string) => {
+          setFiltros((prev) => {
+            const arr = prev[key];
+            const next = arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
+            return { ...prev, [key]: next };
+          });
+        };
+        const filterBySearch = (term: string, options: string[]) => {
+          const t = term.trim().toLowerCase();
+          if (!t) return options;
+          return options.filter((v) => v.toLowerCase().includes(t));
+        };
+        const searchInputClass = 'w-full px-2 py-1.5 text-sm rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 placeholder-slate-500 dark:placeholder-slate-400 mb-1.5';
+        const opPedidoFiltrado = filterBySearch(buscaFiltro.pedido, opPedido);
+        const opCriadoPorFiltrado = filterBySearch(buscaFiltro.criadoPor, opCriadoPor);
+        const opUltimaRespostaFiltrado = filterBySearch(buscaFiltro.ultimaRespostaPor, opUltimaResposta);
+        const opFormaEntregaFiltrado = filterBySearch(buscaFiltro.formaEntrega, opFormaEntrega);
+        const opResponsavel = ['josenildo', 'outros'];
+        const opResponsavelFiltrado = filterBySearch(buscaFiltro.responsavel, opResponsavel);
+        const temFiltro = filtros.pedido.length > 0 || filtros.criadoPor.length > 0 || filtros.ultimaRespostaPor.length > 0 || filtros.formaEntrega.length > 0 || filtros.responsavel.length > 0;
+        const listClass = 'flex flex-col gap-0.5 max-h-32 overflow-y-auto border border-slate-200 dark:border-slate-600 rounded-lg p-2 bg-slate-50 dark:bg-slate-800/50 min-w-[140px]';
+        const itemClass = 'flex items-center gap-2 py-1 px-2 rounded text-sm cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50';
+        const labelClass = 'text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5';
+        return (
+          <div className="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800/50 p-4 space-y-3">
+            <div className="flex flex-wrap items-end gap-2">
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-300 w-full">Filtros</p>
+              <div className="flex flex-wrap gap-6">
+                <div>
+                  <p className={labelClass}>Pedido</p>
+                  <input type="text" placeholder="Pesquisar..." value={buscaFiltro.pedido} onChange={(e) => setBuscaFiltro((p) => ({ ...p, pedido: e.target.value }))} className={searchInputClass} />
+                  <ul className={listClass} role="list">
+                    {opPedidoFiltrado.slice(0, 30).map((v) => (
+                      <li key={v}>
+                        <label className={itemClass}>
+                          <input type="checkbox" checked={filtros.pedido.includes(v)} onChange={() => toggle('pedido', v)} className="rounded border-slate-300 dark:border-slate-600" />
+                          <span className="text-slate-700 dark:text-slate-300 truncate" title={v}>{v}</span>
+                        </label>
+                      </li>
+                    ))}
+                    {opPedidoFiltrado.length > 30 && <li className="px-2 py-0.5 text-xs text-slate-500">+{opPedidoFiltrado.length - 30}</li>}
+                  </ul>
+                </div>
+                <div>
+                  <p className={labelClass}>Criado por</p>
+                  <input type="text" placeholder="Pesquisar..." value={buscaFiltro.criadoPor} onChange={(e) => setBuscaFiltro((p) => ({ ...p, criadoPor: e.target.value }))} className={searchInputClass} />
+                  <ul className={listClass} role="list">
+                    {opCriadoPorFiltrado.map((v) => (
+                      <li key={v}>
+                        <label className={itemClass}>
+                          <input type="checkbox" checked={filtros.criadoPor.includes(v)} onChange={() => toggle('criadoPor', v)} className="rounded border-slate-300 dark:border-slate-600" />
+                          <span className="text-slate-700 dark:text-slate-300 truncate" title={v}>{v}</span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <p className={labelClass}>Última resposta por</p>
+                  <input type="text" placeholder="Pesquisar..." value={buscaFiltro.ultimaRespostaPor} onChange={(e) => setBuscaFiltro((p) => ({ ...p, ultimaRespostaPor: e.target.value }))} className={searchInputClass} />
+                  <ul className={listClass} role="list">
+                    {opUltimaRespostaFiltrado.map((v) => (
+                      <li key={v}>
+                        <label className={itemClass}>
+                          <input type="checkbox" checked={filtros.ultimaRespostaPor.includes(v)} onChange={() => toggle('ultimaRespostaPor', v)} className="rounded border-slate-300 dark:border-slate-600" />
+                          <span className="text-slate-700 dark:text-slate-300 truncate" title={v}>{v}</span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <p className={labelClass}>Forma de entrega</p>
+                  <input type="text" placeholder="Pesquisar..." value={buscaFiltro.formaEntrega} onChange={(e) => setBuscaFiltro((p) => ({ ...p, formaEntrega: e.target.value }))} className={searchInputClass} />
+                  <ul className={`${listClass} min-w-[200px]`}>
+                    {opFormaEntregaFiltrado.map((v) => (
+                      <li key={v}>
+                        <label className={itemClass}>
+                          <input type="checkbox" checked={filtros.formaEntrega.includes(v)} onChange={() => toggle('formaEntrega', v)} className="rounded border-slate-300 dark:border-slate-600 flex-shrink-0" />
+                          <span className="text-slate-700 dark:text-slate-300 truncate" title={v}>{v}</span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <p className={labelClass}>Responsável por responder</p>
+                  <input type="text" placeholder="Pesquisar..." value={buscaFiltro.responsavel} onChange={(e) => setBuscaFiltro((p) => ({ ...p, responsavel: e.target.value }))} className={searchInputClass} />
+                  <ul className={listClass} role="list">
+                    {opResponsavelFiltrado.map((v) => (
+                      <li key={v}>
+                        <label className={itemClass}>
+                          <input type="checkbox" checked={filtros.responsavel.includes(v)} onChange={() => toggle('responsavel', v)} className="rounded border-slate-300 dark:border-slate-600" />
+                          <span className="text-slate-700 dark:text-slate-300">{v === 'josenildo' ? 'josenildo' : 'Outros'}</span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+              {temFiltro && (
+                <button type="button" onClick={() => setFiltros({ pedido: [], criadoPor: [], ultimaRespostaPor: [], formaEntrega: [], responsavel: [] })} className="text-sm text-primary-600 dark:text-primary-400 hover:underline self-center">
+                  Limpar filtros
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/30 overflow-hidden">
         {loading ? (
           <div className="p-8 text-center text-slate-500 dark:text-slate-400">Carregando...</div>
@@ -217,32 +349,7 @@ export default function SycroOrderPage() {
                 <div
                   key={status}
                   data-lane={status}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = 'move';
-                    setDropTargetLane(status);
-                  }}
-                  onDragLeave={() => setDropTargetLane(null)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setDropTargetLane(null);
-                    const id = e.dataTransfer.getData('application/sycroorder-order-id');
-                    if (id) {
-                      const order = orders.find((o) => o.id === Number(id));
-                      if (status === 'PENDING' && order && order.status !== 'PENDING') {
-                        setToast('Não é possível voltar para Aberto após a primeira resposta.');
-                        setTimeout(() => setToast(null), 4000);
-                      } else {
-                        moveOrder(Number(id), status);
-                      }
-                    }
-                    setDraggedId(null);
-                  }}
-                  className={`flex-1 min-w-0 flex flex-col rounded-xl border-2 transition-colors ${
-                    dropTargetLane === status
-                      ? 'border-primary-500 bg-primary-50/50 dark:bg-primary-900/20'
-                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50'
-                  }`}
+                  className="flex-1 min-w-0 flex flex-col rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50"
                 >
                   <div className={`px-3 py-2 border-b rounded-t-xl flex items-center justify-between ${headerClass}`}>
                     <span className="font-medium">{label}</span>
@@ -256,26 +363,38 @@ export default function SycroOrderPage() {
                       return (
                         <div
                           key={o.id}
-                          draggable
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData('application/sycroorder-order-id', String(o.id));
-                            e.dataTransfer.effectAllowed = 'move';
-                            setDraggedId(o.id);
-                          }}
-                          onDragEnd={() => setDraggedId(null)}
-                          className={`rounded-lg border-2 bg-white dark:bg-slate-800 shadow-sm cursor-grab active:cursor-grabbing ${
-                            draggedId === o.id ? 'opacity-50' : 'hover:border-primary-400 dark:hover:border-primary-500'
-                          } ${within7 ? 'sycro-card-urgent-7d border-red-500' : 'border-slate-200 dark:border-slate-600'}`}
+                          className={`rounded-lg border-2 bg-white dark:bg-slate-800 shadow-sm hover:border-primary-400 dark:hover:border-primary-500 ${
+                            within7 ? 'sycro-card-urgent-7d border-red-500' : 'border-slate-200 dark:border-slate-600'
+                          }`}
                         >
                           <div className="p-3">
                             <div className="flex items-start justify-between gap-2">
-                              <span className="font-medium text-slate-800 dark:text-slate-200 text-sm">{o.order_number}</span>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span
+                                  title={o.read_by_me ? 'Lido' : 'Não lido'}
+                                  className={`flex-shrink-0 w-2.5 h-2.5 rounded-full ${o.read_by_me ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                                  aria-hidden
+                                />
+                                <span className="font-medium text-slate-800 dark:text-slate-200 text-sm truncate">{o.order_number}</span>
+                              </div>
                               <div className="flex flex-wrap gap-1 justify-end">
                                 {within7 && (
                                   <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200 flex-shrink-0">
                                     Entrega em 7 dias
                                   </span>
                                 )}
+                                {(() => {
+                                  const fm = (o.delivery_method ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+                                  const direcionadoJosenildo =
+                                    (fm.includes('entrega') && fm.includes('grande')) ||
+                                    (fm.includes('retirada') && fm.includes('moveis')) ||
+                                    fm.includes('so aco');
+                                  return direcionadoJosenildo ? (
+                                    <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-primary-100 dark:bg-primary-900/50 text-primary-800 dark:text-primary-200 flex-shrink-0">
+                                      Responsável por responder: josenildo
+                                    </span>
+                                  ) : null;
+                                })()}
                                 {o.is_urgent ? (
                                   <>
                                     <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 flex-shrink-0">Urgente</span>
@@ -287,7 +406,7 @@ export default function SycroOrderPage() {
                               </div>
                             </div>
                             <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">{o.delivery_method}</p>
-                            <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">Data: {formatDate(o.current_promised_date)}</p>
+                            <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">Data prometida: {formatDate(o.current_promised_date)}</p>
                             <p className="text-xs text-slate-500 dark:text-slate-500">Criador: {o.creator_name ?? '—'}</p>
                             {(o.last_responder_name || o.last_response_at) ? (
                               <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">
@@ -296,8 +415,15 @@ export default function SycroOrderPage() {
                               </p>
                             ) : null}
                             <div className="flex flex-wrap gap-2 mt-2 pt-2 border-t border-slate-100 dark:border-slate-700">
-                              <button type="button" onClick={() => abrirHistorico(o)} className="text-xs text-primary-600 dark:text-primary-400 hover:underline">Histórico</button>
-                              <button type="button" onClick={() => setModalEditar(o)} className="text-xs text-primary-600 dark:text-primary-400 hover:underline">Atualizar</button>
+                              <button type="button" onClick={() => { abrirHistorico(o); setSycroOrderRead(o.id, true).then(() => carregar()).catch(() => {}); }} className="text-xs text-primary-600 dark:text-primary-400 hover:underline">Histórico</button>
+                              {o.can_respond !== false ? (
+                                <button type="button" onClick={() => { setModalEditar(o); setSycroOrderRead(o.id, true).then(() => carregar()).catch(() => {}); }} className="text-xs text-primary-600 dark:text-primary-400 hover:underline">Atualizar</button>
+                              ) : (
+                                <span className="text-xs text-slate-500 dark:text-slate-400">Apenas visualização</span>
+                              )}
+                              {o.read_by_me && (
+                                <button type="button" onClick={() => setSycroOrderRead(o.id, false).then(() => carregar()).catch(() => {})} className="text-xs text-slate-500 dark:text-slate-400 hover:underline">Marcar como não lida</button>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -373,14 +499,37 @@ export default function SycroOrderPage() {
                 <p className="text-slate-500 dark:text-slate-400 text-sm">Nenhum registro.</p>
               ) : (
                 <ul className="space-y-4">
-                  {history.map((h) => (
-                    <li key={h.id} className="relative pl-4 pb-1 border-l-2 border-primary-500 dark:border-primary-400 last:pb-0">
-                      <span className="font-medium text-slate-800 dark:text-slate-200">{h.action_type}</span>
-                      {h.user_name && <span className="text-slate-600 dark:text-slate-400"> — {h.user_name}</span>}
-                      <span className="block text-xs text-slate-500 dark:text-slate-500 mt-0.5">{formatDateTime(h.created_at)}</span>
-                      {h.observation && <p className="text-sm text-slate-600 dark:text-slate-400 mt-1.5 leading-relaxed">{h.observation}</p>}
-                    </li>
-                  ))}
+                  {history.map((h) => {
+                    const prevDateFormatted = h.previous_date ? formatDate(h.previous_date) : null;
+                    const newDateFormatted = h.new_date ? formatDate(h.new_date) : null;
+                    const mostraNovaPrevisao = !!newDateFormatted;
+                    return (
+                      <li key={h.id} className="relative pl-4 pb-1 border-l-2 border-primary-500 dark:border-primary-400 last:pb-0">
+                        <span className="font-medium text-slate-800 dark:text-slate-200">
+                          {h.action_type === 'AUTO_ATENDIDO'
+                            ? 'Atendido automaticamente'
+                            : h.action_type === 'AJUSTE_PREVISAO'
+                              ? 'Ajuste de previsão'
+                              : h.action_type}
+                        </span>
+                        {h.user_name && <span className="text-slate-600 dark:text-slate-400"> — {h.user_name}</span>}
+                        {h.product_code && (
+                          <span className="text-slate-600 dark:text-slate-400" title={h.product_code === 'Todos os itens' ? 'Alteração aplicada a todos os itens' : 'Códigos dos produtos'}>
+                            · {h.product_code === 'Todos os itens' ? 'Todos os itens' : `Cód. ${h.product_code}`}
+                          </span>
+                        )}
+                        <span className="block text-xs text-slate-500 dark:text-slate-500 mt-0.5">{formatDateTime(h.created_at)}</span>
+                        {mostraNovaPrevisao && (
+                          <p className="text-sm text-slate-700 dark:text-slate-300 mt-1 font-medium">
+                            {prevDateFormatted && newDateFormatted && h.previous_date !== h.new_date
+                              ? `Nova previsão ${prevDateFormatted} alterada para ${newDateFormatted}`
+                              : `Nova previsão alterada para ${newDateFormatted}`}
+                          </p>
+                        )}
+                        {h.observation && <p className="text-sm text-slate-600 dark:text-slate-400 mt-1.5 leading-relaxed">{h.observation}</p>}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>
@@ -437,9 +586,7 @@ function ModalNovoPedido({
   const [loadingPedidos, setLoadingPedidos] = useState(false);
   const [searchPedidoLoading, setSearchPedidoLoading] = useState(false);
   const [delivery_method, setDelivery_method] = useState('');
-  const [promised_date, setPromised_date] = useState('');
   const [observation, setObservation] = useState('');
-  const [is_urgent, setIs_urgent] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
   const selectedPedidoFull = selectedPedido ? pedidosErpList.find((p) => p.id === selectedPedido.id) : null;
@@ -509,18 +656,19 @@ function ModalNovoPedido({
     e.preventDefault();
     setErro(null);
     const order_number = selectedPedido?.nome ?? '';
-    if (!order_number.trim() || !delivery_method.trim() || !promised_date.trim()) {
-      setErro('Selecione o pedido (ERP), forma de entrega e data prometida.');
+    if (!order_number.trim() || !delivery_method.trim()) {
+      setErro('Selecione o pedido (ERP) e a forma de entrega.');
       return;
     }
     setSaving(true);
     try {
+      const dataOriginal = selectedPedidoFull?.dataOriginalEntrega;
+      const promisedDate = (dataOriginal && String(dataOriginal).trim().slice(0, 10)) || new Date().toISOString().slice(0, 10);
       await createSycroOrderOrder({
         order_number: order_number.trim(),
         delivery_method: delivery_method.trim(),
-        promised_date: promised_date.trim(),
+        promised_date: promisedDate,
         observation: observation.trim() || undefined,
-        is_urgent,
       });
       onSuccess();
     } catch (err) {
@@ -577,18 +725,22 @@ function ModalNovoPedido({
               className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 disabled:opacity-80 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800/70"
               required
             />
+            {(() => {
+              const fm = delivery_method.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+              const direcionadoJosenildo =
+                (fm.includes('entrega') && fm.includes('grande')) ||
+                (fm.includes('retirada') && fm.includes('moveis')) ||
+                fm.includes('so aco');
+              return direcionadoJosenildo ? (
+                <p className="mt-1.5 text-sm text-primary-600 dark:text-primary-400 font-medium">
+                  Responsável por responder: josenildo
+                </p>
+              ) : null;
+            })()}
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Data prometida *</label>
-            <input type="date" value={promised_date} onChange={(e) => setPromised_date(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" required />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Observação</label>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Comentários</label>
             <textarea value={observation} onChange={(e) => setObservation(e.target.value)} rows={2} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
-          </div>
-          <div className="flex items-center gap-2">
-            <input type="checkbox" id="urgent" checked={is_urgent} onChange={(e) => setIs_urgent(e.target.checked)} className="rounded border-slate-300 dark:border-slate-600" />
-            <label htmlFor="urgent" className="text-sm text-slate-700 dark:text-slate-300">Urgente</label>
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm">Cancelar</button>
@@ -598,6 +750,14 @@ function ModalNovoPedido({
       </div>
     </div>
   );
+}
+
+type DialogStep = null | 'todos_itens' | 'sim_motivo' | 'nao_itens';
+
+interface ItemPedido {
+  id_pedido: string;
+  cod: string;
+  descricao: string;
 }
 
 function ModalAtualizarPedido({
@@ -613,19 +773,59 @@ function ModalAtualizarPedido({
   saving: boolean;
   setSaving: (v: boolean) => void;
 }) {
-  const [status, setStatus] = useState<Order['status']>(order.status);
+  const { login, grupo } = useAuth();
+  const podeGerenciarMotivos = login === 'master' || login === 'admin' || login === 'marquesfilho' || grupo === 'admin' || grupo === 'Administrador';
+
   const [new_date, setNew_date] = useState(order.current_promised_date);
+  const [marcarComoFaturado, setMarcarComoFaturado] = useState(false);
   const [observation, setObservation] = useState('');
-  const [is_urgent, setIs_urgent] = useState(!!order.is_urgent);
   const [erro, setErro] = useState<string | null>(null);
 
-  const submit = async (e: React.FormEvent) => {
+  const [dialogStep, setDialogStep] = useState<DialogStep>(null);
+  const [motivos, setMotivos] = useState<MotivoSugestao[]>([]);
+  const [loadingMotivos, setLoadingMotivos] = useState(false);
+  const [motivo, setMotivo] = useState('');
+  const [itensPedido, setItensPedido] = useState<ItemPedido[]>([]);
+  const [loadingItens, setLoadingItens] = useState(false);
+  const [selectedIdPedidos, setSelectedIdPedidos] = useState<Set<string>>(new Set());
+  const [observacaoItens, setObservacaoItens] = useState('');
+  const [observacaoSim, setObservacaoSim] = useState('');
+  const [abrirGerenciarMotivos, setAbrirGerenciarMotivos] = useState(false);
+
+  const novaDataPreenchida = new_date.trim() !== '';
+  const dataAlterada = novaDataPreenchida && new_date.trim() !== order.current_promised_date.trim();
+
+  const carregarMotivos = useCallback(() => {
+    setLoadingMotivos(true);
+    listarMotivosSugestao()
+      .then(setMotivos)
+      .catch(() => setMotivos([]))
+      .finally(() => setLoadingMotivos(false));
+  }, []);
+
+  const handleSalvarClick = (e: React.FormEvent) => {
     e.preventDefault();
     setErro(null);
+    if (dataAlterada) {
+      setDialogStep('todos_itens');
+      return;
+    }
+    submitDireto();
+  };
+
+  const submitDireto = async (payload?: { motivo?: string; id_pedidos?: string[]; observacao?: string }) => {
     setSaving(true);
     try {
-      await updateSycroOrderOrder(order.id, { status, new_date, observation: observation.trim() || undefined, is_urgent });
+      await updateSycroOrderOrder(order.id, {
+        ...(marcarComoFaturado && order.status === 'ESCALATED' ? { status: 'FINISHED' as const } : {}),
+        new_date: new_date.trim() || undefined,
+        comentario: observation.trim() || undefined,
+        observacao: payload?.observacao?.trim() || undefined,
+        motivo: payload?.motivo?.trim() || undefined,
+        id_pedidos: payload?.id_pedidos?.length ? payload.id_pedidos : undefined,
+      });
       onSuccess();
+      onClose();
     } catch (err) {
       setErro(err instanceof Error ? err.message : 'Erro ao atualizar.');
     } finally {
@@ -633,37 +833,187 @@ function ModalAtualizarPedido({
     }
   };
 
+  const handleTodosItensSim = () => {
+    setDialogStep('sim_motivo');
+    carregarMotivos();
+  };
+
+  const handleTodosItensNao = () => {
+    setDialogStep('nao_itens');
+    setLoadingItens(true);
+    listarPedidos({ pd: order.order_number, limit: 500 })
+      .then((res) => {
+        const itens: ItemPedido[] = (res.data ?? []).map((row: Record<string, unknown>) => ({
+          id_pedido: String(row.id_pedido ?? '').trim(),
+          cod: String(row.Cod ?? row.cod ?? '—').trim(),
+          descricao: String(row['Descricao do produto'] ?? row.descricao ?? '—').trim(),
+        })).filter((i) => i.id_pedido);
+        setItensPedido(itens);
+        setSelectedIdPedidos(new Set(itens.map((i) => i.id_pedido)));
+      })
+      .catch(() => setItensPedido([]))
+      .finally(() => setLoadingItens(false));
+    carregarMotivos();
+  };
+
+  const toggleItem = (id: string) => {
+    setSelectedIdPedidos((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSubmitSimMotivo = (e: React.FormEvent) => {
+    e.preventDefault();
+    const motivoTrim = motivo.trim();
+    if (!motivoTrim) {
+      setErro('Selecione um motivo.');
+      return;
+    }
+    setErro(null);
+    submitDireto({ motivo: motivoTrim, observacao: observacaoSim.trim() || undefined });
+  };
+
+  const handleSubmitNaoItens = (e: React.FormEvent) => {
+    e.preventDefault();
+    const motivoTrim = motivo.trim();
+    if (!motivoTrim) {
+      setErro('Selecione um motivo.');
+      return;
+    }
+    const ids = [...selectedIdPedidos];
+    if (ids.length === 0) {
+      setErro('Selecione ao menos um item do pedido.');
+      return;
+    }
+    setErro(null);
+    submitDireto({ motivo: motivoTrim, id_pedidos: ids, observacao: observacaoItens.trim() || undefined });
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
-        <form onSubmit={submit} className="p-4 space-y-4">
-          <h3 className="font-semibold text-slate-800 dark:text-slate-200">Atualizar — {order.order_number}</h3>
-          {erro && <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>}
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Status</label>
-            <select value={status} onChange={(e) => setStatus(e.target.value as Order['status'])} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200">
-              {order.status === 'PENDING' && <option value="PENDING">Aberto</option>}
-              <option value="ESCALATED">Respondido</option>
-              <option value="FINISHED">Atendido</option>
-            </select>
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        {dialogStep === null && (
+          <form onSubmit={handleSalvarClick} className="p-4 space-y-4 overflow-y-auto">
+            <h3 className="font-semibold text-slate-800 dark:text-slate-200">Atualizar — {order.order_number}</h3>
+            {erro && <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>}
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Nova data prometida</label>
+              <input type="date" value={new_date} onChange={(e) => setNew_date(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
+            </div>
+            {order.status === 'ESCALATED' && (
+              <div className="flex items-center gap-2">
+                <input type="checkbox" id="marcar-faturado" checked={marcarComoFaturado} onChange={(e) => setMarcarComoFaturado(e.target.checked)} className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500" />
+                <label htmlFor="marcar-faturado" className="text-sm font-medium text-slate-700 dark:text-slate-300">Marcar como Faturado/Entregue</label>
+              </div>
+            )}
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Comentários</label>
+              <textarea value={observation} onChange={(e) => setObservation(e.target.value)} rows={2} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm">Cancelar</button>
+              <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50">Salvar</button>
+            </div>
+          </form>
+        )}
+
+        {dialogStep === 'todos_itens' && (
+          <div className="p-4 space-y-4">
+            <h3 className="font-semibold text-slate-800 dark:text-slate-200">Atualizar — {order.order_number}</h3>
+            <p className="text-sm text-slate-600 dark:text-slate-400">A alteração deve ser para todos os itens do pedido?</p>
+            <div className="flex gap-3">
+              <button type="button" onClick={handleTodosItensSim} className="flex-1 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium">Sim</button>
+              <button type="button" onClick={handleTodosItensNao} className="flex-1 px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium">Não</button>
+            </div>
+            <button type="button" onClick={() => setDialogStep(null)} className="text-sm text-slate-500 dark:text-slate-400 hover:underline">Voltar</button>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Nova data prometida</label>
-            <input type="date" value={new_date} onChange={(e) => setNew_date(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Observação</label>
-            <textarea value={observation} onChange={(e) => setObservation(e.target.value)} rows={2} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
-          </div>
-          <div className="flex items-center gap-2">
-            <input type="checkbox" id="urgent-upd" checked={is_urgent} onChange={(e) => setIs_urgent(e.target.checked)} className="rounded border-slate-300 dark:border-slate-600" />
-            <label htmlFor="urgent-upd" className="text-sm text-slate-700 dark:text-slate-300">Urgente</label>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm">Cancelar</button>
-            <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50">Salvar</button>
-          </div>
-        </form>
+        )}
+
+        {dialogStep === 'sim_motivo' && (
+          <form onSubmit={handleSubmitSimMotivo} className="p-4 space-y-4 overflow-y-auto">
+            <h3 className="font-semibold text-slate-800 dark:text-slate-200">Atualizar — {order.order_number}</h3>
+            <p className="text-sm text-slate-600 dark:text-slate-400">Alteração para todos os itens. Selecione o motivo.</p>
+            {erro && <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>}
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Motivo</label>
+                {podeGerenciarMotivos && (
+                  <button type="button" onClick={() => setAbrirGerenciarMotivos(true)} className="text-xs text-primary-600 dark:text-primary-400 hover:underline" title="Gerenciar motivos">Gerenciar motivos</button>
+                )}
+              </div>
+              <select value={motivo} onChange={(e) => setMotivo(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" required>
+                <option value="">Selecione um motivo</option>
+                {motivos.map((m) => (
+                  <option key={m.id} value={m.descricao}>{m.descricao}</option>
+                ))}
+              </select>
+              {loadingMotivos && <p className="text-xs text-slate-500 mt-1">Carregando motivos...</p>}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Observação</label>
+              <textarea value={observacaoSim} onChange={(e) => setObservacaoSim(e.target.value)} rows={2} placeholder="Opcional" className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 placeholder-slate-500" />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setDialogStep('todos_itens')} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm">Voltar</button>
+              <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50">Salvar</button>
+            </div>
+          </form>
+        )}
+
+        {dialogStep === 'nao_itens' && (
+          <form onSubmit={handleSubmitNaoItens} className="p-4 flex flex-col min-h-0 flex-1 overflow-hidden">
+            <h3 className="font-semibold text-slate-800 dark:text-slate-200 shrink-0">Atualizar — {order.order_number}</h3>
+            <p className="text-sm text-slate-600 dark:text-slate-400 shrink-0 mb-2">Selecione os itens que devem receber o ajuste e o motivo.</p>
+            {erro && <p className="text-sm text-red-600 dark:text-red-400 shrink-0">{erro}</p>}
+            {loadingItens ? (
+              <p className="text-sm text-slate-500 py-4">Carregando itens...</p>
+            ) : (
+              <>
+                <div className="mb-3 overflow-y-auto flex-1 min-h-0 border border-slate-200 dark:border-slate-600 rounded-lg p-2 max-h-48">
+                  {itensPedido.map((item) => (
+                    <label key={item.id_pedido} className="flex items-start gap-2 py-1.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded px-2">
+                      <input type="checkbox" checked={selectedIdPedidos.has(item.id_pedido)} onChange={() => toggleItem(item.id_pedido)} className="mt-1 rounded border-slate-300 dark:border-slate-600" />
+                      <span className="text-sm text-slate-800 dark:text-slate-200"><strong>{item.cod}</strong> — {item.descricao}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="shrink-0 mb-3">
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Observação</label>
+                  <textarea value={observacaoItens} onChange={(e) => setObservacaoItens(e.target.value)} rows={2} placeholder="Opcional" className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 placeholder-slate-500" />
+                </div>
+                <div className="shrink-0 mb-3">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Motivo</label>
+                    {podeGerenciarMotivos && (
+                      <button type="button" onClick={() => setAbrirGerenciarMotivos(true)} className="text-xs text-primary-600 dark:text-primary-400 hover:underline">Gerenciar motivos</button>
+                    )}
+                  </div>
+                  <select value={motivo} onChange={(e) => setMotivo(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" required>
+                    <option value="">Selecione um motivo</option>
+                    {motivos.map((m) => (
+                      <option key={m.id} value={m.descricao}>{m.descricao}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex justify-end gap-2 pt-2 shrink-0">
+                  <button type="button" onClick={() => setDialogStep('todos_itens')} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm">Voltar</button>
+                  <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50">Salvar</button>
+                </div>
+              </>
+            )}
+          </form>
+        )}
+
+        {abrirGerenciarMotivos && podeGerenciarMotivos && (
+          <ModalGerenciarMotivos
+            onClose={() => setAbrirGerenciarMotivos(false)}
+            onError={(msg) => setErro(msg)}
+            onAtualizado={carregarMotivos}
+          />
+        )}
       </div>
     </div>
   );

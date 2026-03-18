@@ -12,6 +12,7 @@ import StatusApiPage from './pages/StatusApiPage';
 import HeatmapPage from './pages/HeatmapPage';
 import IntegracaoPage from './pages/IntegracaoPage';
 import AlteracaoDataEntregaCompraPage from './pages/integracao/AlteracaoDataEntregaCompraPage';
+import FaturamentoDiarioPage from './pages/integracao/FaturamentoDiarioPage';
 import ComprasPage from './pages/ComprasPage';
 import ColetasPrecosPage from './pages/compras/ColetasPrecosPage';
 import ComprasDashboardPage from './pages/compras/ComprasDashboardPage';
@@ -78,6 +79,7 @@ export default function App() {
           <Route path="relatorios" element={<RelatoriosPage />} />
           <Route path="integracao" element={<IntegracaoPage />} />
           <Route path="integracao/alteracao-data-entrega-compra" element={<AlteracaoDataEntregaCompraPage />} />
+          <Route path="integracao/faturamento-diario" element={<FaturamentoDiarioPage />} />
           <Route path="usuarios" element={<UsuariosPage />} />
           <Route path="whatsapp" element={<WhatsAppConnectPage />} />
           <Route path="situacao-api" element={<StatusApiPage />} />

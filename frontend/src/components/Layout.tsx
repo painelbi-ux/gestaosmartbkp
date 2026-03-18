@@ -45,6 +45,7 @@ const FINANCEIRO_SUBMENUS: { to: string; label: string }[] = [
 
 const INTEGRACAO_SUBMENUS: { to: string; label: string }[] = [
   { to: '/integracao/alteracao-data-entrega-compra', label: 'Alteração da Data de Entrega do Pedido de Compra' },
+  { to: '/integracao/faturamento-diario', label: 'Faturamento Diário' },
 ];
 
 /** Rotas que podem ser abertas em abas (path → label). Usado na barra de abas. */
@@ -65,6 +66,7 @@ const PATH_LABELS: Record<string, string> = {
   '/relatorios': 'Relatórios',
   '/integracao': 'Integração',
   '/integracao/alteracao-data-entrega-compra': 'Alteração Data Entrega',
+  '/integracao/faturamento-diario': 'Faturamento Diário',
   '/usuarios': 'Usuários',
   '/whatsapp': 'WhatsApp',
   '/situacao-api': 'Situação da API',
@@ -97,6 +99,15 @@ export default function Layout() {
   const isFinanceiroActive = location.pathname.startsWith('/financeiro');
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const syncPanelRef = useRef<HTMLDivElement>(null);
+
+  /** Fecha todos os dropdowns do menu e abre apenas o informado (evita sobreposição ao passar o mouse). */
+  const openOnly = useCallback((menu: 'pcp' | 'compras' | 'integracao' | 'engenharia' | 'financeiro') => {
+    setPcpOpen(menu === 'pcp');
+    setComprasOpen(menu === 'compras');
+    setIntegracaoOpen(menu === 'integracao');
+    setEngenhariaOpen(menu === 'engenharia');
+    setFinanceiroOpen(menu === 'financeiro');
+  }, []);
 
   /** Abas abertas no topo da área de conteúdo (cada submenu/rota em uma aba). */
   const [abas, setAbas] = useState<{ id: string; path: string; label: string }[]>(() => {
@@ -233,7 +244,7 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={() => setPcpOpen((v) => !v)}
-                  onMouseEnter={() => setPcpOpen(true)}
+                  onMouseEnter={() => openOnly('pcp')}
                   className={`inline-flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium transition ${
                     isPcpActive
                       ? 'bg-primary-600 text-white'
@@ -291,7 +302,7 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={() => setComprasOpen((v) => !v)}
-                  onMouseEnter={() => setComprasOpen(true)}
+                  onMouseEnter={() => openOnly('compras')}
                   className={`inline-flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium transition ${
                     isComprasActive
                       ? 'bg-primary-600 text-white'
@@ -335,7 +346,7 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={() => setEngenhariaOpen((v) => !v)}
-                  onMouseEnter={() => setEngenhariaOpen(true)}
+                  onMouseEnter={() => openOnly('engenharia')}
                   className={`inline-flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium transition ${
                     isEngenhariaActive
                       ? 'bg-primary-600 text-white'
@@ -379,7 +390,7 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={() => setFinanceiroOpen((v) => !v)}
-                  onMouseEnter={() => setFinanceiroOpen(true)}
+                  onMouseEnter={() => openOnly('financeiro')}
                   className={`inline-flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium transition ${
                     isFinanceiroActive
                       ? 'bg-primary-600 text-white'
@@ -423,7 +434,7 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={() => setIntegracaoOpen((v) => !v)}
-                  onMouseEnter={() => setIntegracaoOpen(true)}
+                  onMouseEnter={() => openOnly('integracao')}
                   className={`inline-flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium transition ${
                     isIntegracaoActive
                       ? 'bg-primary-600 text-white'

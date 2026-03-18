@@ -20,6 +20,7 @@ const ROTA_PERMISSAO: Record<string, string> = {
   '/relatorios': PERMISSOES.RELATORIOS_VER,
   '/integracao': PERMISSOES.INTEGRACAO_VER,
   '/integracao/alteracao-data-entrega-compra': PERMISSOES.INTEGRACAO_VER,
+  '/integracao/faturamento-diario': PERMISSOES.INTEGRACAO_VER,
   '/usuarios': PERMISSOES.USUARIOS_GERENCIAR,
   '/situacao-api': PERMISSOES.DASHBOARD_VER,
   '/whatsapp': PERMISSOES.USUARIOS_GERENCIAR,
@@ -28,7 +29,7 @@ const ROTA_PERMISSAO: Record<string, string> = {
 /** Rotas que só o master pode acessar (menu já escondido para não-master). */
 const ROTAS_APENAS_MASTER = ['/situacao-api', '/whatsapp'];
 
-const ROTAS_ORDEM = ['/', '/pedidos', '/pedidos/sycroorder', '/pedidos/mrp', '/pedidos/mpp', '/heatmap', '/compras', '/compras/dashboard', '/compras/coletas-precos', '/engenharia', '/engenharia/precificacao', '/financeiro', '/financeiro/resumo', '/relatorios', '/integracao', '/integracao/alteracao-data-entrega-compra', '/usuarios', '/situacao-api', '/whatsapp'];
+const ROTAS_ORDEM = ['/', '/pedidos', '/pedidos/sycroorder', '/pedidos/mrp', '/pedidos/mpp', '/heatmap', '/compras', '/compras/dashboard', '/compras/coletas-precos', '/engenharia', '/engenharia/precificacao', '/financeiro', '/financeiro/resumo', '/relatorios', '/integracao', '/integracao/alteracao-data-entrega-compra', '/integracao/faturamento-diario', '/usuarios', '/situacao-api', '/whatsapp'];
 
 function primeiraRotaPermitida(hasPermission: (codigo: string) => boolean): string | null {
   for (const path of ROTAS_ORDEM) {

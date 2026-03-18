@@ -7,6 +7,10 @@ import {
   getPedidoCompraDataEntregaFiltrosOpcoes,
   patchPedidoCompraDataEntregaItem,
   getHistoricoAlteracaoDataEntregaItem,
+  getTickets,
+  getTicketById,
+  getMensagemFaturamentoDiario,
+  postEnviarFaturamentoDiario,
 } from '../controllers/integracaoController.js';
 
 const router = Router();
@@ -35,5 +39,11 @@ router.get(
   requirePermission(PERMISSOES.INTEGRACAO_VER),
   getHistoricoAlteracaoDataEntregaItem
 );
+
+router.get('/tickets', requirePermission(PERMISSOES.INTEGRACAO_VER), getTickets);
+router.get('/tickets/:id', requirePermission(PERMISSOES.INTEGRACAO_VER), getTicketById);
+
+router.get('/faturamento-diario/mensagem', requirePermission(PERMISSOES.INTEGRACAO_VER), getMensagemFaturamentoDiario);
+router.post('/faturamento-diario/enviar', requirePermission(PERMISSOES.INTEGRACAO_VER), postEnviarFaturamentoDiario);
 
 export default router;

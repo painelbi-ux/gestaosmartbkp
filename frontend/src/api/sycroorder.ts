@@ -12,6 +12,10 @@ export interface SycroOrderOrder {
   created_at: string;
   last_responder_name: string | null;
   last_response_at: string | null;
+  /** Card está lido para o usuário atual */
+  read_by_me?: boolean;
+  /** Usuário atual pode responder (atualizar) o card; quando há responsável, só criador e josenildo */
+  can_respond?: boolean;
 }
 
 export interface SycroOrderHistoryItem {
@@ -24,6 +28,8 @@ export interface SycroOrderHistoryItem {
   new_date: string | null;
   observation: string | null;
   created_at: string;
+  /** Código do produto (Cod), preenchido quando o pedido tem mais de um item para identificar a qual item se refere o ajuste. */
+  product_code?: string | null;
 }
 
 export interface SycroOrderNotification {
@@ -67,6 +73,11 @@ export async function getSycroOrderOrders(): Promise<SycroOrderOrder[]> {
   return apiJson<SycroOrderOrder[]>('/api/sycroorder/orders');
 }
 
+/** Números de pedido (PD) que existem no Sycro — usado para bloquear importação na gestão. */
+export async function getSycroOrderOrderNumbers(): Promise<string[]> {
+  return apiJson<string[]>('/api/sycroorder/order-numbers');
+}
+
 export async function createSycroOrderOrder(body: {
   order_number: string;
   delivery_method: string;
@@ -85,8 +96,14 @@ export async function updateSycroOrderOrder(
   body: {
     status?: 'PENDING' | 'FINISHED' | 'ESCALATED';
     new_date?: string;
-    observation?: string;
+    /** Comentário do usuário no card (diálogo) — exibido no histórico. */
+    comentario?: string;
+    /** Observação complementar ao motivo — enviada ao Gerenciador de Pedidos. */
+    observacao?: string;
     is_urgent?: boolean;
+    motivo?: string;
+    /** Aplicar ajuste apenas a estes id_pedido (quando alteração não é para todos os itens). */
+    id_pedidos?: string[];
   }
 ): Promise<{ success: boolean }> {
   return apiJson<{ success: boolean }>(`/api/sycroorder/orders/${id}`, {
@@ -106,5 +123,13 @@ export async function getSycroOrderNotifications(): Promise<SycroOrderNotificati
 export async function markSycroOrderNotificationsRead(): Promise<{ success: boolean }> {
   return apiJson<{ success: boolean }>('/api/sycroorder/notifications/read', {
     method: 'POST',
+  });
+}
+
+/** Marca card como lido (true) ou não lido (false) para o usuário atual */
+export async function setSycroOrderRead(orderId: number, read: boolean): Promise<{ success: boolean }> {
+  return apiJson<{ success: boolean }>(`/api/sycroorder/orders/${orderId}/read`, {
+    method: 'PUT',
+    body: { read },
   });
 }

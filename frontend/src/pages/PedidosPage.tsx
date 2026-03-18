@@ -8,7 +8,7 @@ import ModalAjustePrevisao from '../components/ModalAjustePrevisao';
 import ModalReprogramacaoLote from '../components/ModalReprogramacaoLote';
 import { useAuth } from '../contexts/AuthContext';
 import { PERMISSOES } from '../config/permissoes';
-import { listarPedidos, listarPedidosExport, ajustarPrevisao, ajustarPrevisaoLote, limparHistorico, type Pedido } from '../api/pedidos';
+import { listarPedidos, listarPedidosExport, ajustarPrevisao, ajustarPrevisaoLote, limparHistorico, checkPedidosEmSycro, type Pedido } from '../api/pedidos';
 import { listarMotivosSugestao } from '../api/motivosSugestao';
 import { downloadPedidosXlsx, downloadPedidosGradeXlsx, parsePedidosXlsxForImport, type LinhaImportacao } from '../utils/exportImportPedidos';
 import ModalImportacao, { type ResultadoImportacao } from '../components/ModalImportacao';
@@ -305,6 +305,23 @@ export default function PedidosPage() {
       setImportMensagemErro(undefined);
       try {
         const linhas = await parsePedidosXlsxForImport(file);
+        const idPedidosUnicos = [...new Set(linhas.map((l) => l.id_pedido).filter(Boolean))];
+        if (idPedidosUnicos.length > 0) {
+          try {
+            const { pd_em_sycro } = await checkPedidosEmSycro(idPedidosUnicos);
+            if (pd_em_sycro.length > 0) {
+              setImportStatus('erro');
+              setImportMensagemErro(
+                `Upload bloqueado. O arquivo contém pedidos que estão no Sycro (${pd_em_sycro.join(', ')}). Faça alterações nesses pedidos diretamente no Sycro e tente novamente.`
+              );
+              setImportResultado(null);
+              setImportLoading(false);
+              return;
+            }
+          } catch {
+            // Se a verificação falhar (ex.: rede), permitir seguir; o backend pode validar depois se necessário
+          }
+        }
         const dataValida = (s: string) => {
           const t = s.trim();
           if (!t) return false;
