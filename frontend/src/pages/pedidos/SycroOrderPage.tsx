@@ -8,6 +8,8 @@ import {
   getSycroOrderNotifications,
   markSycroOrderNotificationsRead,
   setSycroOrderRead,
+  setSycroOrderTagDisponivel,
+  searchSycroOrderUsers,
   type SycroOrderOrder as Order,
   type SycroOrderHistoryItem,
   type SycroOrderNotification,
@@ -61,13 +63,16 @@ const KANBAN_LANES: { status: Order['status']; label: string; headerClass: strin
 ];
 
 export default function SycroOrderPage() {
+  const { login, grupo } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
   const [modalNovo, setModalNovo] = useState(false);
   const [modalEditar, setModalEditar] = useState<Order | null>(null);
+  const [modalEditarTagDisponivel, setModalEditarTagDisponivel] = useState<boolean | null>(null);
+  const [tagLoadingOrderId, setTagLoadingOrderId] = useState<number | null>(null);
   const [modalHistorico, setModalHistorico] = useState<Order | null>(null);
   const [modalNotif, setModalNotif] = useState(false);
+  const [mostrarFiltros, setMostrarFiltros] = useState(true);
   const [history, setHistory] = useState<SycroOrderHistoryItem[]>([]);
   const [notifications, setNotifications] = useState<SycroOrderNotification[]>([]);
   const [saving, setSaving] = useState(false);
@@ -78,7 +83,9 @@ export default function SycroOrderPage() {
     ultimaRespostaPor: string[];
     formaEntrega: string[];
     responsavel: string[];
-  }>({ pedido: [], criadoPor: [], ultimaRespostaPor: [], formaEntrega: [], responsavel: [] });
+    entrega7d: 'todos' | 'sim' | 'nao';
+    leitura: 'todos' | 'lidos' | 'nao_lidos';
+  }>({ pedido: [], criadoPor: [], ultimaRespostaPor: [], formaEntrega: [], responsavel: [], entrega7d: 'todos', leitura: 'todos' });
   const [buscaFiltro, setBuscaFiltro] = useState<{
     pedido: string;
     criadoPor: string;
@@ -103,15 +110,32 @@ export default function SycroOrderPage() {
     carregar();
   }, [carregar]);
 
-  const filteredBySearch = orders.filter((o) => {
-    if (!search.trim()) return true;
-    const term = search.trim().toLowerCase();
-    return (
-      o.order_number.toLowerCase().includes(term) ||
-      (o.creator_name ?? '').toLowerCase().includes(term) ||
-      (o.delivery_method ?? '').toLowerCase().includes(term)
-    );
-  });
+  useEffect(() => {
+    // Mantém o contador de não lidas no botão sem necessidade de clicar.
+    getSycroOrderNotifications()
+      .then(setNotifications)
+      .catch(() => setNotifications([]));
+  }, []);
+
+  const acionarTagDisponivel = useCallback(
+    async (order: Order, available: boolean) => {
+      setTagLoadingOrderId(order.id);
+      try {
+        await setSycroOrderTagDisponivel(order.id, available);
+        setToast(available ? 'DISPONÍVEL ativado.' : 'NÃO DISPONÍVEL ativado.');
+        setTimeout(() => setToast(null), 3000);
+        await carregar();
+      } catch (err) {
+        setToast(err instanceof Error ? err.message : 'Erro ao atualizar a TAG de disponibilidade.');
+        setTimeout(() => setToast(null), 5000);
+      } finally {
+        setTagLoadingOrderId(null);
+      }
+    },
+    [carregar]
+  );
+
+  const filteredBySearch = orders;
 
   const hasResponsavel = (dm: string) => {
     const fm = (dm ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
@@ -132,6 +156,16 @@ export default function SycroOrderPage() {
     if (filtros.formaEntrega.length > 0 && !filtros.formaEntrega.includes(forma)) return false;
     const resp = hasResponsavel(o.delivery_method ?? '') ? 'josenildo' : 'outros';
     if (filtros.responsavel.length > 0 && !filtros.responsavel.includes(resp)) return false;
+    if (filtros.entrega7d !== 'todos') {
+      const within7 = isPromisedWithin7Days(o.current_promised_date);
+      if (filtros.entrega7d === 'sim' && !within7) return false;
+      if (filtros.entrega7d === 'nao' && within7) return false;
+    }
+    if (filtros.leitura !== 'todos') {
+      const isRead = !!o.read_by_me;
+      if (filtros.leitura === 'lidos' && !isRead) return false;
+      if (filtros.leitura === 'nao_lidos' && isRead) return false;
+    }
     return true;
   });
 
@@ -177,24 +211,26 @@ export default function SycroOrderPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">SycroOrder</h2>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">Comunicação PD</h2>
           <button
             type="button"
-            onClick={abrirNotificacoes}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700/50 transition"
+            onClick={() => setMostrarFiltros((v) => !v)}
+            className="inline-flex items-center justify-center rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 p-2 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition"
+            title={mostrarFiltros ? 'Ocultar filtros' : 'Exibir filtros'}
+            aria-label={mostrarFiltros ? 'Ocultar filtros' : 'Exibir filtros'}
           >
-            Notificações
-          </button>
-          <button
-            type="button"
-            onClick={() => setModalNovo(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium transition"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            Novo Pedido
+            {mostrarFiltros ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                <line x1="1" y1="1" x2="23" y2="23" />
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            )}
           </button>
         </div>
       </div>
@@ -205,22 +241,12 @@ export default function SycroOrderPage() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-4">
-        <input
-          type="text"
-          placeholder="Buscar por número, criador, entrega..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 placeholder-slate-500 dark:placeholder-slate-400 text-sm w-64"
-        />
-      </div>
-
-      {(() => {
+      {mostrarFiltros && (() => {
         const opPedido = [...new Set(filteredBySearch.map((o) => o.order_number))].sort();
         const opCriadoPor = [...new Set(filteredBySearch.map((o) => (o.creator_name ?? '').trim() || '—'))].sort();
         const opUltimaResposta = [...new Set(filteredBySearch.map((o) => (o.last_responder_name ?? '').trim() || '—'))].sort();
         const opFormaEntrega = [...new Set(filteredBySearch.map((o) => (o.delivery_method ?? '').trim() || '—'))].sort();
-        const toggle = (key: keyof typeof filtros, value: string) => {
+        const toggle = (key: Exclude<keyof typeof filtros, 'entrega7d'>, value: string) => {
           setFiltros((prev) => {
             const arr = prev[key];
             const next = arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
@@ -239,14 +265,51 @@ export default function SycroOrderPage() {
         const opFormaEntregaFiltrado = filterBySearch(buscaFiltro.formaEntrega, opFormaEntrega);
         const opResponsavel = ['josenildo', 'outros'];
         const opResponsavelFiltrado = filterBySearch(buscaFiltro.responsavel, opResponsavel);
-        const temFiltro = filtros.pedido.length > 0 || filtros.criadoPor.length > 0 || filtros.ultimaRespostaPor.length > 0 || filtros.formaEntrega.length > 0 || filtros.responsavel.length > 0;
+        const temFiltro =
+          filtros.pedido.length > 0 ||
+          filtros.criadoPor.length > 0 ||
+          filtros.ultimaRespostaPor.length > 0 ||
+          filtros.formaEntrega.length > 0 ||
+          filtros.responsavel.length > 0 ||
+          filtros.entrega7d !== 'todos' ||
+          filtros.leitura !== 'todos';
         const listClass = 'flex flex-col gap-0.5 max-h-32 overflow-y-auto border border-slate-200 dark:border-slate-600 rounded-lg p-2 bg-slate-50 dark:bg-slate-800/50 min-w-[140px]';
         const itemClass = 'flex items-center gap-2 py-1 px-2 rounded text-sm cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50';
         const labelClass = 'text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5';
         return (
           <div className="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800/50 p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Filtros</p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={abrirNotificacoes}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700/50 transition"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  </svg>
+                  Notificações
+                  {notifications.filter((n) => !n.is_read).length > 0 && (
+                    <span className="ml-1 inline-flex items-center justify-center min-w-5 px-1.5 py-0.5 rounded-full bg-red-600 text-white text-xs font-semibold">
+                      {notifications.filter((n) => !n.is_read).length}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setModalNovo(true)}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium transition"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                  Novo Pedido
+                </button>
+              </div>
+            </div>
             <div className="flex flex-wrap items-end gap-2">
-              <p className="text-sm font-medium text-slate-700 dark:text-slate-300 w-full">Filtros</p>
               <div className="flex flex-wrap gap-6">
                 <div>
                   <p className={labelClass}>Pedido</p>
@@ -319,9 +382,99 @@ export default function SycroOrderPage() {
                     ))}
                   </ul>
                 </div>
+                <div>
+                  <p className={labelClass}>Leitura</p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setFiltros((p) => ({ ...p, leitura: 'nao_lidos' }))}
+                      className={`px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                        filtros.leitura === 'nao_lidos'
+                          ? 'bg-primary-600 border-primary-600 text-white'
+                          : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                      }`}
+                    >
+                      Não lidos
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFiltros((p) => ({ ...p, leitura: 'lidos' }))}
+                      className={`px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                        filtros.leitura === 'lidos'
+                          ? 'bg-primary-600 border-primary-600 text-white'
+                          : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                      }`}
+                    >
+                      Lidos
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFiltros((p) => ({ ...p, leitura: 'todos' }))}
+                      className={`px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                        filtros.leitura === 'todos'
+                          ? 'bg-primary-600 border-primary-600 text-white'
+                          : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                      }`}
+                    >
+                      Todos
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <p className={labelClass}>Entrega em 7 dias</p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setFiltros((p) => ({ ...p, entrega7d: 'sim' }))}
+                      className={`px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                        filtros.entrega7d === 'sim'
+                          ? 'bg-primary-600 border-primary-600 text-white'
+                          : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                      }`}
+                    >
+                      Sim
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFiltros((p) => ({ ...p, entrega7d: 'nao' }))}
+                      className={`px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                        filtros.entrega7d === 'nao'
+                          ? 'bg-primary-600 border-primary-600 text-white'
+                          : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                      }`}
+                    >
+                      Não
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFiltros((p) => ({ ...p, entrega7d: 'todos' }))}
+                      className={`px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                        filtros.entrega7d === 'todos'
+                          ? 'bg-primary-600 border-primary-600 text-white'
+                          : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                      }`}
+                    >
+                      Todos
+                    </button>
+                  </div>
+                </div>
               </div>
               {temFiltro && (
-                <button type="button" onClick={() => setFiltros({ pedido: [], criadoPor: [], ultimaRespostaPor: [], formaEntrega: [], responsavel: [] })} className="text-sm text-primary-600 dark:text-primary-400 hover:underline self-center">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFiltros({
+                      pedido: [],
+                      criadoPor: [],
+                      ultimaRespostaPor: [],
+                      formaEntrega: [],
+                      responsavel: [],
+                      entrega7d: 'todos',
+                      leitura: 'todos',
+                    })
+                  }
+                  className="text-sm text-primary-600 dark:text-primary-400 hover:underline self-center"
+                >
                   Limpar filtros
                 </button>
               )}
@@ -342,7 +495,7 @@ export default function SycroOrderPage() {
                 0%, 100% { border-color: rgb(239 68 68); box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.5); }
                 50% { border-color: rgb(239 68 68 / 0.4); box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.15); }
               }
-              .sycro-card-urgent-7d { animation: sycro-blink-red 1.2s ease-in-out infinite; }
+              .sycro-card-unread { animation: sycro-blink-red 1.2s ease-in-out infinite; }
             `}</style>
             <div className="flex gap-4 p-4 min-h-[420px] w-full">
               {KANBAN_LANES.map(({ status, label, headerClass }) => (
@@ -360,25 +513,40 @@ export default function SycroOrderPage() {
                   <div className="p-2 space-y-2 min-h-[320px] overflow-y-auto max-h-[calc(100vh - 280px)] flex-1">
                     {ordersByLane(status).map((o) => {
                       const within7 = isPromisedWithin7Days(o.current_promised_date);
+                      const unread = !o.read_by_me && o.status !== 'FINISHED';
+                      const loginNorm = (login ?? '').toLowerCase();
+                      const grupoNorm = (grupo ?? '').toLowerCase();
+                      const isAdminGrupo = grupoNorm === 'admin' || grupoNorm === 'administrador';
+                      const isControlTagUser = isAdminGrupo || loginNorm === 'josenildo' || loginNorm === 'viniciusrodrigues';
+                      const farolUsers = ['wellingtonsousa', 'francelino', 'marcosamorim', 'gilvania'];
+                      const isFarolUser = farolUsers.includes(loginNorm);
+                      const tagDesejado = !!o.tag_disponivel;
+                      const showTag = isControlTagUser || (isFarolUser && tagDesejado);
+                      const tagDisabled = o.status === 'FINISHED';
                       return (
                         <div
                           key={o.id}
                           className={`rounded-lg border-2 bg-white dark:bg-slate-800 shadow-sm hover:border-primary-400 dark:hover:border-primary-500 ${
-                            within7 ? 'sycro-card-urgent-7d border-red-500' : 'border-slate-200 dark:border-slate-600'
+                            unread ? 'sycro-card-unread border-red-500' : 'border-slate-200 dark:border-slate-600'
                           }`}
                         >
                           <div className="p-3">
                             <div className="flex items-start justify-between gap-2">
-                              <div className="flex items-center gap-1.5 min-w-0">
+                              <div className="flex items-start gap-1.5 min-w-0">
                                 <span
                                   title={o.read_by_me ? 'Lido' : 'Não lido'}
                                   className={`flex-shrink-0 w-2.5 h-2.5 rounded-full ${o.read_by_me ? 'bg-emerald-500' : 'bg-amber-500'}`}
                                   aria-hidden
                                 />
-                                <span className="font-medium text-slate-800 dark:text-slate-200 text-sm truncate">{o.order_number}</span>
+                                <div className="flex flex-col min-w-0">
+                                  <span className="font-medium text-slate-800 dark:text-slate-200 text-sm truncate">{o.order_number}</span>
+                                  <p className="text-xs text-slate-600 dark:text-slate-400 truncate" title={o.cliente_name ?? '—'}>
+                                    {o.cliente_name ?? '—'}
+                                  </p>
+                                </div>
                               </div>
                               <div className="flex flex-wrap gap-1 justify-end">
-                                {within7 && (
+                                {within7 && o.status !== 'FINISHED' && (
                                   <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200 flex-shrink-0">
                                     Entrega em 7 dias
                                   </span>
@@ -393,7 +561,11 @@ export default function SycroOrderPage() {
                                     <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-primary-100 dark:bg-primary-900/50 text-primary-800 dark:text-primary-200 flex-shrink-0">
                                       Responsável por responder: josenildo
                                     </span>
-                                  ) : null;
+                                  ) : (
+                                    <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-primary-100 dark:bg-primary-900/50 text-primary-800 dark:text-primary-200 flex-shrink-0">
+                                      Responsável por responder: PCP
+                                    </span>
+                                  );
                                 })()}
                                 {o.is_urgent ? (
                                   <>
@@ -405,8 +577,45 @@ export default function SycroOrderPage() {
                                 ) : null}
                               </div>
                             </div>
+                            {showTag && (
+                              <div className="flex justify-end mt-1">
+                                {isControlTagUser && !tagDisabled ? (
+                                  <button
+                                    type="button"
+                                    disabled={tagLoadingOrderId === o.id}
+                                    onClick={() => {
+                                      if (o.tag_disponivel) {
+                                        setModalEditarTagDisponivel(false);
+                                        setModalEditar(o);
+                                        setSycroOrderRead(o.id, true).then(() => carregar()).catch(() => {});
+                                      } else {
+                                        acionarTagDisponivel(o, true);
+                                      }
+                                    }}
+                                    className={`inline-flex px-2 py-1 rounded text-xs font-medium border transition ${
+                                      o.tag_disponivel
+                                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                                        : 'bg-slate-500/20 text-slate-300 dark:text-slate-400 border-slate-500/30'
+                                    }`}
+                                  >
+                                    {o.tag_disponivel ? 'DISPONÍVEL' : 'NÃO DISPONÍVEL'}
+                                  </button>
+                                ) : (
+                                  <span
+                                    className={`inline-flex px-2 py-1 rounded text-xs font-medium border ${
+                                      o.tag_disponivel
+                                        ? 'bg-emerald-600 text-white border-emerald-700'
+                                        : 'bg-slate-500/20 text-slate-300 dark:text-slate-400 border-slate-500/30'
+                                    }`}
+                                  >
+                                    {o.tag_disponivel ? 'DISPONÍVEL' : 'NÃO DISPONÍVEL'}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                             <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">{o.delivery_method}</p>
-                            <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">Data prometida: {formatDate(o.current_promised_date)}</p>
+                            <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">Data original: {formatDate(o.data_original ?? o.current_promised_date)}</p>
+                            <p className="text-xs text-slate-500 dark:text-slate-500">Previsão atual: {formatDate(o.previsao_atual ?? o.current_promised_date)}</p>
                             <p className="text-xs text-slate-500 dark:text-slate-500">Criador: {o.creator_name ?? '—'}</p>
                             {(o.last_responder_name || o.last_response_at) ? (
                               <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">
@@ -417,11 +626,21 @@ export default function SycroOrderPage() {
                             <div className="flex flex-wrap gap-2 mt-2 pt-2 border-t border-slate-100 dark:border-slate-700">
                               <button type="button" onClick={() => { abrirHistorico(o); setSycroOrderRead(o.id, true).then(() => carregar()).catch(() => {}); }} className="text-xs text-primary-600 dark:text-primary-400 hover:underline">Histórico</button>
                               {o.can_respond !== false ? (
-                                <button type="button" onClick={() => { setModalEditar(o); setSycroOrderRead(o.id, true).then(() => carregar()).catch(() => {}); }} className="text-xs text-primary-600 dark:text-primary-400 hover:underline">Atualizar</button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setModalEditarTagDisponivel(null);
+                                    setModalEditar(o);
+                                    setSycroOrderRead(o.id, true).then(() => carregar()).catch(() => {});
+                                  }}
+                                  className="text-xs text-primary-600 dark:text-primary-400 hover:underline"
+                                >
+                                  Atualizar
+                                </button>
                               ) : (
                                 <span className="text-xs text-slate-500 dark:text-slate-400">Apenas visualização</span>
                               )}
-                              {o.read_by_me && (
+                              {o.read_by_me && o.status !== 'FINISHED' && (
                                 <button type="button" onClick={() => setSycroOrderRead(o.id, false).then(() => carregar()).catch(() => {})} className="text-xs text-slate-500 dark:text-slate-400 hover:underline">Marcar como não lida</button>
                               )}
                             </div>
@@ -456,9 +675,14 @@ export default function SycroOrderPage() {
       {modalEditar && (
         <ModalAtualizarPedido
           order={modalEditar}
-          onClose={() => setModalEditar(null)}
+          tagDisponivelToSet={modalEditarTagDisponivel}
+          onClose={() => {
+            setModalEditar(null);
+            setModalEditarTagDisponivel(null);
+          }}
           onSuccess={() => {
             setModalEditar(null);
+            setModalEditarTagDisponivel(null);
             carregar();
             setToast('Pedido atualizado.');
             setTimeout(() => setToast(null), 3000);
@@ -503,6 +727,9 @@ export default function SycroOrderPage() {
                     const prevDateFormatted = h.previous_date ? formatDate(h.previous_date) : null;
                     const newDateFormatted = h.new_date ? formatDate(h.new_date) : null;
                     const mostraNovaPrevisao = !!newDateFormatted;
+                    const isCreate = h.action_type === 'CREATE';
+                    const isUpdate = h.action_type === 'UPDATE';
+                    const dateChanged = !!(h.previous_date && h.new_date && h.previous_date !== h.new_date);
                     return (
                       <li key={h.id} className="relative pl-4 pb-1 border-l-2 border-primary-500 dark:border-primary-400 last:pb-0">
                         <span className="font-medium text-slate-800 dark:text-slate-200">
@@ -510,6 +737,10 @@ export default function SycroOrderPage() {
                             ? 'Atendido automaticamente'
                             : h.action_type === 'AJUSTE_PREVISAO'
                               ? 'Ajuste de previsão'
+                              : h.action_type === 'TAG_DISPONIVEL_TRUE'
+                                ? 'Tag: DISPONÍVEL'
+                                : h.action_type === 'TAG_DISPONIVEL_FALSE'
+                                  ? 'Tag: NÃO DISPONÍVEL'
                               : h.action_type}
                         </span>
                         {h.user_name && <span className="text-slate-600 dark:text-slate-400"> — {h.user_name}</span>}
@@ -519,12 +750,37 @@ export default function SycroOrderPage() {
                           </span>
                         )}
                         <span className="block text-xs text-slate-500 dark:text-slate-500 mt-0.5">{formatDateTime(h.created_at)}</span>
-                        {mostraNovaPrevisao && (
-                          <p className="text-sm text-slate-700 dark:text-slate-300 mt-1 font-medium">
-                            {prevDateFormatted && newDateFormatted && h.previous_date !== h.new_date
-                              ? `Nova previsão ${prevDateFormatted} alterada para ${newDateFormatted}`
-                              : `Nova previsão alterada para ${newDateFormatted}`}
-                          </p>
+                        {isCreate ? (
+                          <div className="mt-1 space-y-0.5">
+                            <p className="text-sm text-slate-700 dark:text-slate-300 font-medium">
+                              Data original: {formatDate(modalHistorico.data_original ?? modalHistorico.current_promised_date)}
+                            </p>
+                            <p className="text-sm text-slate-700 dark:text-slate-300 font-medium">
+                              Previsão atual: {formatDate(modalHistorico.previsao_atual ?? modalHistorico.current_promised_date)}
+                            </p>
+                          </div>
+                        ) : (
+                          isUpdate ? (
+                            mostraNovaPrevisao ? (
+                              dateChanged ? (
+                                <p className="text-sm text-slate-700 dark:text-slate-300 mt-1 font-medium">
+                                  {prevDateFormatted && newDateFormatted ? `Nova previsão ${prevDateFormatted} alterada para ${newDateFormatted}` : `Nova previsão alterada para ${newDateFormatted}`}
+                                </p>
+                              ) : (
+                                <p className="text-sm text-slate-700 dark:text-slate-300 mt-1 font-medium">
+                                  Previsão atual: {newDateFormatted}
+                                </p>
+                              )
+                            ) : null
+                          ) : (
+                            mostraNovaPrevisao && (
+                              <p className="text-sm text-slate-700 dark:text-slate-300 mt-1 font-medium">
+                                {prevDateFormatted && newDateFormatted && h.previous_date !== h.new_date
+                                  ? `Nova previsão ${prevDateFormatted} alterada para ${newDateFormatted}`
+                                  : `Nova previsão alterada para ${newDateFormatted}`}
+                              </p>
+                            )
+                          )
                         )}
                         {h.observation && <p className="text-sm text-slate-600 dark:text-slate-400 mt-1.5 leading-relaxed">{h.observation}</p>}
                       </li>
@@ -588,6 +844,9 @@ function ModalNovoPedido({
   const [delivery_method, setDelivery_method] = useState('');
   const [observation, setObservation] = useState('');
   const [erro, setErro] = useState<string | null>(null);
+  const [itensPedido, setItensPedido] = useState<ItemPedido[]>([]);
+  const [loadingItens, setLoadingItens] = useState(false);
+  const [selectedIdPedidos, setSelectedIdPedidos] = useState<Set<string>>(new Set());
 
   const selectedPedidoFull = selectedPedido ? pedidosErpList.find((p) => p.id === selectedPedido.id) : null;
 
@@ -652,12 +911,61 @@ function ModalNovoPedido({
     setDelivery_method(pedido?.rota ?? '');
   };
 
+  useEffect(() => {
+    const pd = (selectedPedido?.nome ?? '').trim();
+    if (!pd) {
+      setItensPedido([]);
+      setSelectedIdPedidos(new Set());
+      return;
+    }
+    let cancelled = false;
+    setLoadingItens(true);
+    listarPedidos({ pd, limit: 500 })
+      .then((res) => {
+        if (cancelled) return;
+        const itens: ItemPedido[] = (res.data ?? [])
+          .map((row: Record<string, unknown>) => ({
+            id_pedido: String(row.id_pedido ?? '').trim(),
+            cod: String(row.Cod ?? row.cod ?? '—').trim(),
+            descricao: String(row['Descricao do produto'] ?? row.descricao ?? '—').trim(),
+          }))
+          .filter((i) => i.id_pedido);
+        const itensOrdenados = [...itens].sort((a, b) => a.descricao.localeCompare(b.descricao, 'pt-BR'));
+        setItensPedido(itensOrdenados);
+        setSelectedIdPedidos(new Set(itensOrdenados.map((i) => i.id_pedido)));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setItensPedido([]);
+        setSelectedIdPedidos(new Set());
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingItens(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPedido?.nome]);
+
+  const toggleItemNovo = (id: string) => {
+    setSelectedIdPedidos((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErro(null);
     const order_number = selectedPedido?.nome ?? '';
     if (!order_number.trim() || !delivery_method.trim()) {
       setErro('Selecione o pedido (ERP) e a forma de entrega.');
+      return;
+    }
+    if (selectedIdPedidos.size === 0) {
+      setErro('Selecione ao menos um item do pedido.');
       return;
     }
     setSaving(true);
@@ -669,6 +977,7 @@ function ModalNovoPedido({
         delivery_method: delivery_method.trim(),
         promised_date: promisedDate,
         observation: observation.trim() || undefined,
+        id_pedidos: [...selectedIdPedidos],
       });
       onSuccess();
     } catch (err) {
@@ -742,6 +1051,49 @@ function ModalNovoPedido({
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Comentários</label>
             <textarea value={observation} onChange={(e) => setObservation(e.target.value)} rows={2} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Itens do pedido</label>
+            {loadingItens ? (
+              <p className="text-sm text-slate-500 dark:text-slate-400 py-2">Carregando itens...</p>
+            ) : itensPedido.length === 0 ? (
+              <p className="text-sm text-slate-500 dark:text-slate-400 py-2">Nenhum item encontrado para este pedido.</p>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIdPedidos(new Set(itensPedido.map((i) => i.id_pedido)))}
+                    className="text-xs text-primary-600 dark:text-primary-400 hover:underline"
+                  >
+                    Selecionar todos
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIdPedidos(new Set())}
+                    className="text-xs text-slate-500 dark:text-slate-400 hover:underline"
+                  >
+                    Limpar seleção
+                  </button>
+                </div>
+                <div className="overflow-y-auto border border-slate-200 dark:border-slate-600 rounded-lg p-2 max-h-40 bg-slate-50 dark:bg-slate-800/50">
+                  {itensPedido.map((item) => (
+                    <label key={item.id_pedido} className="flex items-start gap-2 py-1.5 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 rounded px-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedIdPedidos.has(item.id_pedido)}
+                        onChange={() => toggleItemNovo(item.id_pedido)}
+                        className="mt-1 rounded border-slate-300 dark:border-slate-600"
+                      />
+                      <span className="text-sm text-slate-800 dark:text-slate-200">
+                        <strong>{item.cod}</strong> — {item.descricao}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Escolha quais itens esse card vai acompanhar (evita duplicidade por itens).</p>
+              </>
+            )}
+          </div>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm">Cancelar</button>
             <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50">Criar</button>
@@ -762,12 +1114,14 @@ interface ItemPedido {
 
 function ModalAtualizarPedido({
   order,
+  tagDisponivelToSet,
   onClose,
   onSuccess,
   saving,
   setSaving,
 }: {
   order: Order;
+  tagDisponivelToSet?: boolean | null;
   onClose: () => void;
   onSuccess: () => void;
   saving: boolean;
@@ -775,11 +1129,43 @@ function ModalAtualizarPedido({
 }) {
   const { login, grupo } = useAuth();
   const podeGerenciarMotivos = login === 'master' || login === 'admin' || login === 'marquesfilho' || grupo === 'admin' || grupo === 'Administrador';
+  const isAdminGrupo = (grupo ?? '').toLowerCase() === 'admin' || (grupo ?? '').toLowerCase() === 'administrador';
+  const isCommentOnlyUser = ['wellingtonsousa', 'francelino', 'marcosamorim', 'gilvania'].includes((login ?? '').toLowerCase()) && !isAdminGrupo;
 
+  const [querInformarNovaData, setQuerInformarNovaData] = useState<'sim' | 'nao' | null>(null);
   const [new_date, setNew_date] = useState(order.current_promised_date);
-  const [marcarComoFaturado, setMarcarComoFaturado] = useState(false);
   const [observation, setObservation] = useState('');
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionCandidates, setMentionCandidates] = useState<Array<{ login: string; nome: string | null }>>([]);
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionLoading, setMentionLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+
+  useEffect(() => {
+    const q = mentionQuery.trim();
+    if (!q || q.length < 2 || !mentionOpen) {
+      setMentionCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    setMentionLoading(true);
+    searchSycroOrderUsers(q)
+      .then((list) => {
+        if (cancelled) return;
+        setMentionCandidates(list);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMentionCandidates([]);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setMentionLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mentionQuery, mentionOpen, isCommentOnlyUser]);
 
   const [dialogStep, setDialogStep] = useState<DialogStep>(null);
   const [motivos, setMotivos] = useState<MotivoSugestao[]>([]);
@@ -806,10 +1192,31 @@ function ModalAtualizarPedido({
   const handleSalvarClick = (e: React.FormEvent) => {
     e.preventDefault();
     setErro(null);
+    if (isCommentOnlyUser) {
+      if (!observation.trim()) {
+        setErro('Comentário é obrigatório.');
+        return;
+      }
+      submitDireto();
+      return;
+    }
+    if (querInformarNovaData === null) {
+      setErro('Selecione "sim" ou "Não".');
+      return;
+    }
+    if (querInformarNovaData !== 'sim') {
+      if (!observation.trim()) {
+        setErro('Comentário é obrigatório quando não informar uma nova data prometida.');
+        return;
+      }
+      submitDireto();
+      return;
+    }
     if (dataAlterada) {
       setDialogStep('todos_itens');
       return;
     }
+    // Escolheu informar nova data, mas não alterou: salva apenas com comentário (opcional)
     submitDireto();
   };
 
@@ -817,8 +1224,8 @@ function ModalAtualizarPedido({
     setSaving(true);
     try {
       await updateSycroOrderOrder(order.id, {
-        ...(marcarComoFaturado && order.status === 'ESCALATED' ? { status: 'FINISHED' as const } : {}),
-        new_date: new_date.trim() || undefined,
+        ...(isCommentOnlyUser ? {} : (querInformarNovaData === 'sim' ? { new_date: new_date.trim() || undefined } : {})),
+        ...(tagDisponivelToSet === undefined || tagDisponivelToSet === null ? {} : { tag_disponivel: tagDisponivelToSet }),
         comentario: observation.trim() || undefined,
         observacao: payload?.observacao?.trim() || undefined,
         motivo: payload?.motivo?.trim() || undefined,
@@ -848,8 +1255,9 @@ function ModalAtualizarPedido({
           cod: String(row.Cod ?? row.cod ?? '—').trim(),
           descricao: String(row['Descricao do produto'] ?? row.descricao ?? '—').trim(),
         })).filter((i) => i.id_pedido);
-        setItensPedido(itens);
-        setSelectedIdPedidos(new Set(itens.map((i) => i.id_pedido)));
+        const itensOrdenados = [...itens].sort((a, b) => a.descricao.localeCompare(b.descricao, 'pt-BR'));
+        setItensPedido(itensOrdenados);
+        setSelectedIdPedidos(new Set(itensOrdenados.map((i) => i.id_pedido)));
       })
       .catch(() => setItensPedido([]))
       .finally(() => setLoadingItens(false));
@@ -899,19 +1307,92 @@ function ModalAtualizarPedido({
           <form onSubmit={handleSalvarClick} className="p-4 space-y-4 overflow-y-auto">
             <h3 className="font-semibold text-slate-800 dark:text-slate-200">Atualizar — {order.order_number}</h3>
             {erro && <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>}
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Nova data prometida</label>
-              <input type="date" value={new_date} onChange={(e) => setNew_date(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
-            </div>
-            {order.status === 'ESCALATED' && (
-              <div className="flex items-center gap-2">
-                <input type="checkbox" id="marcar-faturado" checked={marcarComoFaturado} onChange={(e) => setMarcarComoFaturado(e.target.checked)} className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500" />
-                <label htmlFor="marcar-faturado" className="text-sm font-medium text-slate-700 dark:text-slate-300">Marcar como Faturado/Entregue</label>
+            {!isCommentOnlyUser && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Deseja informar uma nova data prometida?</label>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setQuerInformarNovaData((p) => (p === 'sim' ? null : 'sim'))}
+                    className={`px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                      querInformarNovaData === 'sim'
+                        ? 'bg-primary-600 border-primary-600 text-white'
+                        : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                    }`}
+                  >
+                    Sim
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuerInformarNovaData((p) => (p === 'nao' ? null : 'nao'))}
+                    className={`px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                      querInformarNovaData === 'nao'
+                        ? 'bg-primary-600 border-primary-600 text-white'
+                        : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                    }`}
+                  >
+                    Não
+                  </button>
+                </div>
+                {querInformarNovaData === 'sim' && (
+                  <div className="mt-3">
+                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Nova data prometida</label>
+                    <input
+                      type="date"
+                      value={new_date}
+                      onChange={(e) => setNew_date(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200"
+                    />
+                  </div>
+                )}
               </div>
             )}
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Comentários</label>
-              <textarea value={observation} onChange={(e) => setObservation(e.target.value)} rows={2} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
+              <div className="relative">
+                <textarea
+                  value={observation}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setObservation(next);
+                    const m = next.match(/@([a-zA-Z0-9_.]+)$/);
+                    if (m && (m[1] ?? '').trim()) {
+                      setMentionQuery(String(m[1] ?? '').trim());
+                      setMentionOpen(true);
+                    } else {
+                      setMentionQuery('');
+                      setMentionOpen(false);
+                      setMentionCandidates([]);
+                    }
+                  }}
+                  rows={2}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200"
+                />
+                {mentionOpen && mentionCandidates.length > 0 && !mentionLoading && (
+                  <div className="absolute left-0 right-0 z-20 mt-1 max-h-40 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg">
+                    {mentionCandidates.map((u) => (
+                      <button
+                        key={u.login}
+                        type="button"
+                        onClick={() => {
+                          setObservation((prev) => (prev ? prev.replace(/@([a-zA-Z0-9_.]+)$/, `@${u.login}`) : `@${u.login}`));
+                          setMentionQuery('');
+                          setMentionOpen(false);
+                          setMentionCandidates([]);
+                        }}
+                        className="block w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-800 dark:text-slate-200"
+                      >
+                        @{u.login}{u.nome ? ` — ${u.nome}` : ''}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {mentionOpen && mentionLoading && (
+                  <div className="absolute left-0 right-0 z-20 mt-1 px-3 py-2 text-xs text-slate-500 dark:text-slate-400 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-600">
+                    Buscando...
+                  </div>
+                )}
+              </div>
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm">Cancelar</button>

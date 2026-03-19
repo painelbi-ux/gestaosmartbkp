@@ -25,9 +25,12 @@ function MoonIcon() {
 
 const PCP_SUBMENUS: { to: string; label: string }[] = [
   { to: '/pedidos', label: 'Gerenciador de Pedidos' },
-  { to: '/pedidos/sycroorder', label: 'SycroOrder' },
   { to: '/pedidos/mrp', label: 'MRP' },
   { to: '/pedidos/mpp', label: 'MPP' },
+];
+
+const COMUNICACAO_INTERNA_SUBMENUS: { to: string; label: string }[] = [
+  { to: '/pedidos/sycroorder', label: 'Comunicação PD' },
 ];
 
 const COMPRAS_SUBMENUS: { to: string; label: string }[] = [
@@ -52,7 +55,7 @@ const INTEGRACAO_SUBMENUS: { to: string; label: string }[] = [
 const PATH_LABELS: Record<string, string> = {
   '/': 'Dashboard',
   '/pedidos': 'Gerenciador de Pedidos',
-  '/pedidos/sycroorder': 'SycroOrder',
+  '/pedidos/sycroorder': 'Comunicação PD',
   '/pedidos/mrp': 'MRP',
   '/pedidos/mpp': 'MPP',
   '/heatmap': 'Heatmap',
@@ -83,6 +86,8 @@ export default function Layout() {
   const { hasPermission, isMaster } = useAuth();
   const [pcpOpen, setPcpOpen] = useState(false);
   const pcpRef = useRef<HTMLDivElement>(null);
+  const [comunicacaoOpen, setComunicacaoOpen] = useState(false);
+  const comunicacaoRef = useRef<HTMLDivElement>(null);
   const [comprasOpen, setComprasOpen] = useState(false);
   const comprasRef = useRef<HTMLDivElement>(null);
   const [integracaoOpen, setIntegracaoOpen] = useState(false);
@@ -93,6 +98,7 @@ export default function Layout() {
   const financeiroRef = useRef<HTMLDivElement>(null);
 
   const isPcpActive = location.pathname.startsWith('/pedidos');
+  const isComunicacaoActive = location.pathname === '/pedidos/sycroorder';
   const isComprasActive = location.pathname.startsWith('/compras');
   const isIntegracaoActive = location.pathname.startsWith('/integracao');
   const isEngenhariaActive = location.pathname.startsWith('/engenharia');
@@ -101,8 +107,9 @@ export default function Layout() {
   const syncPanelRef = useRef<HTMLDivElement>(null);
 
   /** Fecha todos os dropdowns do menu e abre apenas o informado (evita sobreposição ao passar o mouse). */
-  const openOnly = useCallback((menu: 'pcp' | 'compras' | 'integracao' | 'engenharia' | 'financeiro') => {
+  const openOnly = useCallback((menu: 'pcp' | 'comunicacao' | 'compras' | 'integracao' | 'engenharia' | 'financeiro') => {
     setPcpOpen(menu === 'pcp');
+    setComunicacaoOpen(menu === 'comunicacao');
     setComprasOpen(menu === 'compras');
     setIntegracaoOpen(menu === 'integracao');
     setEngenhariaOpen(menu === 'engenharia');
@@ -192,6 +199,9 @@ export default function Layout() {
       if (pcpRef.current && !pcpRef.current.contains(e.target as Node)) {
         setPcpOpen(false);
       }
+      if (comunicacaoRef.current && !comunicacaoRef.current.contains(e.target as Node)) {
+        setComunicacaoOpen(false);
+      }
       if (comprasRef.current && !comprasRef.current.contains(e.target as Node)) {
         setComprasOpen(false);
       }
@@ -268,6 +278,50 @@ export default function Layout() {
                         key={item.to}
                         to={item.to}
                         onClick={() => setPcpOpen(false)}
+                        className={({ isActive }) =>
+                          `block px-4 py-2 text-sm transition ${
+                            isActive
+                              ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200 font-medium'
+                              : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                          }`
+                        }
+                      >
+                        {item.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {hasPermission(PERMISSOES.PEDIDOS_VER) && (
+              <div className="relative" ref={comunicacaoRef}>
+                <button
+                  type="button"
+                  onClick={() => setComunicacaoOpen((v) => !v)}
+                  onMouseEnter={() => openOnly('comunicacao')}
+                  className={`inline-flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium transition ${
+                    isComunicacaoActive
+                      ? 'bg-primary-600 text-white'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700/50'
+                  }`}
+                  aria-expanded={comunicacaoOpen}
+                  aria-haspopup="true"
+                >
+                  Comunicação interna
+                  <svg className="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {comunicacaoOpen && (
+                  <div
+                    className="absolute left-0 top-full mt-1 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseLeave={() => setComunicacaoOpen(false)}
+                  >
+                    {COMUNICACAO_INTERNA_SUBMENUS.map((item) => (
+                      <NavLink
+                        key={item.to}
+                        to={item.to}
+                        onClick={() => setComunicacaoOpen(false)}
                         className={({ isActive }) =>
                           `block px-4 py-2 text-sm transition ${
                             isActive

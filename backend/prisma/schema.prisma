@@ -244,6 +244,12 @@ model SycroOrderOrder {
   current_promised_date  String   // YYYY-MM-DD
   status                 String   @default("PENDING") // PENDING | FINISHED | ESCALATED
   is_urgent              Int      @default(0) // 0 ou 1
+  /// TAG de disponibilidade para "Comunicação PD" (DISPONÍVEL / NÃO DISPONÍVEL).
+  tag_disponivel         Int      @default(0) // 0 ou 1
+  /// Itens (id_pedido do ERP) referenciados por este card. Null = todos os itens do pedido.
+  item_ids_json          String?
+  /// Códigos (Cod) dos itens referenciados; usado só para exibição/diagnóstico.
+  item_codes_json        String?
   created_by             Int?     // Usuario.id (quem criou)
   creator_name           String?  // nome para exibição (migração ou fallback)
   created_at             DateTime @default(now())

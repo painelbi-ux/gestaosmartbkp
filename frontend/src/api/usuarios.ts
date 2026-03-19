@@ -31,3 +31,23 @@ export async function criarUsuario(payload: {
   }
   return res.json();
 }
+
+export async function atualizarUsuario(
+  id: number,
+  payload: {
+    senha?: string;
+    nome?: string | null;
+    grupoId?: number | null;
+    fotoUrl?: string | null;
+  }
+): Promise<Usuario> {
+  const res = await apiFetch(`/api/usuarios/${id}`, {
+    method: 'PUT',
+    body: payload,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((err as { error?: string }).error ?? 'Erro ao atualizar usuário');
+  }
+  return res.json();
+}

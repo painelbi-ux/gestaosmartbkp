@@ -36,8 +36,8 @@ export const TODAS_PERMISSOES: CodigoPermissao[] = [
 
 export const LABELS_PERMISSOES: Record<CodigoPermissao, string> = {
   [PERMISSOES.DASHBOARD_VER]: 'Ver Dashboard',
-  [PERMISSOES.PEDIDOS_VER]: 'Ver Pedidos',
-  [PERMISSOES.PEDIDOS_EDITAR]: 'Editar previsões / Exportar / Importar',
+  [PERMISSOES.PEDIDOS_VER]: 'Ver Comunicação interna (Comunicação PD) e Pedidos',
+  [PERMISSOES.PEDIDOS_EDITAR]: 'Editar previsões (MRP/MPP) e Comunicação PD',
   [PERMISSOES.HEATMAP_VER]: 'Ver Heatmap',
   [PERMISSOES.COMPRAS_VER]: 'Ver Compras (Coletas de preços)',
   [PERMISSOES.COMPRAS_EDITAR]: 'Todas as funcionalidades (Compras)',

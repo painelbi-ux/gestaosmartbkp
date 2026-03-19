@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { listarUsuarios, criarUsuario, type Usuario } from '../api/usuarios';
+import { listarUsuarios, criarUsuario, atualizarUsuario, type Usuario } from '../api/usuarios';
 import {
   listarGrupos,
   listarPermissoes,
@@ -20,11 +20,18 @@ const criarUsuarioSchema = z.object({
   fotoUrl: z.string().max(MAX_FOTO_BASE64).optional().nullable(),
 });
 
+const atualizarUsuarioSchema = z.object({
+  senha: z.string().min(4, 'Senha deve ter no mínimo 4 caracteres').max(100).optional(),
+  nome: z.string().max(100).optional().nullable(),
+  grupoId: z.number().int().positive().optional().nullable(),
+  fotoUrl: z.string().max(MAX_FOTO_BASE64).optional().nullable(),
+});
+
 type Tab = 'usuarios' | 'grupos';
 
 const SECOES_PERMISSOES: Record<string, string> = {
   dashboard: 'DASHBOARD',
-  pedidos: 'PEDIDOS',
+  pedidos: 'COMUNICAÇÃO INTERNA (Comunicação PD) / PEDIDOS',
   heatmap: 'HEATMAP',
   compras: 'COMPRAS',
   precificacao: 'ENGENHARIA',
@@ -66,6 +73,18 @@ export default function UsuariosPage() {
   const [fotoBase64, setFotoBase64] = useState<string | null>(null);
   const [salvandoUsuario, setSalvandoUsuario] = useState(false);
   const [formErrorUsuario, setFormErrorUsuario] = useState('');
+
+  // ---------- Editar usuário ----------
+  const [editandoUsuarioId, setEditandoUsuarioId] = useState<number | null>(null);
+  const [editLogin, setEditLogin] = useState<string>('');
+  const [editSenha, setEditSenha] = useState<string>('');
+  const [editNome, setEditNome] = useState<string>('');
+  const [editGrupoId, setEditGrupoId] = useState<number | ''>('');
+  const [editFotoPreview, setEditFotoPreview] = useState<string | null>(null);
+  // undefined = não mexeu; null = remover; string = novo valor
+  const [editFotoBase64, setEditFotoBase64] = useState<string | null | undefined>(undefined);
+  const [salvandoEditarUsuario, setSalvandoEditarUsuario] = useState(false);
+  const [formErrorEditarUsuario, setFormErrorEditarUsuario] = useState('');
 
   // Form grupo (criar / editar)
   const [grupoNome, setGrupoNome] = useState('');
@@ -132,6 +151,32 @@ export default function UsuariosPage() {
     setFotoBase64(null);
   };
 
+  const handleEditFotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setFormErrorEditarUsuario('Selecione uma imagem (JPG, PNG ou GIF).');
+      return;
+    }
+    if (file.size > 400_000) {
+      setFormErrorEditarUsuario('Imagem deve ter no máximo ~400 KB.');
+      return;
+    }
+    setFormErrorEditarUsuario('');
+    const reader = new FileReader();
+    reader.onload = () => {
+      const data = reader.result as string;
+      setEditFotoPreview(data);
+      setEditFotoBase64(data);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const removerEditFoto = () => {
+    setEditFotoPreview(null);
+    setEditFotoBase64(null);
+  };
+
   // ---------- Usuários ----------
   const handleSubmitUsuario = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -162,6 +207,65 @@ export default function UsuariosPage() {
       setFormErrorUsuario(err instanceof Error ? err.message : 'Erro ao criar usuário.');
     } finally {
       setSalvandoUsuario(false);
+    }
+  };
+
+  const abrirEditarUsuario = (u: Usuario) => {
+    setEditandoUsuarioId(u.id);
+    setEditLogin(u.login);
+    setEditSenha('');
+    setEditNome(u.nome ?? '');
+    setEditGrupoId(u.grupoId ?? '');
+    setEditFotoPreview(u.fotoUrl ?? null);
+    setEditFotoBase64(undefined);
+    setFormErrorEditarUsuario('');
+  };
+
+  const fecharFormEditarUsuario = () => {
+    setEditandoUsuarioId(null);
+    setEditLogin('');
+    setEditSenha('');
+    setEditNome('');
+    setEditGrupoId('');
+    setEditFotoPreview(null);
+    setEditFotoBase64(undefined);
+    setFormErrorEditarUsuario('');
+    setSalvandoEditarUsuario(false);
+  };
+
+  const handleSubmitEditarUsuario = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editandoUsuarioId) return;
+
+    setFormErrorEditarUsuario('');
+
+    const payloadBase: Record<string, unknown> = {
+      nome: editNome.trim() === '' ? null : editNome.trim(),
+      grupoId: editGrupoId === '' ? null : Number(editGrupoId),
+    };
+
+    if (editSenha.trim()) payloadBase.senha = editSenha.trim();
+
+    if (editFotoBase64 !== undefined) {
+      payloadBase.fotoUrl = editFotoBase64;
+    }
+
+    const parsed = atualizarUsuarioSchema.safeParse(payloadBase);
+    if (!parsed.success) {
+      setFormErrorEditarUsuario(parsed.error.flatten().formErrors.join(' ') || 'Preencha os campos.');
+      return;
+    }
+
+    setSalvandoEditarUsuario(true);
+    try {
+      await atualizarUsuario(editandoUsuarioId, parsed.data);
+      await carregar();
+      showToast('Usuário atualizado com sucesso.');
+      fecharFormEditarUsuario();
+    } catch (err) {
+      setFormErrorEditarUsuario(err instanceof Error ? err.message : 'Erro ao atualizar usuário.');
+    } finally {
+      setSalvandoEditarUsuario(false);
     }
   };
 
@@ -409,9 +513,120 @@ export default function UsuariosPage() {
                     <span className="font-medium text-slate-800 dark:text-slate-200 block truncate">{u.login}</span>
                     <span className="text-xs text-slate-500 dark:text-slate-400 block truncate">{u.nome || '—'} · {u.grupo || 'Sem grupo'}</span>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => abrirEditarUsuario(u)}
+                    className="shrink-0 text-primary-600 dark:text-primary-400 hover:underline text-sm"
+                  >
+                    Editar
+                  </button>
                 </li>
               ))}
             </ul>
+
+            {editandoUsuarioId && (
+              <div className="mt-6 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 p-6 shadow-sm">
+                <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200 mb-4">
+                  Editar usuário <span className="text-slate-500 dark:text-slate-400 text-sm font-normal">{editLogin}</span>
+                </h3>
+                <form onSubmit={handleSubmitEditarUsuario} className="space-y-4">
+                  <div className="flex gap-4 items-start">
+                    <div className="flex-shrink-0">
+                      <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Foto</label>
+                      <div className="relative">
+                        {editFotoPreview ? (
+                          <div className="relative group">
+                            <img
+                              src={editFotoPreview}
+                              alt="Preview"
+                              className="w-20 h-20 rounded-full object-cover border-2 border-slate-200 dark:border-slate-600"
+                            />
+                            <button
+                              type="button"
+                              onClick={removerEditFoto}
+                              className="absolute inset-0 rounded-full bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs transition"
+                            >
+                              Remover
+                            </button>
+                          </div>
+                        ) : (
+                          <label className="w-20 h-20 rounded-full border-2 border-dashed border-slate-300 dark:border-slate-600 flex items-center justify-center cursor-pointer hover:border-primary-500 dark:hover:border-primary-400 bg-slate-50 dark:bg-slate-700/50 text-slate-400 dark:text-slate-500 text-2xl">
+                            <span>👤</span>
+                            <input
+                              type="file"
+                              accept="image/jpeg,image/png,image/gif,image/webp"
+                              onChange={handleEditFotoChange}
+                              className="sr-only"
+                            />
+                          </label>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex-1 min-w-0 space-y-4">
+                      <div>
+                        <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nome</label>
+                        <input
+                          type="text"
+                          value={editNome}
+                          onChange={(e) => setEditNome(e.target.value)}
+                          className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
+                          placeholder="Opcional"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Grupo (define permissões)</label>
+                        <select
+                          value={editGrupoId === '' ? '' : editGrupoId}
+                          onChange={(e) => setEditGrupoId(e.target.value === '' ? '' : Number(e.target.value))}
+                          className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
+                        >
+                          <option value="">Nenhum</option>
+                          {grupos.map((g) => (
+                            <option key={g.id} value={g.id}>
+                              {g.nome}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Senha (opcional)</label>
+                    <input
+                      type="password"
+                      value={editSenha}
+                      onChange={(e) => setEditSenha(e.target.value)}
+                      className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
+                      placeholder="Deixe em branco para não alterar"
+                    />
+                  </div>
+
+                  {formErrorEditarUsuario && (
+                    <p className="text-amber-600 dark:text-amber-400 text-sm">{formErrorEditarUsuario}</p>
+                  )}
+
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="submit"
+                      disabled={salvandoEditarUsuario}
+                      className="flex-1 rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white px-4 py-2 text-sm font-medium"
+                    >
+                      {salvandoEditarUsuario ? 'Salvando...' : 'Salvar alterações'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={fecharFormEditarUsuario}
+                      disabled={salvandoEditarUsuario}
+                      className="rounded-lg border border-slate-300 dark:border-slate-600 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -447,6 +662,7 @@ export default function UsuariosPage() {
                 <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2">Permissões de acesso às telas</label>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
                   Marque apenas o que este grupo pode acessar. Usuários sem permissão para uma tela não verão o menu nem a rota.
+                  A Comunicação PD usa as permissões do módulo de Pedidos.
                 </p>
                 <div className="space-y-4">
                   {agruparPermissoes(permissoesLista).map(({ secao, itens }) => (
