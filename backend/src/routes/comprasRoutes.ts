@@ -11,8 +11,14 @@ router.use(requireAuth);
 function async503(handler: RequestHandler): RequestHandler {
   return (req, res, next) => {
     Promise.resolve(handler(req, res, next)).catch((err) => {
-      console.error('[comprasRoutes]', (err instanceof Error ? err.message : String(err)));
-      if (!res.headersSent) res.status(503).json({ error: 'Serviço temporariamente indisponível. Tente novamente.' });
+      const cause = err instanceof Error ? err.message : String(err);
+      console.error('[comprasRoutes]', cause, err instanceof Error ? err.stack : '');
+      if (!res.headersSent) {
+        res.status(503).json({
+          error: 'Serviço temporariamente indisponível. Tente novamente.',
+          cause,
+        });
+      }
     });
   };
 }

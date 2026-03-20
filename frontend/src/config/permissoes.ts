@@ -6,6 +6,7 @@ export const PERMISSOES = {
   DASHBOARD_VER: 'dashboard.ver',
   PEDIDOS_VER: 'pedidos.ver',
   PEDIDOS_EDITAR: 'pedidos.editar',
+  COMUNICACAO_VER: 'comunicacao.ver',
   HEATMAP_VER: 'heatmap.ver',
   COMPRAS_VER: 'compras.ver',
   COMPRAS_EDITAR: 'compras.editar',

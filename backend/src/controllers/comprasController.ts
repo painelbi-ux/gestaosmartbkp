@@ -116,10 +116,18 @@ async function getColetasBloqueantesInterno(login: string): Promise<{ id: number
       },
       select: { id: true, status: true, createdAt: true, dataUltimaMovimentacao: true },
     });
-    return candidatas.filter((c) => {
-      const ref = c.dataUltimaMovimentacao ?? c.createdAt;
-      return ref < limite;
-    });
+    return candidatas
+      .filter((c) => {
+        const ref = c.dataUltimaMovimentacao ?? c.createdAt;
+        return ref != null && ref < limite;
+      })
+      .map((c) => ({
+        id: c.id,
+        status: c.status,
+        /** Prisma usa `createdAt`; o restante do controller expõe como dataCriacao. */
+        dataCriacao: c.createdAt,
+        dataUltimaMovimentacao: c.dataUltimaMovimentacao,
+      }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (/dataUltimaMovimentacao|coleta_precos_ciencia|ciencias|no such table|no such column/i.test(msg)) return [];
@@ -143,7 +151,7 @@ export async function getColetasBloqueantes(req: Request, res: Response): Promis
       data: bloqueantes.map((b) => ({
         id: b.id,
         status: b.status ?? 'Em cotação',
-        dataCriacao: b.dataCriacao.toISOString(),
+        dataCriacao: b.dataCriacao?.toISOString() ?? '',
         dataUltimaMovimentacao: b.dataUltimaMovimentacao?.toISOString() ?? null,
       })),
     });
@@ -997,80 +1005,115 @@ function normalizarItensColeta(body: { itens?: unknown; idProdutos?: unknown }):
  * Cria uma coleta de preços: um registro por item (produto + solicitação quando informada).
  */
 export async function postConfirmarColeta(req: Request, res: Response): Promise<void> {
-  let body = req.body as { itens?: unknown; idProdutos?: unknown };
-  if (typeof body === 'string') {
-    try {
-      body = JSON.parse(body) as { itens?: unknown; idProdutos?: unknown };
-    } catch {
-      res.status(400).json({ error: 'Body JSON inválido.' });
-      return;
-    }
-  }
-  const itens = normalizarItensColeta(body);
-  if (itens.length === 0) {
-    res.status(400).json({ error: 'Envie itens (idProduto e opcionalmente codigoSolicitacao) ou idProdutos com pelo menos um id válido.' });
-    return;
-  }
+  /** SQLite: limite típico de ~999 variáveis por statement — fatiamos inserts. */
+  const ITEM_BATCH = 80;
+  const REG_BATCH = 80;
 
-  const itensComSolicitacao = itens.filter((i) => i.codigoSolicitacao != null && Number(i.codigoSolicitacao) > 0);
-  if (itensComSolicitacao.length > 0) {
-    const pares = itensComSolicitacao.map((i) => ({ idProduto: i.idProduto, idSolicitacao: i.codigoSolicitacao! }));
-    const itensEmColetasAtivas = await prisma.coletaPrecosItem.findMany({
-      where: {
-        coletaPrecos: { status: { not: 'Rejeitada' } },
-        OR: pares.map((p) => ({ idProduto: p.idProduto, idSolicitacao: p.idSolicitacao })),
-      },
-      select: { coletaPrecosId: true },
-    });
-    const idsColetasConflito = [...new Set(itensEmColetasAtivas.map((r) => r.coletaPrecosId))];
-    if (idsColetasConflito.length > 0) {
-      const coletasInfo = await prisma.coletaPrecos.findMany({
-        where: { id: { in: idsColetasConflito } },
-        select: { id: true, status: true },
-      });
-      const listaColetas = coletasInfo.map((c) => `#${c.id} (${c.status ?? 'Em cotação'})`).join(', ');
-      res.status(400).json({
-        error: 'Não é possível criar a coleta: um ou mais itens selecionados possuem solicitação já vinculada a uma coleta existente. Coletas canceladas (Rejeitada) não são consideradas.',
-        coletasEmConflito: coletasInfo.map((c) => ({ id: c.id, status: c.status ?? 'Em cotação' })),
-        messageDetail: `Coletas com vínculo: ${listaColetas}.`,
-      });
-      return;
-    }
-  }
-
-  const usuarioCriacao = req.user?.login ?? null;
-  if (usuarioCriacao) {
-    let bloqueantes: { id: number; status: string | null; dataCriacao: Date; dataUltimaMovimentacao: Date | null }[] = [];
-    try {
-      bloqueantes = await getColetasBloqueantesInterno(usuarioCriacao);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[comprasController] postConfirmarColeta getColetasBloqueantesInterno:', msg);
-    }
-    if (bloqueantes.length > 0) {
-      res.status(403).json({
-        error: 'Você não pode criar nova coleta enquanto houver coleta(s) com mais de 72 horas sem movimentação e sem ciência justificada. Vá em Coletas de Preços e clique em "Dar ciência" em cada coleta indicada.',
-        bloqueante: true,
-        coletas: bloqueantes.map((b) => ({ id: b.id, status: b.status, dataCriacao: b.dataCriacao.toISOString(), dataUltimaMovimentacao: b.dataUltimaMovimentacao?.toISOString() ?? null })),
-      });
-      return;
-    }
-  }
-  const idProdutosUnicos = [...new Set(itens.map((i) => i.idProduto))];
   try {
+    let body: { itens?: unknown; idProdutos?: unknown } = {};
+    const raw = req.body;
+    if (typeof raw === 'string') {
+      try {
+        body = JSON.parse(raw) as { itens?: unknown; idProdutos?: unknown };
+      } catch {
+        if (!res.headersSent) res.status(400).json({ error: 'Body JSON inválido.' });
+        return;
+      }
+    } else if (raw != null && typeof raw === 'object' && !Array.isArray(raw)) {
+      body = raw as { itens?: unknown; idProdutos?: unknown };
+    }
+
+    const itens = normalizarItensColeta(body);
+    if (itens.length === 0) {
+      if (!res.headersSent) {
+        res.status(400).json({
+          error: 'Envie itens (idProduto e opcionalmente codigoSolicitacao) ou idProdutos com pelo menos um id válido.',
+        });
+      }
+      return;
+    }
+
+    const usuarioCriacao = req.user?.login ?? null;
+    if (usuarioCriacao) {
+      let bloqueantes: { id: number; status: string | null; dataCriacao: Date; dataUltimaMovimentacao: Date | null }[] = [];
+      try {
+        bloqueantes = await getColetasBloqueantesInterno(usuarioCriacao);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[comprasController] postConfirmarColeta getColetasBloqueantesInterno:', msg);
+      }
+      if (bloqueantes.length > 0) {
+        if (!res.headersSent) {
+          res.status(403).json({
+            error:
+              'Você não pode criar nova coleta enquanto houver coleta(s) com mais de 72 horas sem movimentação e sem ciência justificada. Vá em Coletas de Preços e clique em "Dar ciência" em cada coleta indicada.',
+            bloqueante: true,
+            coletas: bloqueantes.map((b) => ({
+              id: b.id,
+              status: b.status,
+              dataCriacao: b.dataCriacao?.toISOString() ?? null,
+              dataUltimaMovimentacao: b.dataUltimaMovimentacao?.toISOString() ?? null,
+            })),
+          });
+        }
+        return;
+      }
+    }
+
+    const itensComSolicitacao = itens.filter((i) => i.codigoSolicitacao != null && Number(i.codigoSolicitacao) > 0);
+    if (itensComSolicitacao.length > 0) {
+      const pares = itensComSolicitacao.map((i) => ({ idProduto: i.idProduto, idSolicitacao: i.codigoSolicitacao! }));
+      const itensEmColetasAtivas: { coletaPrecosId: number }[] = [];
+      const CHUNK_OR = 80;
+      for (let i = 0; i < pares.length; i += CHUNK_OR) {
+        const chunk = pares.slice(i, i + CHUNK_OR);
+        const rows = await prisma.coletaPrecosItem.findMany({
+          where: {
+            coletaPrecos: { status: { not: 'Rejeitada' } },
+            OR: chunk.map((p) => ({ idProduto: p.idProduto, idSolicitacao: p.idSolicitacao })),
+          },
+          select: { coletaPrecosId: true },
+        });
+        itensEmColetasAtivas.push(...rows);
+      }
+      const idsColetasConflito = [...new Set(itensEmColetasAtivas.map((r) => r.coletaPrecosId))];
+      if (idsColetasConflito.length > 0) {
+        const coletasInfo = await prisma.coletaPrecos.findMany({
+          where: { id: { in: idsColetasConflito } },
+          select: { id: true, status: true },
+        });
+        const listaColetas = coletasInfo.map((c) => `#${c.id} (${c.status ?? 'Em cotação'})`).join(', ');
+        if (!res.headersSent) {
+          res.status(400).json({
+            error:
+              'Não é possível criar a coleta: um ou mais itens selecionados possuem solicitação já vinculada a uma coleta existente. Coletas canceladas (Rejeitada) não são consideradas.',
+            coletasEmConflito: coletasInfo.map((c) => ({ id: c.id, status: c.status ?? 'Em cotação' })),
+            messageDetail: `Coletas com vínculo: ${listaColetas}.`,
+          });
+        }
+        return;
+      }
+    }
+
     const agora = dataUltimaMovimentacao();
     const coleta = await prisma.coletaPrecos.create({
       data: {
         usuarioCriacao,
         dataUltimaMovimentacao: agora,
-        itens: {
-          create: itens.map(({ idProduto, codigoSolicitacao }) => ({
-            idProduto,
-            idSolicitacao: codigoSolicitacao ?? undefined,
-          })),
-        },
       },
     });
+
+    for (let off = 0; off < itens.length; off += ITEM_BATCH) {
+      const batch = itens.slice(off, off + ITEM_BATCH);
+      await prisma.coletaPrecosItem.createMany({
+        data: batch.map(({ idProduto, codigoSolicitacao }) => ({
+          coletaPrecosId: coleta.id,
+          idProduto,
+          idSolicitacao:
+            codigoSolicitacao != null && Number.isFinite(codigoSolicitacao) && codigoSolicitacao > 0 ? codigoSolicitacao : null,
+        })),
+      });
+    }
 
     const itensNomus = itens.map((i) => ({ idProduto: i.idProduto, idSolicitacao: i.codigoSolicitacao ?? null }));
     let rows: Record<string, unknown>[] = [];
@@ -1090,34 +1133,62 @@ export async function postConfirmarColeta(req: Request, res: Response): Promise<
           const k = Object.keys(r).find((key) => /^id\s*produto$/i.test(key.trim()));
           return k ? r[k] : r['Id Produto'] ?? r['id produto'] ?? r.idProduto;
         };
-        const values = rows.map((r, idx) => {
-          const row = typeof r === 'object' && r !== null ? (r as Record<string, unknown>) : {};
-          const plain = { ...row };
-          const raw = keyIdProduto(plain);
-          const idProduto = Number(raw ?? 0);
-          const idSolicitacao = idx < itens.length ? (itens[idx].codigoSolicitacao ?? null) : null;
-          return { coletaPrecosId: coleta.id, idProduto, idSolicitacao, dados: JSON.stringify(plain), qtdeAprovada: null, idFornecedorVencedor: null };
-        }).filter((v) => v.idProduto > 0);
+        const values = rows
+          .map((r, idx) => {
+            const row = typeof r === 'object' && r !== null ? (r as Record<string, unknown>) : {};
+            const plain = { ...row };
+            const raw = keyIdProduto(plain);
+            const idProduto = Number(raw ?? 0);
+            const idSolicitacao = idx < itens.length ? (itens[idx].codigoSolicitacao ?? null) : null;
+            return {
+              coletaPrecosId: coleta.id,
+              idProduto,
+              idSolicitacao,
+              dados: JSON.stringify(plain),
+              qtdeAprovada: null as number | null,
+              idFornecedorVencedor: null as number | null,
+            };
+          })
+          .filter((v) => v.idProduto > 0);
         if (values.length === 0) {
-          console.warn('[comprasController] postConfirmarColeta: Nomus retornou', rows.length, 'linhas mas nenhum idProduto válido extraído. Chaves da 1ª linha:', Object.keys(rows[0] || {}));
-        } else {
-          const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
-          const params = values.flatMap((v) => [v.coletaPrecosId, v.idProduto, v.idSolicitacao ?? null, v.dados, v.qtdeAprovada, v.idFornecedorVencedor]);
-          await prisma.$executeRawUnsafe(
-            `INSERT INTO coleta_precos_registro (coletaPrecosId, idProduto, idSolicitacao, dados, qtdeAprovada, idFornecedorVencedor) VALUES ${placeholders}`,
-            ...params
+          console.warn(
+            '[comprasController] postConfirmarColeta: Nomus retornou',
+            rows.length,
+            'linhas mas nenhum idProduto válido extraído. Chaves da 1ª linha:',
+            Object.keys(rows[0] || {}),
           );
+        } else {
+          for (let off = 0; off < values.length; off += REG_BATCH) {
+            const slice = values.slice(off, off + REG_BATCH);
+            const placeholders = slice.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+            const params = slice.flatMap((v) => [
+              v.coletaPrecosId,
+              v.idProduto,
+              v.idSolicitacao ?? null,
+              v.dados,
+              v.qtdeAprovada,
+              v.idFornecedorVencedor,
+            ]);
+            await prisma.$executeRawUnsafe(
+              `INSERT INTO coleta_precos_registro (coletaPrecosId, idProduto, idSolicitacao, dados, qtdeAprovada, idFornecedorVencedor) VALUES ${placeholders}`,
+              ...params,
+            );
+          }
         }
       } catch (insertErr) {
         console.warn('[comprasController] postConfirmarColeta INSERT registro:', insertErr);
       }
     }
 
-    res.status(201).json({ id: coleta.id, itens, registros: rows.length });
+    if (!res.headersSent) {
+      res.status(201).json({ id: coleta.id, itens, registros: rows.length });
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[comprasController] postConfirmarColeta:', msg);
-    res.status(503).json({ error: msg });
+    if (!res.headersSent) {
+      res.status(503).json({ error: msg });
+    }
   }
 }
 

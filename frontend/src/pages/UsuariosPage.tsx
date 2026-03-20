@@ -32,6 +32,7 @@ type Tab = 'usuarios' | 'grupos';
 const SECOES_PERMISSOES: Record<string, string> = {
   dashboard: 'DASHBOARD',
   pedidos: 'COMUNICAÇÃO INTERNA (Comunicação PD) / PEDIDOS',
+  comunicacao: 'COMUNICAÇÃO INTERNA (Comunicação PD)',
   heatmap: 'HEATMAP',
   compras: 'COMPRAS',
   precificacao: 'ENGENHARIA',

@@ -21,6 +21,7 @@ import ResumoFinanceiroPage from './pages/financeiro/ResumoFinanceiroPage';
 import SycroOrderPage from './pages/pedidos/SycroOrderPage';
 import MRPPage from './pages/pedidos/MRPPage';
 import MPPPage from './pages/pedidos/MPPPage';
+import ProgramacaoSetorialPainelPage from './pages/pedidos/ProgramacaoSetorialPainelPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { getStoredToken } from './api/client';
 import { checkAuth } from './api/auth';
@@ -68,6 +69,7 @@ export default function App() {
           <Route path="pedidos/sycroorder" element={<ErrorBoundary><SycroOrderPage /></ErrorBoundary>} />
           <Route path="pedidos/mrp" element={<ErrorBoundary><MRPPage /></ErrorBoundary>} />
           <Route path="pedidos/mpp" element={<ErrorBoundary><MPPPage /></ErrorBoundary>} />
+          <Route path="pedidos/programacao-setorial" element={<ErrorBoundary><ProgramacaoSetorialPainelPage /></ErrorBoundary>} />
           <Route path="heatmap" element={<HeatmapPage />} />
           <Route path="compras" element={<ComprasPage />} />
           <Route path="compras/dashboard" element={<ComprasDashboardPage />} />

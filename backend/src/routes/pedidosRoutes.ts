@@ -26,8 +26,10 @@ import {
 const router = Router();
 router.use(requireAuth);
 
-// Permissão "Ver pedidos" para todas as rotas GET
-const verPedidos = requirePermission(PERMISSOES.PEDIDOS_VER);
+// Permissão "Ver pedidos" para rotas GET.
+// Compatibilidade: usuários com acesso à Comunicação PD (comunicacao.ver) também precisam
+// poder listar itens para criação de cards (modal "Novo Pedido" em /pedidos/sycroorder).
+const verPedidos = requirePermission(PERMISSOES.PEDIDOS_VER, PERMISSOES.COMUNICACAO_VER);
 const verFinanceiro = requirePermission(PERMISSOES.FINANCEIRO_VER);
 
 // Rate limit para rotas de escrita (ajustar previsão)

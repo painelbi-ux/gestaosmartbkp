@@ -236,6 +236,21 @@ model PrecificacaoItem {
   @@map("precificacao_item")
 }
 
+/// Registro das programações setoriais a executar.
+model ProgramacaoSetorialRegistro {
+  id         Int      @id @default(autoincrement())
+  nome       String
+  status     String   @default("PENDENTE") // PENDENTE | EM_EXECUCAO | CONCLUIDA | CANCELADA
+  observacao String?
+  criadoPor  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("programacao_setorial_registro")
+}
+
 // --- SycroOrder (migrado do sincroorder-crm): pedidos, histórico e notificações ---
 model SycroOrderOrder {
   id                    Int      @id @default(autoincrement())

@@ -84,16 +84,26 @@ export async function confirmarColetaPrecos(itens: ItemColetaPayload[]): Promise
     body: { itens },
   });
   const text = await res.text();
-  let body: { error?: string; id?: number; coletasEmConflito?: ColetaEmConflito[]; messageDetail?: string; bloqueante?: boolean; coletas?: ColetaBloqueante[] } = {};
+  let body: {
+    error?: string;
+    cause?: string;
+    id?: number;
+    coletasEmConflito?: ColetaEmConflito[];
+    messageDetail?: string;
+    bloqueante?: boolean;
+    coletas?: ColetaBloqueante[];
+  } = {};
   try {
     body = text ? JSON.parse(text) : {};
   } catch {
     body = { error: text || res.statusText };
   }
   if (!res.ok) {
+    const base = body.error ?? res.statusText;
+    const detalhe = body.cause && body.cause !== base ? ` (${body.cause})` : '';
     return {
       ok: false,
-      error: body.error ?? res.statusText,
+      error: `${base}${detalhe}`,
       coletasEmConflito: body.coletasEmConflito,
       bloqueante: body.bloqueante,
       coletas: body.coletas,

@@ -27,6 +27,7 @@ const PCP_SUBMENUS: { to: string; label: string }[] = [
   { to: '/pedidos', label: 'Gerenciador de Pedidos' },
   { to: '/pedidos/mrp', label: 'MRP' },
   { to: '/pedidos/mpp', label: 'MPP' },
+  { to: '/pedidos/programacao-setorial', label: 'Programação Setorial' },
 ];
 
 const COMUNICACAO_INTERNA_SUBMENUS: { to: string; label: string }[] = [
@@ -53,14 +54,15 @@ const INTEGRACAO_SUBMENUS: { to: string; label: string }[] = [
 
 /** Rotas que podem ser abertas em abas (path → label). Usado na barra de abas. */
 const PATH_LABELS: Record<string, string> = {
-  '/': 'Dashboard',
+  '/': 'Dashboard PD',
   '/pedidos': 'Gerenciador de Pedidos',
   '/pedidos/sycroorder': 'Comunicação PD',
   '/pedidos/mrp': 'MRP',
   '/pedidos/mpp': 'MPP',
+  '/pedidos/programacao-setorial': 'Programação Setorial',
   '/heatmap': 'Heatmap',
   '/compras': 'Compras',
-  '/compras/dashboard': 'Dashboard',
+  '/compras/dashboard': 'Dashboard Compras',
   '/compras/coletas-precos': 'Coletas de Preços',
   '/engenharia': 'Engenharia',
   '/engenharia/precificacao': 'Precificação',
@@ -122,13 +124,13 @@ export default function Layout() {
     return [{ id: path, path, label: getLabelForPath(path) }];
   });
 
-  /** Perfil compras (não-master com Compras): ao abrir em / ou /compras, vai para Dashboard Compras com uma única aba. */
+  /** Perfil compras (não-master com Compras): ao entrar em `/` ou `/compras`, vai para o Dashboard com uma única aba. */
   const soCompras = !isMaster && hasPermission(PERMISSOES.COMPRAS_VER);
   useEffect(() => {
     if (!soCompras) return;
     const path = location.pathname || '/';
     if (path === '/' || path === '/compras') {
-      setAbas([{ id: '/compras/dashboard', path: '/compras/dashboard', label: 'Dashboard' }]);
+      setAbas([{ id: '/compras/dashboard', path: '/compras/dashboard', label: 'Dashboard Compras' }]);
       navigate('/compras/dashboard', { replace: true });
     }
   }, [location.pathname, soCompras, navigate]);
@@ -136,9 +138,6 @@ export default function Layout() {
   useEffect(() => {
     const path = location.pathname || '/';
     setAbas((prev) => {
-      if (soCompras && path.startsWith('/compras')) {
-        return [{ id: path, path, label: getLabelForPath(path) }];
-      }
       const exists = prev.some((a) => a.path === path);
       if (exists) return prev;
       return [...prev, { id: path, path, label: getLabelForPath(path) }];

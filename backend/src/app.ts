@@ -20,6 +20,7 @@ import engenhariaRoutes from './routes/engenhariaRoutes.js';
 import sycroorderRoutes from './routes/sycroorderRoutes.js';
 import mrpRoutes from './routes/mrpRoutes.js';
 import mppRoutes from './routes/mppRoutes.js';
+import programacaoSetorialRoutes from './routes/programacaoSetorialRoutes.js';
 import { csrfProtect } from './middleware/csrf.js';
 
 const app = express();
@@ -113,6 +114,7 @@ app.use('/api/engenharia', engenhariaRoutes);
 app.use('/api/sycroorder', sycroorderRoutes);
 app.use('/api/mrp', mrpRoutes);
 app.use('/api/mpp', mppRoutes);
+app.use('/api/programacao-setorial', programacaoSetorialRoutes);
 
 // Header em todas as respostas para conferir na outra máquina se está rodando o build novo
 export const BUILD_ID = 'pedidos-no-csrf-v1';

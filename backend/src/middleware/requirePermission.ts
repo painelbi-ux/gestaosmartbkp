@@ -28,17 +28,28 @@ export async function getPermissoesUsuario(login: string): Promise<CodigoPermiss
  */
 export function requirePermission(...permissoes: CodigoPermissao[]) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const login = req.user?.login;
-    if (!login) {
-      res.status(401).json({ error: 'Não autorizado.' });
-      return;
+    try {
+      const login = req.user?.login;
+      if (!login) {
+        res.status(401).json({ error: 'Não autorizado.' });
+        return;
+      }
+      const userPerms = await getPermissoesUsuario(login);
+      const hasAny = permissoes.some((p) => userPerms.includes(p));
+      if (hasAny) {
+        next();
+        return;
+      }
+      res.status(403).json({ error: 'Sem permissão para esta ação.', code: 'permission_denied' });
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      console.error('[requirePermission]', cause);
+      if (!res.headersSent) {
+        res.status(503).json({
+          error: 'Serviço temporariamente indisponível. Tente novamente.',
+          cause,
+        });
+      }
     }
-    const userPerms = await getPermissoesUsuario(login);
-    const hasAny = permissoes.some((p) => userPerms.includes(p));
-    if (hasAny) {
-      next();
-      return;
-    }
-    res.status(403).json({ error: 'Sem permissão para esta ação.', code: 'permission_denied' });
   };
 }

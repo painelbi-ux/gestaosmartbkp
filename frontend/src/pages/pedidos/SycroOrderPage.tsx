@@ -263,7 +263,9 @@ export default function SycroOrderPage() {
         const opCriadoPorFiltrado = filterBySearch(buscaFiltro.criadoPor, opCriadoPor);
         const opUltimaRespostaFiltrado = filterBySearch(buscaFiltro.ultimaRespostaPor, opUltimaResposta);
         const opFormaEntregaFiltrado = filterBySearch(buscaFiltro.formaEntrega, opFormaEntrega);
-        const opResponsavel = ['josenildo', 'outros'];
+        // Opções do filtro devem refletir apenas os cards existentes.
+        // Quando não há cards, a lista precisa ficar vazia (evita exibir "josenildo/outros" para nada).
+        const opResponsavel = [...new Set(filteredBySearch.map((o) => (hasResponsavel(o.delivery_method ?? '') ? 'josenildo' : 'outros')))].sort();
         const opResponsavelFiltrado = filterBySearch(buscaFiltro.responsavel, opResponsavel);
         const temFiltro =
           filtros.pedido.length > 0 ||
@@ -912,8 +914,12 @@ function ModalNovoPedido({
   };
 
   useEffect(() => {
-    const pd = (selectedPedido?.nome ?? '').trim();
-    if (!pd) {
+    const pdRaw = (selectedPedido?.nome ?? '').trim();
+    // Normaliza para extrair apenas números (ex.: "PD 47483" -> "47483"),
+    // evitando problemas com espaços/formatos diferentes do rótulo exibido.
+    const pdDigits = pdRaw.replace(/\D+/g, '');
+    const pd = pdDigits || pdRaw;
+    if (!pdRaw) {
       setItensPedido([]);
       setSelectedIdPedidos(new Set());
       return;
@@ -938,6 +944,8 @@ function ModalNovoPedido({
         if (cancelled) return;
         setItensPedido([]);
         setSelectedIdPedidos(new Set());
+        // Se a listagem falhar (ex.: permissões), manter UI coerente e mostrar motivo ao usuário.
+        setErro('Erro ao carregar os itens do pedido. Verifique suas permissões e tente novamente.');
       })
       .finally(() => {
         if (!cancelled) setLoadingItens(false);
