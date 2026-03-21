@@ -7,9 +7,12 @@ const COLUNAS: { key: string; label: string; integer?: boolean; decimal?: number
   { key: 'codigoComponente', label: 'Cód. componente' },
   { key: 'componente', label: 'Componente' },
   { key: 'unidademedida', label: 'UM' },
-  { key: 'qtdTotalComponente', label: 'Qtd total componente', decimal: 3 },
-  { key: 'qtd', label: 'Qtd', decimal: 3 },
-  { key: 'qtdAcumulado', label: 'Quantidade acumulado', decimal: 3 },
+  { key: 'Quantidade', label: 'Qtde Pedido', decimal: 3 },
+  { key: 'qtd', label: 'Qtd Unitária do Componente', decimal: 3 },
+  { key: 'qtdTotalComponente', label: 'Qtd Total do Componente', decimal: 3 },
+  { key: 'qtdAcumulado', label: 'Quantidade Acumulada', decimal: 3 },
+  { key: 'Estoque_PA', label: 'Estoque PA', decimal: 3 },
+  { key: 'Estoque_MP_PA', label: 'Estoque MP PA', decimal: 3 },
   { key: 'dataPrevisao', label: 'Data de Previsão', lastColumn: true },
 ];
 
@@ -48,6 +51,7 @@ export default function MPPPage() {
   const [loading, setLoading] = useState(() => !mppCache);
   const [erro, setErro] = useState<string | null>(null);
   const [filterCodigoPedido, setFilterCodigoPedido] = useState('');
+  const [filterCodigoProduto, setFilterCodigoProduto] = useState('');
   const [filterCliente, setFilterCliente] = useState('');
   const [filterSegmentacao, setFilterSegmentacao] = useState('');
   const [filterCodigoComponente, setFilterCodigoComponente] = useState('');
@@ -56,6 +60,7 @@ export default function MPPPage() {
 
   const getFiltros = () => ({
     codigo_pedido: filterCodigoPedido.trim() || undefined,
+    codigo_produto: filterCodigoProduto.trim() || undefined,
     cliente: filterCliente.trim() || undefined,
     segmentacao: filterSegmentacao.trim() || undefined,
     codigo_componente: filterCodigoComponente.trim() || undefined,
@@ -63,7 +68,11 @@ export default function MPPPage() {
     apenas_com_previsao: apenasComPrevisao || undefined,
   });
 
-  const carregar = useCallback(async (pagina: number, filtros?: { codigo_pedido?: string; cliente?: string; segmentacao?: string; codigo_componente?: string; componente?: string; apenas_com_previsao?: boolean }) => {
+  const carregar = useCallback(
+    async (
+      pagina: number,
+      filtros?: { codigo_pedido?: string; codigo_produto?: string; cliente?: string; segmentacao?: string; codigo_componente?: string; componente?: string; apenas_com_previsao?: boolean }
+    ) => {
     setLoading(true);
     setErro(null);
     const f = filtros ?? getFiltros();
@@ -81,7 +90,9 @@ export default function MPPPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  },
+    []
+  );
 
   useEffect(() => {
     if (mppCache) {
@@ -108,6 +119,7 @@ export default function MPPPage() {
 
   const temFiltros =
     filterCodigoPedido.trim() !== '' ||
+    filterCodigoProduto.trim() !== '' ||
     filterCliente.trim() !== '' ||
     filterSegmentacao.trim() !== '' ||
     filterCodigoComponente.trim() !== '' ||
@@ -116,6 +128,7 @@ export default function MPPPage() {
 
   const limparFiltros = () => {
     setFilterCodigoPedido('');
+    setFilterCodigoProduto('');
     setFilterCliente('');
     setFilterSegmentacao('');
     setFilterCodigoComponente('');
@@ -232,6 +245,16 @@ export default function MPPPage() {
               placeholder="Filtrar..."
               value={filterSegmentacao}
               onChange={(e) => setFilterSegmentacao(e.target.value)}
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </label>
+          <label className="flex flex-col gap-1 min-w-[180px]">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Código produto</span>
+            <input
+              type="text"
+              placeholder="Filtrar..."
+              value={filterCodigoProduto}
+              onChange={(e) => setFilterCodigoProduto(e.target.value)}
               className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             />
           </label>

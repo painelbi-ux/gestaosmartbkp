@@ -99,6 +99,38 @@ group by pe.id) qde on qde.id = pe.id
 WHERE
 	ip.status in (2, 3)
 ),
+CTE_ESTOQUE_PA AS (
+  SELECT
+    cod AS nome,
+    descricao,
+    CASE
+      WHEN SUM(saldoSetorFinalRaw) <= 0 THEN 0
+      ELSE SUM(saldoSetorFinalRaw)
+    END AS saldoSetorFinal
+  FROM (
+    SELECT
+      sep.idProduto,
+      p.nome AS cod,
+      p.descricao,
+      sep.saldoSetorFinal AS saldoSetorFinalRaw,
+      ROW_NUMBER() OVER (
+        PARTITION BY sep.idProduto, sep.idSetorEstoque
+        ORDER BY sep.dataMovimentacao DESC, sep.id DESC
+      ) AS rn
+    FROM saldoestoque_produto sep
+    LEFT JOIN setorestoque se ON se.id = sep.idSetorEstoque
+    LEFT JOIN produto p ON p.id = sep.idProduto
+    LEFT JOIN movimentacaoproducao mp ON mp.id = sep.idMovimentacao
+    LEFT JOIN tipomovimentacao tm ON tm.id = mp.idTipoMovimentacao
+    LEFT JOIN tipoproduto tp ON tp.id = p.idTipoProduto
+    WHERE sep.idSetorEstoque IN (5, 24)
+      AND tp.id IN (8, 15)
+      AND p.ativo = 1
+      AND se.idEmpresa = 1
+  ) ultimos_saldos_pa
+  WHERE rn = 1
+  GROUP BY idProduto, cod, descricao
+),
 CTE_LISTAMATERIAIS AS
 ((
 Select
@@ -868,7 +900,9 @@ pe.`idChave`,
     coalesce(lm.componente, 'Sem lista de materiais definida') as componente,
     lm.unidademedida,
     lm.qtd,
-    (pe.`Quantidade` * lm.qtd) as qtdTotalComponente
+    (pe.`Quantidade` * lm.qtd) as qtdTotalComponente,
+    COALESCE(pa.saldoSetorFinal, 0) as Estoque_PA
 FROM
 	CTE_PEDIDO_ABERTO pe
 	LEFT JOIN CTE_LISTAMATERIAIS lm on lm.idprodutopai = pe.id
+	LEFT JOIN CTE_ESTOQUE_PA pa on TRIM(pa.nome) = TRIM(pe.`Codigo_produto`)

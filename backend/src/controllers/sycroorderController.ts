@@ -3,11 +3,26 @@ import { prisma } from '../config/prisma.js';
 import { sendWhatsAppTextTo } from '../services/evolutionApi.js';
 import { getNomusPool, isNomusEnabled } from '../config/nomusDb.js';
 import { listarPedidos, listarHistoricoAjustes, registrarAjustePrevisao } from '../data/pedidosRepository.js';
+import { getPermissoesUsuario } from '../middleware/requirePermission.js';
+import { PERMISSOES } from '../config/permissoes.js';
 
 /** Número que recebe notificação de novo pedido SycroOrder (DDD + número, sem 55) */
 const SYCROORDER_WHATSAPP_NUMERO = '5586998660873';
 
 type OrderStatus = 'PENDING' | 'FINISHED' | 'ESCALATED';
+
+/** Mesmas permissões da rota PATCH /orders (atualizar card). */
+const PERMISSOES_PODEM_ATUALIZAR_CARD = [
+  PERMISSOES.COMUNICACAO_ATUALIZAR_CARD,
+  PERMISSOES.COMUNICACAO_TOTAL,
+  PERMISSOES.PEDIDOS_EDITAR,
+  PERMISSOES.PEDIDOS_VER,
+  PERMISSOES.COMUNICACAO_VER,
+] as const;
+
+function usuarioPodeAtualizarCardNasPermissoes(perms: string[]): boolean {
+  return PERMISSOES_PODEM_ATUALIZAR_CARD.some((p) => perms.includes(p));
+}
 
 function formatarDataBR(iso: string): string {
   const s = String(iso).trim().slice(0, 10);
@@ -238,6 +253,7 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
       orderBy: { created_at: 'desc' },
       include: {
         usuarioCriador: { select: { nome: true } },
+        usuarioResponsavel: { select: { login: true, nome: true } },
         history: {
           orderBy: { created_at: 'desc' },
           take: 1,
@@ -319,6 +335,7 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
           orderBy: { created_at: 'desc' },
           include: {
             usuarioCriador: { select: { nome: true } },
+            usuarioResponsavel: { select: { login: true, nome: true } },
             history: {
               orderBy: { created_at: 'desc' },
               take: 1,
@@ -355,15 +372,10 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
 
     const list = ordersParaListar.map((o) => {
       const lastH = o.history[0];
-      const hasResponsavel = isResponsavelJosenildo(o.delivery_method);
-      const isCriador = currentUserId != null && o.created_by === currentUserId;
-      const isJosenildo = loginNorm === 'josenildo';
-      const isVinicius = loginNorm === 'viniciusrodrigues';
       const isFinished = String(o.status) === 'FINISHED';
-      const canRespondBase = hasResponsavel
-        ? (isCriador || isJosenildo || isVinicius)
-        : (!isJosenildo || isCriador);
-      const canRespond = !isFinished && (isAdminGrupo || canRespondBase);
+      // Qualquer usuário pode atualizar qualquer card (exceto FINISHED).
+      // As restrições detalhadas para criadores específicos são aplicadas no PATCH (updateOrder).
+      const canRespond = !isFinished;
 
       const pd = String(o.order_number ?? '').trim();
       const rows = pd ? (pdToRows.get(pd) ?? []) : [];
@@ -390,6 +402,7 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
         return values.length > 0 ? [...new Set(values)][0]! : null;
       })();
 
+      const ruLogin = o.usuarioResponsavel?.login ? normalizeLogin(o.usuarioResponsavel.login) : null;
       return {
         id: o.id,
         order_number: o.order_number,
@@ -403,6 +416,8 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
         is_urgent: o.is_urgent,
         created_by: o.created_by,
         creator_name: o.creator_name ?? o.usuarioCriador?.nome ?? null,
+        responsible_user_id: o.responsible_user_id ?? null,
+        responsible_user_login: ruLogin,
         created_at: o.created_at,
         last_responder_name: lastH?.user_name ?? lastH?.usuario?.nome ?? null,
         last_response_at: lastH?.created_at ?? null,
@@ -424,13 +439,15 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
     res.status(401).json({ error: 'Não autorizado.' });
     return;
   }
-  const { order_number, delivery_method, promised_date, observation, is_urgent, id_pedidos } = req.body as {
+  const { order_number, delivery_method, promised_date, observation, is_urgent, id_pedidos, responsible_user_id } = req.body as {
     order_number?: string;
     delivery_method?: string;
     promised_date?: string;
     observation?: string;
     is_urgent?: boolean;
     id_pedidos?: string[];
+    /** Usuario.id opcional — deve ter permissão de atualizar card (mesma regra do PATCH). */
+    responsible_user_id?: number | string | null;
   };
   if (!order_number || !delivery_method || !promised_date) {
     res.status(400).json({ error: 'order_number, delivery_method e promised_date são obrigatórios.' });
@@ -504,6 +521,32 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
     const idToCod = new Map(itensDoPedido.map((i) => [i.id_pedido, i.cod]));
     const selectedCodes = sortedUnique(selectedIds.map((id) => idToCod.get(id) ?? '').filter(Boolean));
 
+    let responsibleUserId: number | null = null;
+    if (responsible_user_id != null && String(responsible_user_id).trim() !== '') {
+      const rid =
+        typeof responsible_user_id === 'number' && Number.isFinite(responsible_user_id)
+          ? responsible_user_id
+          : parseInt(String(responsible_user_id), 10);
+      if (Number.isNaN(rid)) {
+        res.status(400).json({ error: 'responsible_user_id inválido.' });
+        return;
+      }
+      const ru = await prisma.usuario.findUnique({
+        where: { id: rid },
+        select: { id: true, login: true, ativo: true, grupo: { select: { ativo: true } } },
+      });
+      if (!ru || !ru.ativo || (ru.grupo && ru.grupo.ativo === false)) {
+        res.status(400).json({ error: 'Usuário responsável não encontrado ou inativo.' });
+        return;
+      }
+      const ruPerms = await getPermissoesUsuario(ru.login);
+      if (!usuarioPodeAtualizarCardNasPermissoes(ruPerms)) {
+        res.status(400).json({ error: 'O usuário escolhido não tem permissão para atualizar card na Comunicação PD.' });
+        return;
+      }
+      responsibleUserId = rid;
+    }
+
     const order = await prisma.sycroOrderOrder.create({
       data: {
         order_number: String(order_number).trim(),
@@ -515,6 +558,7 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
         item_codes_json: selectedCodes.length ? JSON.stringify(selectedCodes) : null,
         created_by,
         creator_name,
+        responsible_user_id: responsibleUserId,
       },
     });
 
@@ -620,18 +664,9 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
     const isRestrictedUser = RESTRICTED_CREATORS.has(loginNorm);
     const tagDesejado = tag_disponivel === undefined ? undefined : !!tag_disponivel;
 
-    const hasResponsavel = isResponsavelJosenildo(order.delivery_method);
-    const isCriador = user_id != null && order.created_by === user_id;
-    const isJosenildo = loginNorm === 'josenildo';
-    const isVinicius = loginNorm === 'viniciusrodrigues';
-    const canRespondBase = hasResponsavel
-      ? (isCriador || isJosenildo || isVinicius)
-      : (!isJosenildo || isCriador);
-    const canRespond = isAdminGrupo || canRespondBase;
-    if (!canRespond) {
-      res.status(403).json({ error: 'Você não tem permissão para atualizar este card. Apenas o responsável pelo card (ou o criador) pode responder.' });
-      return;
-    }
+    // Regra de atualização por "responsável josenildo" foi removida:
+    // agora qualquer usuário (exceto restrições abaixo para criadores específicos)
+    // pode atualizar qualquer card, desde que não esteja em FINISHED.
 
     const newDateProvided = new_date !== undefined && new_date !== null && String(new_date).trim() !== '';
     if (isRestrictedUser && !isAdminGrupo) {
@@ -1172,6 +1207,29 @@ export async function getNotifications(req: Request, res: Response): Promise<voi
 }
 
 /** GET /api/sycroorder/users?query=... — busca usuários por login (para autocomplete de menções no comentário). */
+/** GET /api/sycroorder/users-responsavel — usuários que podem ser marcados como responsáveis adicionais (mesma regra do PATCH). */
+export async function listUsersResponsavelCard(req: Request, res: Response): Promise<void> {
+  try {
+    const users = await prisma.usuario.findMany({
+      where: { ativo: true },
+      select: { id: true, login: true, nome: true, grupo: { select: { ativo: true } } },
+      orderBy: { login: 'asc' },
+    });
+    const out: Array<{ id: number; login: string; nome: string | null }> = [];
+    for (const u of users) {
+      if (u.grupo && u.grupo.ativo === false) continue;
+      const perms = await getPermissoesUsuario(u.login);
+      if (usuarioPodeAtualizarCardNasPermissoes(perms)) {
+        out.push({ id: u.id, login: u.login, nome: u.nome ?? null });
+      }
+    }
+    res.json(out);
+  } catch (e) {
+    console.error('sycroorder listUsersResponsavelCard', e);
+    res.status(503).json({ error: 'Erro ao listar usuários.' });
+  }
+}
+
 export async function searchSycroOrderUsers(req: Request, res: Response): Promise<void> {
   const queryRaw = req.query.query;
   const query = typeof queryRaw === 'string' ? queryRaw.trim() : '';

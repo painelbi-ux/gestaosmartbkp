@@ -1,25 +1,67 @@
 import type { Request, Response, NextFunction } from 'express';
 import { prisma } from '../config/prisma.js';
-import { TODAS_PERMISSOES, type CodigoPermissao } from '../config/permissoes.js';
+import { PERMISSOES, TODAS_PERMISSOES, type CodigoPermissao } from '../config/permissoes.js';
+
+function parsePermissoesJSON(json: string | null | undefined): string[] {
+  if (!json) return [];
+  try {
+    const arr = JSON.parse(json) as string[];
+    return arr.filter((p) => typeof p === 'string');
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Retorna as permissões do usuário: se for master, todas; senão as do grupo.
  */
 export async function getPermissoesUsuario(login: string): Promise<CodigoPermissao[]> {
   if (login === 'master') {
+    // Mesmo para master, respeitamos `ativo`/`grupo.ativo`.
+    const usuario = await prisma.usuario.findUnique({
+      where: { login },
+      select: { ativo: true, grupo: { select: { ativo: true } } },
+    });
+    if (!usuario) return [];
+    if (usuario.ativo === false) return [];
+    if (usuario.grupo && usuario.grupo.ativo === false) return [];
     return [...TODAS_PERMISSOES];
   }
   const usuario = await prisma.usuario.findUnique({
     where: { login },
-    select: { grupoId: true, grupo: { select: { permissoes: true } } },
+    select: {
+      id: true,
+      ativo: true,
+      permissoes: true,
+      grupo: { select: { ativo: true, nome: true, permissoes: true } },
+    },
   });
-  if (!usuario?.grupo?.permissoes) return [];
-  try {
-    const arr = JSON.parse(usuario.grupo.permissoes) as string[];
-    return arr.filter((p): p is CodigoPermissao => typeof p === 'string');
-  } catch {
-    return [];
+
+  if (!usuario) return [];
+  if (usuario.ativo === false) return [];
+  if (usuario.grupo && usuario.grupo.ativo === false) return [];
+
+  const groupPerms = parsePermissoesJSON(usuario.grupo?.permissoes);
+  const userPerms = parsePermissoesJSON(usuario.permissoes);
+  const union = [...new Set([...groupPerms, ...userPerms])];
+
+  const grupoNome = usuario.grupo?.nome ?? '';
+  const allowIntegracaoForGroup = ['Compras', 'Operador Compras'].includes(String(grupoNome));
+
+  if (allowIntegracaoForGroup) {
+    // Garante que os grupos Compras/Operador Compras tenham acesso à integração.
+    if (!union.includes(PERMISSOES.INTEGRACAO_VER)) union.push(PERMISSOES.INTEGRACAO_VER);
+    if (!union.includes(PERMISSOES.INTEGRACAO_EDITAR)) union.push(PERMISSOES.INTEGRACAO_EDITAR);
   }
+
+  // Regra legado: integração só para master.
+  // Exceção: grupos Compras e Operador Compras.
+  if (!allowIntegracaoForGroup) {
+    const semIntegracaoParaNaoMaster = union.filter((p) => !String(p).startsWith('integracao.'));
+    return semIntegracaoParaNaoMaster.filter((p): p is CodigoPermissao => typeof p === 'string');
+  }
+
+  return union.filter((p): p is CodigoPermissao => typeof p === 'string');
 }
 
 /**

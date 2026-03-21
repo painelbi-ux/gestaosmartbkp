@@ -30,7 +30,7 @@ router.get(
 
 router.post(
   '/precificacao/iniciar',
-  requirePermission(PERMISSOES.PRECIFICACAO_VER),
+  requirePermission(PERMISSOES.PRECIFICACAO_GERAR),
   async503(iniciarPrecificacao)
 );
 
@@ -48,7 +48,7 @@ router.get(
 
 router.patch(
   '/precificacao/:id/valores',
-  requirePermission(PERMISSOES.PRECIFICACAO_VER),
+  requirePermission(PERMISSOES.PRECIFICACAO_GERAR),
   async503(salvarPrecificacaoValores)
 );
 

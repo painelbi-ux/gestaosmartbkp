@@ -7,6 +7,7 @@ import {
   type MotivoSugestao,
 } from '../api/motivosSugestao';
 import { useAuth } from '../contexts/AuthContext';
+import { PERMISSOES } from '../config/permissoes';
 
 interface ModalGerenciarMotivosProps {
   onClose: () => void;
@@ -29,8 +30,12 @@ export default function ModalGerenciarMotivos({
   const [senhaConfirmacao, setSenhaConfirmacao] = useState('');
   const [senhaErro, setSenhaErro] = useState<string | null>(null);
   const [senhaLoading, setSenhaLoading] = useState(false);
-  const { login, grupo } = useAuth();
-  const podeGerenciar = login === 'master' || login === 'admin' || login === 'marquesfilho' || grupo === 'admin' || grupo === 'Administrador';
+  const { hasPermission } = useAuth();
+  const podeGerenciar =
+    hasPermission(PERMISSOES.PCP_MOTIVO_CRIAR) ||
+    hasPermission(PERMISSOES.PCP_MOTIVO_EDITAR) ||
+    hasPermission(PERMISSOES.PCP_MOTIVO_EXCLUIR) ||
+    hasPermission(PERMISSOES.PCP_TOTAL);
 
   const carregar = () => {
     setLoading(true);

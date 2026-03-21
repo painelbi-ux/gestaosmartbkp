@@ -47,11 +47,19 @@ export async function login(req: Request, res: Response): Promise<void> {
     }
 
     const { login: loginUser, senha } = parsed.data;
-    let usuario: { id: number; login: string; senhaHash: string } | null = null;
+    let usuario:
+      | { id: number; login: string; senhaHash: string; ativo: boolean; grupo?: { ativo: boolean } | null }
+      | null = null;
     try {
       usuario = await prisma.usuario.findUnique({
         where: { login: loginUser },
-        select: { id: true, login: true, senhaHash: true },
+        select: {
+          id: true,
+          login: true,
+          senhaHash: true,
+          ativo: true,
+          grupo: { select: { ativo: true } },
+        },
       });
     } catch (dbErr) {
       const err = dbErr as Error;
@@ -61,6 +69,14 @@ export async function login(req: Request, res: Response): Promise<void> {
     }
     if (!usuario) {
       sendError(res, 401, 'Login ou senha inválidos.');
+      return;
+    }
+    if (usuario.ativo === false) {
+      sendError(res, 403, 'Usuário inativo. Solicite ao administrador que o ative.');
+      return;
+    }
+    if (usuario.grupo?.ativo === false) {
+      sendError(res, 403, 'Grupo do usuário está inativo. Solicite ao administrador que ative.');
       return;
     }
 

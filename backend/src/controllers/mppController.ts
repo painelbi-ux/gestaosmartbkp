@@ -118,6 +118,18 @@ function fillQtdAcumulado(rows: Record<string, unknown>[]): void {
   }
 }
 
+/**
+ * Estoque_MP_PA = Estoque_PA x Qtd Unitária do Componente (`qtd` no SQL).
+ * Mantém 0 quando não houver valores.
+ */
+function fillEstoqueMPPA(rows: Record<string, unknown>[]): void {
+  for (const row of rows) {
+    const estoquePA = Number(row.Estoque_PA) || 0;
+    const qtdUnit = Number(row.qtd) || 0;
+    row.Estoque_MP_PA = estoquePA * qtdUnit;
+  }
+}
+
 /** GET /api/mpp — lista dados MPP do Nomus + Data Previsão (paginado). Ordenação por Data de Previsão (mais antigo primeiro); acumulado só considera linhas com data. */
 export async function getMpp(req: Request, res: Response): Promise<void> {
   const pool = getNomusPool();
@@ -135,6 +147,7 @@ export async function getMpp(req: Request, res: Response): Promise<void> {
   const apenasComPrevisao = parseBool(req.query.apenas_com_previsao);
 
   const codigoPedido = typeof req.query.codigo_pedido === 'string' ? req.query.codigo_pedido.trim() : '';
+  const codigoProduto = typeof req.query.codigo_produto === 'string' ? req.query.codigo_produto.trim() : '';
   const cliente = typeof req.query.cliente === 'string' ? req.query.cliente.trim() : '';
   const segmentacao = typeof req.query.segmentacao === 'string' ? req.query.segmentacao.trim() : '';
   const codigoComponente = typeof req.query.codigo_componente === 'string' ? req.query.codigo_componente.trim() : '';
@@ -148,6 +161,11 @@ export async function getMpp(req: Request, res: Response): Promise<void> {
     if (codigoPedido) {
       conditions.push('`Codigo_pedido` LIKE ?');
       params.push(`%${codigoPedido}%`);
+    }
+    if (codigoProduto) {
+      // Qualifica o alias do subquery e faz TRIM para evitar divergencias por espaços no ERP.
+      conditions.push('TRIM(mpp_sub.`Codigo_produto`) LIKE ?');
+      params.push(`%${codigoProduto}%`);
     }
     if (cliente) {
       conditions.push('`Cliente` LIKE ?');
@@ -191,6 +209,7 @@ export async function getMpp(req: Request, res: Response): Promise<void> {
       data = data.filter((r) => (r.dataPrevisao ?? '').trim() !== '');
     }
     fillQtdAcumulado(data);
+    fillEstoqueMPPA(data);
 
     const total = data.length;
     const pageData = data.slice(offset, offset + pageSize);

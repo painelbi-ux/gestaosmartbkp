@@ -46,6 +46,7 @@ model GrupoUsuario {
   nome        String   @unique
   descricao   String?
   permissoes  String   // JSON array: ["dashboard.ver", "pedidos.ver", ...]
+  ativo       Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -62,10 +63,13 @@ model Usuario {
   nome      String?
   grupoId   Int?
   fotoUrl   String? // Foto do usuário (data URL base64 ou URL). Opcional.
+  permissoes String?  // JSON array: permissões específicas do usuário (códigos), caso deseje sobrepor/adição em relação ao grupo.
+  ativo     Boolean    @default(true)
   createdAt DateTime     @default(now())
 
   grupo GrupoUsuario? @relation(fields: [grupoId], references: [id], onDelete: SetNull)
   sycroOrdersCriados    SycroOrderOrder[]
+  sycroOrdersResponsavel SycroOrderOrder[] @relation("SycroOrderResponsavel")
   sycroOrderHistory     SycroOrderHistory[]
   sycroOrderNotifications SycroOrderNotification[]
   sycroOrderOrderReads    SycroOrderOrderRead[]
@@ -267,14 +271,18 @@ model SycroOrderOrder {
   item_codes_json        String?
   created_by             Int?     // Usuario.id (quem criou)
   creator_name           String?  // nome para exibição (migração ou fallback)
+  /// Usuário adicional marcado na criação do card (quem deve responder além da regra josenildo/PCP).
+  responsible_user_id    Int?
   created_at             DateTime @default(now())
 
   usuarioCriador Usuario?              @relation(fields: [created_by], references: [id], onDelete: SetNull)
+  usuarioResponsavel Usuario?          @relation("SycroOrderResponsavel", fields: [responsible_user_id], references: [id], onDelete: SetNull)
   history        SycroOrderHistory[]
   notifications  SycroOrderNotification[]
   reads          SycroOrderOrderRead[]
 
   @@index([created_by])
+  @@index([responsible_user_id])
   @@index([status])
   @@index([created_at])
   @@map("sycro_order_order")

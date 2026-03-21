@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { listarUsuarios, criarUsuario, atualizarUsuario, type Usuario } from '../api/usuarios';
+import { listarUsuarios, criarUsuario, atualizarUsuario, excluirUsuario, type Usuario } from '../api/usuarios';
 import {
   listarGrupos,
   listarPermissoes,
@@ -17,6 +17,8 @@ const criarUsuarioSchema = z.object({
   senha: z.string().min(4, 'Senha deve ter no mínimo 4 caracteres').max(100),
   nome: z.string().max(100).optional(),
   grupoId: z.number().int().positive().optional().nullable(),
+  ativo: z.boolean().optional(),
+  permissoes: z.array(z.string()).optional(),
   fotoUrl: z.string().max(MAX_FOTO_BASE64).optional().nullable(),
 });
 
@@ -24,34 +26,90 @@ const atualizarUsuarioSchema = z.object({
   senha: z.string().min(4, 'Senha deve ter no mínimo 4 caracteres').max(100).optional(),
   nome: z.string().max(100).optional().nullable(),
   grupoId: z.number().int().positive().optional().nullable(),
+  ativo: z.boolean().optional(),
+  permissoes: z.array(z.string()).optional(),
   fotoUrl: z.string().max(MAX_FOTO_BASE64).optional().nullable(),
 });
 
 type Tab = 'usuarios' | 'grupos';
 
 const SECOES_PERMISSOES: Record<string, string> = {
-  dashboard: 'DASHBOARD',
-  pedidos: 'COMUNICAÇÃO INTERNA (Comunicação PD) / PEDIDOS',
+  pcp: 'PCP',
+  usuarios: 'Usuários',
+  grupos: 'Grupos de usuários',
   comunicacao: 'COMUNICAÇÃO INTERNA (Comunicação PD)',
-  heatmap: 'HEATMAP',
-  compras: 'COMPRAS',
-  precificacao: 'ENGENHARIA',
-  relatorios: 'RELATÓRIOS',
-  integracao: 'INTEGRAÇÃO',
-  usuarios: 'USUÁRIOS E GRUPOS',
+
+  dashboard: 'Dashboard',
+  heatmap: 'Heatmap',
+  compras: 'Compras',
+  precificacao: 'Engenharia',
+  relatorios: 'Relatórios',
+  integracao: 'Integração',
+  financeiro: 'Financeiro',
 };
 
+const ORDEM_SECOES_PERMISSOES = [
+  'PCP',
+  'Usuários',
+  'Grupos de usuários',
+  'COMUNICAÇÃO INTERNA (Comunicação PD)',
+  'Dashboard',
+  'Heatmap',
+  'Compras',
+  'Engenharia',
+  'Relatórios',
+  'Integração',
+  'Financeiro',
+];
+
 function agruparPermissoes(permissoes: PermissaoItem[]): { secao: string; itens: PermissaoItem[] }[] {
+  const allowedUsuarios = new Set<string>([
+    'usuarios.tela.ver',
+    'usuarios.criar',
+    'usuarios.editar',
+    'usuarios.senha.alterar',
+    'usuarios.inativar',
+    'usuarios.excluir',
+    'usuarios.total',
+  ]);
+  const allowedGrupos = new Set<string>([
+    'grupos.tela.ver',
+    'grupos.criar',
+    'grupos.editar',
+    'grupos.inativar',
+    'grupos.excluir',
+    'grupos.total',
+  ]);
+  const allowedComunicacao = new Set<string>([
+    'comunicacao.tela.ver',
+    'comunicacao.novo_pedido',
+    'comunicacao.historico.ver',
+    'comunicacao.atualizar_card',
+    'comunicacao.total',
+  ]);
+
   const map = new Map<string, PermissaoItem[]>();
   for (const p of permissoes) {
-    const prefix = p.codigo.split('.')[0] ?? 'outros';
-    const secao = SECOES_PERMISSOES[prefix] ?? 'Outros';
+    const prefix = p.codigo.split('.')[0] ?? '';
+    const secao = SECOES_PERMISSOES[prefix];
+    // No editor "module-based", exibimos apenas os módulos solicitados.
+    if (!secao) continue;
+    // Filtra permissões legadas para manter exatamente as opções que você pediu.
+    if (prefix === 'usuarios' && !allowedUsuarios.has(p.codigo)) continue;
+    if (prefix === 'grupos' && !allowedGrupos.has(p.codigo)) continue;
+    if (prefix === 'comunicacao' && !allowedComunicacao.has(p.codigo)) continue;
     if (!map.has(secao)) map.set(secao, []);
     map.get(secao)!.push(p);
   }
-  const ordem = Object.values(SECOES_PERMISSOES);
+
+  // Ordena itens por label para ficar previsível na UI.
+  for (const [secao, itens] of map.entries()) {
+    itens.sort((a, b) => a.label.localeCompare(b.label));
+    map.set(secao, itens);
+  }
+
   return Array.from(map.entries())
-    .sort(([a], [b]) => (ordem.indexOf(a) - ordem.indexOf(b)) || a.localeCompare(b))
+    .sort(([a], [b]) => (ORDEM_SECOES_PERMISSOES.indexOf(a) - ORDEM_SECOES_PERMISSOES.indexOf(b)) || a.localeCompare(b))
     .map(([secao, itens]) => ({ secao, itens }));
 }
 
@@ -70,6 +128,7 @@ export default function UsuariosPage() {
   const [senha, setSenha] = useState('');
   const [nome, setNome] = useState('');
   const [grupoId, setGrupoId] = useState<number | ''>('');
+  const [ativoNovo, setAtivoNovo] = useState(true);
   const [fotoPreview, setFotoPreview] = useState<string | null>(null);
   const [fotoBase64, setFotoBase64] = useState<string | null>(null);
   const [salvandoUsuario, setSalvandoUsuario] = useState(false);
@@ -82,6 +141,8 @@ export default function UsuariosPage() {
   const [editNome, setEditNome] = useState<string>('');
   const [editGrupoId, setEditGrupoId] = useState<number | ''>('');
   const [editFotoPreview, setEditFotoPreview] = useState<string | null>(null);
+  const [editAtivo, setEditAtivo] = useState(true);
+  const [editPermissoes, setEditPermissoes] = useState<string[]>([]);
   // undefined = não mexeu; null = remover; string = novo valor
   const [editFotoBase64, setEditFotoBase64] = useState<string | null | undefined>(undefined);
   const [salvandoEditarUsuario, setSalvandoEditarUsuario] = useState(false);
@@ -91,6 +152,7 @@ export default function UsuariosPage() {
   const [grupoNome, setGrupoNome] = useState('');
   const [grupoDescricao, setGrupoDescricao] = useState('');
   const [grupoPermissoes, setGrupoPermissoes] = useState<string[]>([]);
+  const [grupoAtivo, setGrupoAtivo] = useState(true);
   const [editandoGrupoId, setEditandoGrupoId] = useState<number | null>(null);
   const [salvandoGrupo, setSalvandoGrupo] = useState(false);
   const [formErrorGrupo, setFormErrorGrupo] = useState('');
@@ -187,6 +249,7 @@ export default function UsuariosPage() {
       senha,
       nome: nome || undefined,
       grupoId: grupoId === '' ? undefined : grupoId,
+      ativo: ativoNovo,
       fotoUrl: fotoBase64 || undefined,
     });
     if (!parsed.success) {
@@ -201,6 +264,7 @@ export default function UsuariosPage() {
       setSenha('');
       setNome('');
       setGrupoId('');
+      setAtivoNovo(true);
       setFotoPreview(null);
       setFotoBase64(null);
       showToast('Usuário criado com sucesso.');
@@ -217,6 +281,8 @@ export default function UsuariosPage() {
     setEditSenha('');
     setEditNome(u.nome ?? '');
     setEditGrupoId(u.grupoId ?? '');
+    setEditAtivo(u.ativo);
+    setEditPermissoes(u.permissoes ?? []);
     setEditFotoPreview(u.fotoUrl ?? null);
     setEditFotoBase64(undefined);
     setFormErrorEditarUsuario('');
@@ -232,6 +298,8 @@ export default function UsuariosPage() {
     setEditFotoBase64(undefined);
     setFormErrorEditarUsuario('');
     setSalvandoEditarUsuario(false);
+    setEditAtivo(true);
+    setEditPermissoes([]);
   };
 
   const handleSubmitEditarUsuario = async (e: React.FormEvent) => {
@@ -243,6 +311,8 @@ export default function UsuariosPage() {
     const payloadBase: Record<string, unknown> = {
       nome: editNome.trim() === '' ? null : editNome.trim(),
       grupoId: editGrupoId === '' ? null : Number(editGrupoId),
+      ativo: editAtivo,
+      permissoes: editPermissoes,
     };
 
     if (editSenha.trim()) payloadBase.senha = editSenha.trim();
@@ -276,11 +346,18 @@ export default function UsuariosPage() {
     );
   };
 
+  const togglePermissaoUsuario = (codigo: string) => {
+    setEditPermissoes((prev) =>
+      prev.includes(codigo) ? prev.filter((p) => p !== codigo) : [...prev, codigo]
+    );
+  };
+
   const abrirEditarGrupo = (g: Grupo) => {
     setEditandoGrupoId(g.id);
     setGrupoNome(g.nome);
     setGrupoDescricao(g.descricao ?? '');
     setGrupoPermissoes(g.permissoes ?? []);
+    setGrupoAtivo(g.ativo);
     setFormErrorGrupo('');
   };
 
@@ -289,6 +366,7 @@ export default function UsuariosPage() {
     setGrupoNome('');
     setGrupoDescricao('');
     setGrupoPermissoes([]);
+    setGrupoAtivo(true);
     setFormErrorGrupo('');
   };
 
@@ -306,6 +384,7 @@ export default function UsuariosPage() {
           nome: grupoNome.trim(),
           descricao: grupoDescricao.trim() || null,
           permissoes: grupoPermissoes,
+          ativo: grupoAtivo,
         });
         showToast('Grupo atualizado com sucesso.');
       } else {
@@ -313,6 +392,7 @@ export default function UsuariosPage() {
           nome: grupoNome.trim(),
           descricao: grupoDescricao.trim() || null,
           permissoes: grupoPermissoes,
+          ativo: grupoAtivo,
         });
         showToast('Grupo criado com sucesso.');
       }
@@ -325,8 +405,30 @@ export default function UsuariosPage() {
     }
   };
 
+  const handleExcluirUsuario = async (u: Usuario) => {
+    if (
+      !window.confirm(
+        `Excluir o usuário "${u.login}"? A exclusão física só será permitida se ele não possuir vínculos com registros do sistema.`
+      )
+    )
+      return;
+    try {
+      await excluirUsuario(u.id);
+      showToast('Usuário excluído.');
+      await carregar();
+      if (editandoUsuarioId === u.id) fecharFormEditarUsuario();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Erro ao excluir usuário.');
+    }
+  };
+
   const handleExcluirGrupo = async (g: Grupo) => {
-    if (!window.confirm(`Excluir o grupo "${g.nome}"? Os usuários deste grupo ficarão sem grupo.`)) return;
+    if (
+      !window.confirm(
+        `Excluir o grupo "${g.nome}"? A exclusão física só é permitida se não houver usuários vinculados. Se houver, use inativação (ativo=false).`
+      )
+    )
+      return;
     try {
       await excluirGrupo(g.id);
       showToast('Grupo excluído.');
@@ -485,6 +587,18 @@ export default function UsuariosPage() {
                   ))}
                 </select>
               </div>
+              <div className="flex items-center gap-3">
+                <input
+                  id="novo-ativo"
+                  type="checkbox"
+                  checked={ativoNovo}
+                  onChange={(e) => setAtivoNovo(e.target.checked)}
+                  className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
+                />
+                <label htmlFor="novo-ativo" className="text-sm text-slate-700 dark:text-slate-300">
+                  Usuário ativo
+                </label>
+              </div>
               {formErrorUsuario && <p className="text-amber-600 dark:text-amber-400 text-sm">{formErrorUsuario}</p>}
               <button
                 type="submit"
@@ -512,7 +626,9 @@ export default function UsuariosPage() {
                   )}
                   <div className="flex-1 min-w-0">
                     <span className="font-medium text-slate-800 dark:text-slate-200 block truncate">{u.login}</span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400 block truncate">{u.nome || '—'} · {u.grupo || 'Sem grupo'}</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400 block truncate">
+                      {u.nome || '—'} · {u.grupo || 'Sem grupo'} · {u.ativo ? 'Ativo' : 'Inativo'}
+                    </span>
                   </div>
                   <button
                     type="button"
@@ -520,6 +636,13 @@ export default function UsuariosPage() {
                     className="shrink-0 text-primary-600 dark:text-primary-400 hover:underline text-sm"
                   >
                     Editar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleExcluirUsuario(u)}
+                    className="shrink-0 text-amber-600 dark:text-amber-400 hover:underline text-sm"
+                  >
+                    Excluir
                   </button>
                 </li>
               ))}
@@ -590,6 +713,18 @@ export default function UsuariosPage() {
                           ))}
                         </select>
                       </div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          id="edit-ativo"
+                          type="checkbox"
+                          checked={editAtivo}
+                          onChange={(e) => setEditAtivo(e.target.checked)}
+                          className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
+                        />
+                        <label htmlFor="edit-ativo" className="text-sm text-slate-700 dark:text-slate-300">
+                          Usuário ativo
+                        </label>
+                      </div>
                     </div>
                   </div>
 
@@ -602,6 +737,33 @@ export default function UsuariosPage() {
                       className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
                       placeholder="Deixe em branco para não alterar"
                     />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2">Permissões de acesso às telas (por usuário)</label>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+                      Marque apenas o que este usuário pode acessar além do grupo.
+                    </p>
+                    <div className="space-y-4">
+                      {agruparPermissoes(permissoesLista).map(({ secao, itens }) => (
+                        <div key={secao} className="rounded-lg border border-slate-200 dark:border-slate-600/50 p-3 bg-slate-50/50 dark:bg-slate-800/30">
+                          <div className="text-xs font-semibold text-slate-600 dark:text-slate-400 mb-2 uppercase tracking-wide">{secao}</div>
+                          <div className="flex flex-wrap gap-x-4 gap-y-2">
+                            {itens.map((p) => (
+                              <label key={p.codigo} className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={editPermissoes.includes(p.codigo)}
+                                  onChange={() => togglePermissaoUsuario(p.codigo)}
+                                  className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
+                                />
+                                <span className="text-sm text-slate-700 dark:text-slate-300">{p.label}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   {formErrorEditarUsuario && (
@@ -659,11 +821,22 @@ export default function UsuariosPage() {
                   placeholder="Ex.: Acesso a pedidos e relatórios"
                 />
               </div>
+              <div className="flex items-center gap-3">
+                <input
+                  id="grupo-ativo"
+                  type="checkbox"
+                  checked={grupoAtivo}
+                  onChange={(e) => setGrupoAtivo(e.target.checked)}
+                  className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
+                />
+                <label htmlFor="grupo-ativo" className="text-sm text-slate-700 dark:text-slate-300">
+                  Grupo ativo
+                </label>
+              </div>
               <div>
                 <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2">Permissões de acesso às telas</label>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
                   Marque apenas o que este grupo pode acessar. Usuários sem permissão para uma tela não verão o menu nem a rota.
-                  A Comunicação PD usa as permissões do módulo de Pedidos.
                 </p>
                 <div className="space-y-4">
                   {agruparPermissoes(permissoesLista).map(({ secao, itens }) => (
@@ -724,7 +897,9 @@ export default function UsuariosPage() {
                   {grupos.map((g) => (
                     <tr key={g.id} className="border-b border-slate-200 dark:border-slate-700 last:border-0">
                       <td className="py-2 text-slate-800 dark:text-slate-200 font-medium">{g.nome}</td>
-                      <td className="py-2 text-slate-600 dark:text-slate-400">{g.descricao || '—'}</td>
+                      <td className="py-2 text-slate-600 dark:text-slate-400">
+                        {g.descricao || '—'} · {g.ativo ? 'Ativo' : 'Inativo'}
+                      </td>
                       <td className="py-2 text-slate-600 dark:text-slate-400">{g.totalUsuarios ?? 0}</td>
                       <td className="py-2 flex gap-2">
                         <button

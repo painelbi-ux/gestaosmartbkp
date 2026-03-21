@@ -4,6 +4,8 @@ export interface Usuario {
   id: number;
   login: string;
   nome: string | null;
+  ativo: boolean;
+  permissoes: string[];
   grupoId: number | null;
   grupo: string | null;
   fotoUrl: string | null;
@@ -19,6 +21,8 @@ export async function criarUsuario(payload: {
   senha: string;
   nome?: string;
   grupoId?: number | null;
+  ativo?: boolean;
+  permissoes?: string[];
   fotoUrl?: string | null;
 }): Promise<Usuario> {
   const res = await apiFetch('/api/usuarios', {
@@ -38,6 +42,8 @@ export async function atualizarUsuario(
     senha?: string;
     nome?: string | null;
     grupoId?: number | null;
+    ativo?: boolean;
+    permissoes?: string[];
     fotoUrl?: string | null;
   }
 ): Promise<Usuario> {
@@ -50,4 +56,14 @@ export async function atualizarUsuario(
     throw new Error((err as { error?: string }).error ?? 'Erro ao atualizar usuário');
   }
   return res.json();
+}
+
+export async function excluirUsuario(id: number): Promise<void> {
+  const res = await apiFetch(`/api/usuarios/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    const msg = (err as { error?: string; orientacao?: string }).error ?? 'Erro ao excluir usuário';
+    const orient = (err as { orientacao?: string }).orientacao;
+    throw new Error(orient ? `${msg}\n${orient}` : msg);
+  }
 }

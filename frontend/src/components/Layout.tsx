@@ -85,7 +85,7 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
-  const { hasPermission, isMaster } = useAuth();
+  const { hasPermission, isMaster, grupo } = useAuth();
   const [pcpOpen, setPcpOpen] = useState(false);
   const pcpRef = useRef<HTMLDivElement>(null);
   const [comunicacaoOpen, setComunicacaoOpen] = useState(false);
@@ -105,6 +105,14 @@ export default function Layout() {
   const isIntegracaoActive = location.pathname.startsWith('/integracao');
   const isEngenhariaActive = location.pathname.startsWith('/engenharia');
   const isFinanceiroActive = location.pathname.startsWith('/financeiro');
+
+  // Para o perfil de Compras, mostramos apenas a tela de "Alteração da Data de Entrega do Pedido de Compra".
+  const INTEGRACAO_SUBMENUS_FOR_USER = (() => {
+    const g = String(grupo ?? '').trim();
+    const somenteAlteracao = g === 'Compras' || g === 'Operador Compras';
+    if (!somenteAlteracao) return INTEGRACAO_SUBMENUS;
+    return INTEGRACAO_SUBMENUS.filter((i) => i.to === '/integracao/alteracao-data-entrega-compra');
+  })();
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const syncPanelRef = useRef<HTMLDivElement>(null);
 
@@ -248,7 +256,7 @@ export default function Layout() {
                 Dashboard
               </NavLink>
             )}
-            {hasPermission(PERMISSOES.PEDIDOS_VER) && (
+            {hasPermission(PERMISSOES.PCP_VER_TELA) && (
               <div className="relative" ref={pcpRef}>
                 <button
                   type="button"
@@ -292,7 +300,7 @@ export default function Layout() {
                 )}
               </div>
             )}
-            {hasPermission(PERMISSOES.PEDIDOS_VER) && (
+            {hasPermission(PERMISSOES.COMUNICACAO_TELA_VER) && (
               <div className="relative" ref={comunicacaoRef}>
                 <button
                   type="button"
@@ -506,7 +514,7 @@ export default function Layout() {
                     className="absolute left-0 top-full mt-1 py-1 w-72 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
                     onMouseLeave={() => setIntegracaoOpen(false)}
                   >
-                    {INTEGRACAO_SUBMENUS.map((item) => (
+                    {INTEGRACAO_SUBMENUS_FOR_USER.map((item) => (
                       <NavLink
                         key={item.to}
                         to={item.to}

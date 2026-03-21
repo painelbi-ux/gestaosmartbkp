@@ -6,14 +6,11 @@ import type { ReactNode } from 'react';
 
 const ROTA_PERMISSAO: Record<string, CodigoPermissao[]> = {
   '/': [PERMISSOES.DASHBOARD_VER],
-  '/pedidos': [PERMISSOES.PEDIDOS_VER],
-  '/pedidos/programacao-setorial': [PERMISSOES.PEDIDOS_VER],
-  // A tela de "Comunicação PD" deve seguir as permissões do módulo de Pedidos.
-  // O menu já é exibido com PEDIDOS_VER; se o guard exigisse COMUNICACAO_VER,
-  // alguns usuários eram redirecionados (e as abas eram substituídas) ao tentar acessar.
-  '/pedidos/sycroorder': [PERMISSOES.PEDIDOS_VER, PERMISSOES.COMUNICACAO_VER],
-  '/pedidos/mrp': [PERMISSOES.PEDIDOS_VER],
-  '/pedidos/mpp': [PERMISSOES.PEDIDOS_VER],
+  '/pedidos': [PERMISSOES.PCP_VER_TELA, PERMISSOES.PCP_TOTAL, PERMISSOES.PEDIDOS_VER],
+  '/pedidos/programacao-setorial': [PERMISSOES.PCP_VER_TELA, PERMISSOES.PCP_TOTAL, PERMISSOES.PEDIDOS_VER],
+  '/pedidos/sycroorder': [PERMISSOES.COMUNICACAO_TELA_VER, PERMISSOES.COMUNICACAO_TOTAL, PERMISSOES.COMUNICACAO_VER, PERMISSOES.PEDIDOS_VER],
+  '/pedidos/mrp': [PERMISSOES.PCP_VER_TELA, PERMISSOES.PCP_TOTAL, PERMISSOES.PEDIDOS_VER],
+  '/pedidos/mpp': [PERMISSOES.PCP_VER_TELA, PERMISSOES.PCP_TOTAL, PERMISSOES.PEDIDOS_VER],
   '/heatmap': [PERMISSOES.HEATMAP_VER],
   '/compras': [PERMISSOES.COMPRAS_VER],
   '/compras/dashboard': [PERMISSOES.COMPRAS_VER],
@@ -26,7 +23,7 @@ const ROTA_PERMISSAO: Record<string, CodigoPermissao[]> = {
   '/integracao': [PERMISSOES.INTEGRACAO_VER],
   '/integracao/alteracao-data-entrega-compra': [PERMISSOES.INTEGRACAO_VER],
   '/integracao/faturamento-diario': [PERMISSOES.INTEGRACAO_VER],
-  '/usuarios': [PERMISSOES.USUARIOS_GERENCIAR],
+  '/usuarios': [PERMISSOES.USUARIOS_TELA_VER, PERMISSOES.USUARIOS_TOTAL, PERMISSOES.GRUPOS_TELA_VER, PERMISSOES.GRUPOS_TOTAL, PERMISSOES.USUARIOS_GERENCIAR],
   '/situacao-api': [PERMISSOES.DASHBOARD_VER],
   '/whatsapp': [PERMISSOES.USUARIOS_GERENCIAR],
 };

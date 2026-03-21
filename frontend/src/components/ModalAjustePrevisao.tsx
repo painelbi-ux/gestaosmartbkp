@@ -4,6 +4,7 @@ import type { Pedido } from '../api/pedidos';
 import { listarMotivosSugestao, type MotivoSugestao } from '../api/motivosSugestao';
 import ModalGerenciarMotivos from './ModalGerenciarMotivos';
 import { useAuth } from '../contexts/AuthContext';
+import { PERMISSOES } from '../config/permissoes';
 
 const ajusteSchema = z.object({
   previsao_nova: z.string().min(1, 'Informe a data'),
@@ -35,8 +36,12 @@ export default function ModalAjustePrevisao({
   const [sugestoes, setSugestoes] = useState<MotivoSugestao[]>([]);
   const [loadingSugestoes, setLoadingSugestoes] = useState(false);
   const [abrirGerenciar, setAbrirGerenciar] = useState(false);
-  const { login, grupo } = useAuth();
-  const podeGerenciarMotivos = login === 'master' || login === 'admin' || login === 'marquesfilho' || grupo === 'admin' || grupo === 'Administrador';
+  const { hasPermission } = useAuth();
+  const podeGerenciarMotivos =
+    hasPermission(PERMISSOES.PCP_MOTIVO_CRIAR) ||
+    hasPermission(PERMISSOES.PCP_MOTIVO_EDITAR) ||
+    hasPermission(PERMISSOES.PCP_MOTIVO_EXCLUIR) ||
+    hasPermission(PERMISSOES.PCP_TOTAL);
 
   const carregarSugestoes = () => {
     setLoadingSugestoes(true);

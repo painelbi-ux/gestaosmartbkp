@@ -24,6 +24,10 @@ export interface SycroOrderOrder {
   read_by_me?: boolean;
   /** Usuário atual pode responder (atualizar) o card; quando há responsável, só criador e josenildo */
   can_respond?: boolean;
+  /** Usuario.id marcado na criação como responsável adicional */
+  responsible_user_id?: number | null;
+  /** Login (minúsculo) do responsável adicional */
+  responsible_user_login?: string | null;
 }
 
 export interface SycroOrderHistoryItem {
@@ -81,6 +85,11 @@ export async function getSycroOrderOrders(): Promise<SycroOrderOrder[]> {
   return apiJson<SycroOrderOrder[]>('/api/sycroorder/orders');
 }
 
+/** Usuários que podem ser marcados como responsáveis adicionais (permissão de atualizar card). */
+export async function getSycroOrderUsersResponsavel(): Promise<Array<{ id: number; login: string; nome: string | null }>> {
+  return apiJson<Array<{ id: number; login: string; nome: string | null }>>('/api/sycroorder/users-responsavel');
+}
+
 /** Números de pedido (PD) que existem no Sycro — usado para bloquear importação na gestão. */
 export async function getSycroOrderOrderNumbers(): Promise<string[]> {
   return apiJson<string[]>('/api/sycroorder/order-numbers');
@@ -94,6 +103,8 @@ export async function createSycroOrderOrder(body: {
   is_urgent?: boolean;
   /** Quando informado, cria o card referenciando apenas estes itens (id_pedido do ERP). */
   id_pedidos?: string[];
+  /** Opcional: um usuário com permissão de atualizar card. */
+  responsible_user_id?: number;
 }): Promise<{ id: number }> {
   return apiJson<{ id: number }>('/api/sycroorder/orders', {
     method: 'POST',

@@ -14,6 +14,7 @@ export interface MppFiltros {
   page?: number;
   pageSize?: number;
   codigo_pedido?: string;
+  codigo_produto?: string;
   cliente?: string;
   segmentacao?: string;
   codigo_componente?: string;
@@ -26,6 +27,7 @@ export async function getMpp(params?: MppFiltros): Promise<MppResponse> {
   const pageSize = params?.pageSize ?? 200;
   const qs = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
   if (params?.codigo_pedido?.trim()) qs.set('codigo_pedido', params.codigo_pedido.trim());
+  if (params?.codigo_produto?.trim()) qs.set('codigo_produto', params.codigo_produto.trim());
   if (params?.cliente?.trim()) qs.set('cliente', params.cliente.trim());
   if (params?.segmentacao?.trim()) qs.set('segmentacao', params.segmentacao.trim());
   if (params?.codigo_componente?.trim()) qs.set('codigo_componente', params.codigo_componente.trim());

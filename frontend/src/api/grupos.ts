@@ -5,6 +5,7 @@ export interface Grupo {
   nome: string;
   descricao: string | null;
   permissoes: string[];
+  ativo: boolean;
   totalUsuarios?: number;
 }
 
@@ -25,6 +26,7 @@ export async function criarGrupo(payload: {
   nome: string;
   descricao?: string | null;
   permissoes: string[];
+  ativo?: boolean;
 }): Promise<Grupo> {
   const res = await apiFetch('/api/grupos', {
     method: 'POST',
@@ -39,7 +41,7 @@ export async function criarGrupo(payload: {
 
 export async function atualizarGrupo(
   id: number,
-  payload: { nome?: string; descricao?: string | null; permissoes?: string[] }
+  payload: { nome?: string; descricao?: string | null; permissoes?: string[]; ativo?: boolean }
 ): Promise<Grupo> {
   const res = await apiFetch(`/api/grupos/${id}`, {
     method: 'PUT',
@@ -56,6 +58,8 @@ export async function excluirGrupo(id: number): Promise<void> {
   const res = await apiFetch(`/api/grupos/${id}`, { method: 'DELETE' });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Erro ao excluir grupo' }));
-    throw new Error((err as { error?: string }).error ?? 'Erro ao excluir grupo');
+    const msg = (err as { error?: string; orientacao?: string }).error ?? 'Erro ao excluir grupo';
+    const orient = (err as { error?: string; orientacao?: string }).orientacao;
+    throw new Error(orient ? `${msg}\n${orient}` : msg);
   }
 }

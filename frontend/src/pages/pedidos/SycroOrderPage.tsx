@@ -3,6 +3,7 @@ import {
   getSycroOrderOrders,
   getSycroOrderPedidosErp,
   createSycroOrderOrder,
+  getSycroOrderUsersResponsavel,
   updateSycroOrderOrder,
   getSycroOrderHistory,
   getSycroOrderNotifications,
@@ -30,20 +31,80 @@ function formatDate(iso: string): string {
   }
 }
 
-/** Data prometida entre hoje e hoje + 7 dias (inclusive) */
-function isPromisedWithin7Days(dateStr: string): boolean {
+/** Menor data ISO entre trecho "a ... b" ou string única (previsão do Gerenciador). */
+function earliestIsoFromPrevisaoField(previsao: string | null | undefined, fallbackIso: string): string {
+  const p = previsao?.trim();
+  if (!p) return fallbackIso.slice(0, 10);
+  if (p.includes(' a ')) {
+    const parts = p.split(' a ').map((x) => x.trim().slice(0, 10)).filter(Boolean);
+    if (parts.length === 0) return fallbackIso.slice(0, 10);
+    return [...parts].sort((a, b) => a.localeCompare(b))[0]!;
+  }
+  return p.slice(0, 10);
+}
+
+function getEffectivePrevisaoDateIso(o: Pick<Order, 'previsao_atual' | 'current_promised_date'>): string {
+  return earliestIsoFromPrevisaoField(o.previsao_atual ?? null, o.current_promised_date);
+}
+
+/** Dias até a previsão efetiva (0 = hoje). null se inválido ou data já passou. */
+function getDaysUntilEffectivePrevisao(o: Pick<Order, 'previsao_atual' | 'current_promised_date'>): number | null {
+  const dateStr = getEffectivePrevisaoDateIso(o);
   try {
     const [y, m, d] = dateStr.split('-').map(Number);
-    const promised = new Date(y, m - 1, d);
+    const target = new Date(y, m - 1, d);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const in7 = new Date(today);
-    in7.setDate(in7.getDate() + 7);
-    in7.setHours(23, 59, 59, 999);
-    return promised >= today && promised <= in7;
+    target.setHours(0, 0, 0, 0);
+    const diff = Math.round((target.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+    if (diff < 0) return null;
+    return diff;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** Mesma janela do filtro “Entrega em 7 dias”: hoje até hoje+7 (comparando à previsão atual). */
+function isPromisedWithin7DaysFromPrevisao(o: Pick<Order, 'previsao_atual' | 'current_promised_date'>): boolean {
+  const days = getDaysUntilEffectivePrevisao(o);
+  return days != null && days <= 7;
+}
+
+/** Texto do selo no card; null se fora da janela de 7 dias. */
+function entregaProximityLabel(o: Pick<Order, 'previsao_atual' | 'current_promised_date'>): string | null {
+  const days = getDaysUntilEffectivePrevisao(o);
+  if (days == null || days > 7) return null;
+  if (days === 0) return 'Entrega HOJE';
+  return `Entrega em ${days} dias`;
+}
+
+function getPrimaryResponsavelLabel(deliveryMethod: string): 'josenildo' | 'PCP' {
+  const fm = (deliveryMethod ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  const josenildo =
+    (fm.includes('entrega') && fm.includes('grande')) ||
+    (fm.includes('retirada') && fm.includes('moveis')) ||
+    fm.includes('so aco');
+  return josenildo ? 'josenildo' : 'PCP';
+}
+
+function formatResponsavelLine(deliveryMethod: string, extraLogin: string | null | undefined): string {
+  const base = getPrimaryResponsavelLabel(deliveryMethod);
+  const ex = (extraLogin ?? '').trim().toLowerCase();
+  if (ex) return `Responsável por responder: ${base} | ${ex}`;
+  return `Responsável por responder: ${base}`;
+}
+
+/** Tags para o filtro: regra josenildo/outros + login extra se houver. */
+function responsavelTagsForCard(o: Order): string[] {
+  const fm = (o.delivery_method ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  const josenildo =
+    (fm.includes('entrega') && fm.includes('grande')) ||
+    (fm.includes('retirada') && fm.includes('moveis')) ||
+    fm.includes('so aco');
+  const tags: string[] = [josenildo ? 'josenildo' : 'outros'];
+  const ex = (o.responsible_user_login ?? '').trim().toLowerCase();
+  if (ex) tags.push(ex);
+  return tags;
 }
 
 function formatDateTime(iso: string): string {
@@ -137,15 +198,6 @@ export default function SycroOrderPage() {
 
   const filteredBySearch = orders;
 
-  const hasResponsavel = (dm: string) => {
-    const fm = (dm ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
-    return (
-      (fm.includes('entrega') && fm.includes('grande')) ||
-      (fm.includes('retirada') && fm.includes('moveis')) ||
-      fm.includes('so aco')
-    );
-  };
-
   const filtered = filteredBySearch.filter((o) => {
     if (filtros.pedido.length > 0 && !filtros.pedido.includes(o.order_number)) return false;
     const criador = (o.creator_name ?? '').trim() || '—';
@@ -154,10 +206,9 @@ export default function SycroOrderPage() {
     if (filtros.ultimaRespostaPor.length > 0 && !filtros.ultimaRespostaPor.includes(ultimaResp)) return false;
     const forma = (o.delivery_method ?? '').trim() || '—';
     if (filtros.formaEntrega.length > 0 && !filtros.formaEntrega.includes(forma)) return false;
-    const resp = hasResponsavel(o.delivery_method ?? '') ? 'josenildo' : 'outros';
-    if (filtros.responsavel.length > 0 && !filtros.responsavel.includes(resp)) return false;
+    if (filtros.responsavel.length > 0 && !filtros.responsavel.some((f) => responsavelTagsForCard(o).includes(f))) return false;
     if (filtros.entrega7d !== 'todos') {
-      const within7 = isPromisedWithin7Days(o.current_promised_date);
+      const within7 = isPromisedWithin7DaysFromPrevisao(o);
       if (filtros.entrega7d === 'sim' && !within7) return false;
       if (filtros.entrega7d === 'nao' && within7) return false;
     }
@@ -265,7 +316,11 @@ export default function SycroOrderPage() {
         const opFormaEntregaFiltrado = filterBySearch(buscaFiltro.formaEntrega, opFormaEntrega);
         // Opções do filtro devem refletir apenas os cards existentes.
         // Quando não há cards, a lista precisa ficar vazia (evita exibir "josenildo/outros" para nada).
-        const opResponsavel = [...new Set(filteredBySearch.map((o) => (hasResponsavel(o.delivery_method ?? '') ? 'josenildo' : 'outros')))].sort();
+        const opResponsavel = [...new Set(filteredBySearch.flatMap((o) => responsavelTagsForCard(o)))].sort((a, b) => {
+          const rank = (x: string) => (x === 'josenildo' ? 0 : x === 'outros' ? 1 : 2);
+          const r = rank(a) - rank(b);
+          return r !== 0 ? r : a.localeCompare(b, 'pt-BR');
+        });
         const opResponsavelFiltrado = filterBySearch(buscaFiltro.responsavel, opResponsavel);
         const temFiltro =
           filtros.pedido.length > 0 ||
@@ -514,7 +569,7 @@ export default function SycroOrderPage() {
                   </div>
                   <div className="p-2 space-y-2 min-h-[320px] overflow-y-auto max-h-[calc(100vh - 280px)] flex-1">
                     {ordersByLane(status).map((o) => {
-                      const within7 = isPromisedWithin7Days(o.current_promised_date);
+                      const entregaLabel = entregaProximityLabel(o);
                       const unread = !o.read_by_me && o.status !== 'FINISHED';
                       const loginNorm = (login ?? '').toLowerCase();
                       const grupoNorm = (grupo ?? '').toLowerCase();
@@ -548,27 +603,14 @@ export default function SycroOrderPage() {
                                 </div>
                               </div>
                               <div className="flex flex-wrap gap-1 justify-end">
-                                {within7 && o.status !== 'FINISHED' && (
+                                {entregaLabel && o.status !== 'FINISHED' && (
                                   <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200 flex-shrink-0">
-                                    Entrega em 7 dias
+                                    {entregaLabel}
                                   </span>
                                 )}
-                                {(() => {
-                                  const fm = (o.delivery_method ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
-                                  const direcionadoJosenildo =
-                                    (fm.includes('entrega') && fm.includes('grande')) ||
-                                    (fm.includes('retirada') && fm.includes('moveis')) ||
-                                    fm.includes('so aco');
-                                  return direcionadoJosenildo ? (
-                                    <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-primary-100 dark:bg-primary-900/50 text-primary-800 dark:text-primary-200 flex-shrink-0">
-                                      Responsável por responder: josenildo
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-primary-100 dark:bg-primary-900/50 text-primary-800 dark:text-primary-200 flex-shrink-0">
-                                      Responsável por responder: PCP
-                                    </span>
-                                  );
-                                })()}
+                                <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-primary-100 dark:bg-primary-900/50 text-primary-800 dark:text-primary-200 flex-shrink-0">
+                                  {formatResponsavelLine(o.delivery_method, o.responsible_user_login)}
+                                </span>
                                 {o.is_urgent ? (
                                   <>
                                     <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 flex-shrink-0">Urgente</span>
@@ -849,8 +891,30 @@ function ModalNovoPedido({
   const [itensPedido, setItensPedido] = useState<ItemPedido[]>([]);
   const [loadingItens, setLoadingItens] = useState(false);
   const [selectedIdPedidos, setSelectedIdPedidos] = useState<Set<string>>(new Set());
+  const [usersResponsavel, setUsersResponsavel] = useState<Array<{ id: number; login: string; nome: string | null }>>([]);
+  const [loadingUsersResp, setLoadingUsersResp] = useState(false);
+  /** Um único usuário opcional com permissão de atualizar card. */
+  const [responsibleUserId, setResponsibleUserId] = useState<number | ''>('');
 
   const selectedPedidoFull = selectedPedido ? pedidosErpList.find((p) => p.id === selectedPedido.id) : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingUsersResp(true);
+    getSycroOrderUsersResponsavel()
+      .then((list) => {
+        if (!cancelled) setUsersResponsavel(list);
+      })
+      .catch(() => {
+        if (!cancelled) setUsersResponsavel([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingUsersResp(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -986,6 +1050,7 @@ function ModalNovoPedido({
         promised_date: promisedDate,
         observation: observation.trim() || undefined,
         id_pedidos: [...selectedIdPedidos],
+        responsible_user_id: responsibleUserId === '' ? undefined : responsibleUserId,
       });
       onSuccess();
     } catch (err) {
@@ -1042,18 +1107,44 @@ function ModalNovoPedido({
               className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 disabled:opacity-80 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800/70"
               required
             />
-            {(() => {
-              const fm = delivery_method.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
-              const direcionadoJosenildo =
-                (fm.includes('entrega') && fm.includes('grande')) ||
-                (fm.includes('retirada') && fm.includes('moveis')) ||
-                fm.includes('so aco');
-              return direcionadoJosenildo ? (
-                <p className="mt-1.5 text-sm text-primary-600 dark:text-primary-400 font-medium">
-                  Responsável por responder: josenildo
-                </p>
-              ) : null;
-            })()}
+            {delivery_method.trim() ? (
+              <p className="mt-1.5 text-sm text-primary-600 dark:text-primary-400 font-medium">
+                {formatResponsavelLine(
+                  delivery_method,
+                  responsibleUserId === ''
+                    ? null
+                    : usersResponsavel.find((u) => u.id === responsibleUserId)?.login ?? null
+                )}
+              </p>
+            ) : null}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Responsável adicional por responder (opcional)
+            </label>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">
+              Apenas usuários com permissão para atualizar card. Não substitui a regra josenildo / PCP; será exibido junto na capa do card.
+            </p>
+            {loadingUsersResp ? (
+              <p className="text-sm text-slate-500 dark:text-slate-400 py-2">Carregando usuários...</p>
+            ) : (
+              <select
+                value={responsibleUserId === '' ? '' : String(responsibleUserId)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setResponsibleUserId(v === '' ? '' : parseInt(v, 10));
+                }}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-sm"
+              >
+                <option value="">Nenhum</option>
+                {usersResponsavel.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.login}
+                    {u.nome ? ` — ${u.nome}` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Comentários</label>

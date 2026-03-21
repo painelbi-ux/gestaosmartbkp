@@ -43,7 +43,10 @@ const filtrosIniciais: FiltrosPedidosState = {
 
 export default function PedidosPage() {
   const { hasPermission, login } = useAuth();
-  const podeEditar = hasPermission(PERMISSOES.PEDIDOS_EDITAR);
+  const podeExportarXlsx = hasPermission(PERMISSOES.PCP_EXPORTAR_XLSX) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
+  const podeExportarGrade = hasPermission(PERMISSOES.PCP_EXPORTAR_GRADE) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
+  const podeImportarXlsx = hasPermission(PERMISSOES.PCP_IMPORTAR_XLSX) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
+  const podeAjustarPrevisao = hasPermission(PERMISSOES.PCP_AJUSTAR_PREVISAO) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
   const isMaster = login === 'master';
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
   const [total, setTotal] = useState(0);
@@ -474,39 +477,47 @@ export default function PedidosPage() {
         <FiltroPedidos filtros={filtros} onChange={setFiltros} onAplicar={aplicarFiltros} onLimpar={limparFiltros} />
       )}
       <div className="flex flex-wrap items-center gap-2">
-        {podeEditar && (
+        {(podeExportarXlsx || podeExportarGrade || podeImportarXlsx || podeAjustarPrevisao) && (
           <>
-            <button
-              type="button"
-              onClick={exportarXlsx}
-              disabled={exportLoading}
-              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 disabled:opacity-50"
-            >
-              {exportLoading ? 'Exportando...' : 'Exportar XLSX'}
-            </button>
-            <button
-              type="button"
-              onClick={exportarGrade}
-              disabled={exportGradeLoading}
-              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 disabled:opacity-50"
-            >
-              {exportGradeLoading ? 'Exportando...' : 'Exportar Grade'}
-            </button>
-            <button
-              type="button"
-              onClick={() => inputImportRef.current?.click()}
-              disabled={importLoading}
-              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 disabled:opacity-50"
-            >
-              {importLoading ? 'Importando...' : 'Importar XLSX'}
-            </button>
-            <input
-              ref={inputImportRef}
-              type="file"
-              accept=".xlsx,.xls"
-              className="hidden"
-              onChange={handleImportFile}
-            />
+            {podeExportarXlsx && (
+              <button
+                type="button"
+                onClick={exportarXlsx}
+                disabled={exportLoading}
+                className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 disabled:opacity-50"
+              >
+                {exportLoading ? 'Exportando...' : 'Exportar XLSX'}
+              </button>
+            )}
+            {podeExportarGrade && (
+              <button
+                type="button"
+                onClick={exportarGrade}
+                disabled={exportGradeLoading}
+                className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 disabled:opacity-50"
+              >
+                {exportGradeLoading ? 'Exportando...' : 'Exportar Grade'}
+              </button>
+            )}
+            {podeImportarXlsx && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => inputImportRef.current?.click()}
+                  disabled={importLoading}
+                  className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 disabled:opacity-50"
+                >
+                  {importLoading ? 'Importando...' : 'Importar XLSX'}
+                </button>
+                <input
+                  ref={inputImportRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  className="hidden"
+                  onChange={handleImportFile}
+                />
+              </>
+            )}
           </>
         )}
         {isMaster && (
@@ -533,7 +544,7 @@ export default function PedidosPage() {
         >
           Classificação personalizada
         </button>
-        {podeEditar && selectedIds.size > 0 && (
+        {podeAjustarPrevisao && selectedIds.size > 0 && (
           <button
             type="button"
             onClick={() => setModalLoteOpen(true)}
@@ -557,9 +568,9 @@ export default function PedidosPage() {
         <TabelaPedidos
           pedidos={pedidos}
           loading={loading}
-          onAjustar={podeEditar ? setModalPedido : undefined}
-          selectedIds={podeEditar ? selectedIds : undefined}
-          onSelectionChange={podeEditar ? setSelectedIds : undefined}
+          onAjustar={podeAjustarPrevisao ? setModalPedido : undefined}
+          selectedIds={podeAjustarPrevisao ? selectedIds : undefined}
+          onSelectionChange={podeAjustarPrevisao ? setSelectedIds : undefined}
           sortLevels={sortLevelsPersonalizado}
           onSortLevelsChange={handleSortLevelsChange}
         />
