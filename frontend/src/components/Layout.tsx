@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { PERMISSOES } from '../config/permissoes';
 import PermissionGuard from './PermissionGuard';
 import StatusCard from './StatusCard';
+import { getSycroOrderNotifications } from '../api/sycroorder';
 
 function SunIcon() {
   return (
@@ -85,7 +86,7 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
-  const { hasPermission, isMaster, grupo } = useAuth();
+  const { hasPermission, isMaster, grupo, nome, login } = useAuth();
   const [pcpOpen, setPcpOpen] = useState(false);
   const pcpRef = useRef<HTMLDivElement>(null);
   const [comunicacaoOpen, setComunicacaoOpen] = useState(false);
@@ -105,6 +106,31 @@ export default function Layout() {
   const isIntegracaoActive = location.pathname.startsWith('/integracao');
   const isEngenhariaActive = location.pathname.startsWith('/engenharia');
   const isFinanceiroActive = location.pathname.startsWith('/financeiro');
+
+  const [sycroUnreadCount, setSycroUnreadCount] = useState<number>(0);
+
+  const refreshSycroUnreadCount = useCallback(async () => {
+    if (!hasPermission(PERMISSOES.COMUNICACAO_TELA_VER) && !hasPermission(PERMISSOES.COMUNICACAO_TOTAL)) {
+      setSycroUnreadCount(0);
+      return;
+    }
+    try {
+      const list = await getSycroOrderNotifications();
+      setSycroUnreadCount(list.filter((n) => !n.is_read).length);
+    } catch {
+      setSycroUnreadCount(0);
+    }
+  }, [hasPermission]);
+
+  useEffect(() => {
+    refreshSycroUnreadCount();
+  }, [login, refreshSycroUnreadCount]);
+
+  useEffect(() => {
+    const handler = () => refreshSycroUnreadCount();
+    window.addEventListener('sycroorder:notificationsUpdated', handler);
+    return () => window.removeEventListener('sycroorder:notificationsUpdated', handler);
+  }, [refreshSycroUnreadCount]);
 
   // Para o perfil de Compras, mostramos apenas a tela de "Alteração da Data de Entrega do Pedido de Compra".
   const INTEGRACAO_SUBMENUS_FOR_USER = (() => {
@@ -600,6 +626,36 @@ export default function Layout() {
                 </svg>
               </Link>
             )}
+            {(hasPermission(PERMISSOES.COMUNICACAO_TELA_VER) || hasPermission(PERMISSOES.COMUNICACAO_TOTAL)) && (
+              <button
+                type="button"
+                onClick={() => {
+                  const targetPath = '/pedidos/sycroorder';
+                  if (location.pathname === targetPath) {
+                    window.dispatchEvent(new CustomEvent('sycroorder:openNotificacoes'));
+                  } else {
+                    navigate(targetPath);
+                    setTimeout(() => window.dispatchEvent(new CustomEvent('sycroorder:openNotificacoes')), 350);
+                  }
+                }}
+                className="rounded-lg p-2 text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-700 transition relative"
+                title="Notificações"
+                aria-label="Notificações"
+              >
+                {sycroUnreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 inline-flex items-center justify-center min-w-5 px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[11px] font-semibold">
+                    {sycroUnreadCount}
+                  </span>
+                )}
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+              </button>
+            )}
+            <span className="text-sm text-slate-600 dark:text-slate-300 mr-1">
+              {nome ?? login ?? ''}
+            </span>
             <button
               type="button"
               onClick={handleLogout}

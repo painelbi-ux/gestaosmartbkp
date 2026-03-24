@@ -1314,6 +1314,9 @@ export async function registrarAjustePrevisao(
       },
     });
   });
+  // A lista de pedidos cacheia previsao_entrega_atualizada por 90s.
+  // Sem invalidar aqui, o histórico mostra a alteração antes da coluna "Previsão atual".
+  invalidatePedidosCache();
 }
 
 /** Última previsão por id_pedido (só SQLite, sem Nomus). */
@@ -1392,6 +1395,8 @@ export async function registrarAjustesPrevisaoLote(
           data_ajuste: dataAjusteRequest,
         })),
       });
+      // Mantém a grade de Gestão de Pedidos consistente imediatamente após ajuste em lote.
+      invalidatePedidosCache();
     }
     const applied = toInsert.map((a) => ({
       id_pedido: a.id_pedido,

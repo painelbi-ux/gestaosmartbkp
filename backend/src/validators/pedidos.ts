@@ -7,6 +7,8 @@ export const ajustarPrevisaoSchema = z.object({
   ),
   motivo: z.string().min(1, 'Motivo é obrigatório').max(500),
   observacao: z.string().max(1000).optional().nullable(),
+  /** Se true, replica motivo/observação e nova previsão para todos os itens da mesma rota/carrada (ROTA …). */
+  replicate_carrada: z.boolean().optional(),
 });
 
 export type AjustarPrevisaoInput = z.infer<typeof ajustarPrevisaoSchema>;

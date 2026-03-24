@@ -13,6 +13,7 @@ import {
   setOrderRead,
   getNotifications,
   markNotificationsRead,
+  setNotificationRead,
   searchSycroOrderUsers,
   listUsersResponsavelCard,
 } from '../controllers/sycroorderController.js';
@@ -47,5 +48,6 @@ router.put('/orders/:id/read', canAtualizarCard, setOrderRead);
 router.get('/orders/:id/history', canVerHistorico, getOrderHistory);
 router.get('/notifications', canVerTela, getNotifications);
 router.post('/notifications/read', canVerTela, markNotificationsRead);
+router.patch('/notifications/:id/read', canVerTela, setNotificationRead);
 
 export default router;

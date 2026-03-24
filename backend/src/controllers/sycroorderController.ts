@@ -71,6 +71,47 @@ function sortedUnique(arr: string[]): string[] {
   return [...new Set(arr.map((s) => String(s ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
+function normalizeRotaName(rota?: string | null): string {
+  return String(rota ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+}
+
+function isCarradaRota(rota?: string | null): boolean {
+  return normalizeRotaName(rota).startsWith('rota ');
+}
+
+/** Rotas "parametrizadas" pela SQL do Gerenciador — não replicam ajuste entre pedidos por carrada. */
+const EXCLUDED_SQL_ROTA_CATEGORIES = new Set([
+  'retirada na so aco',
+  'retirada na so moveis',
+  'entrega grande teresina',
+  'inserir em romaneio',
+  'requisicao',
+]);
+
+function isExcludedSqlRotaCategory(dm: string): boolean {
+  return EXCLUDED_SQL_ROTA_CATEGORIES.has(normalizeRotaName(dm));
+}
+
+async function resolveSycroOrderResponsibleRecipientUserIds(args: {
+  delivery_method: string;
+  responsible_user_id: number | null | undefined;
+}): Promise<number[]> {
+  const primaryLogin = isResponsavelJosenildo(args.delivery_method) ? 'josenildo' : 'pcp';
+  const recipientIds = new Set<number>();
+
+  const primaryUser = await prisma.usuario.findFirst({
+    where: { login: { equals: primaryLogin } },
+    select: { id: true },
+  });
+  if (primaryUser?.id) recipientIds.add(primaryUser.id);
+
+  if (args.responsible_user_id != null && Number.isFinite(args.responsible_user_id)) {
+    recipientIds.add(args.responsible_user_id);
+  }
+
+  return [...recipientIds];
+}
+
 function isGrupoAdministrador(grupoNome?: string | null): boolean {
   const n = normalizeLogin(grupoNome);
   return n === 'admin' || n === 'administrador';
@@ -98,6 +139,26 @@ function formatDateRangePtBr(isoDates: string[]): string | null {
   if (uniq.length === 1) return uniq[0]!;
   const sorted = [...uniq].sort((a, b) => a.localeCompare(b));
   return `${sorted[0]} a ${sorted[sorted.length - 1]}`;
+}
+
+function buildCarradasInfo(rows: Array<Record<string, unknown>>): Array<{ rota: string; previsao_atual: string | null; codigos: string[] }> {
+  const byRota = new Map<string, { previsoes: string[]; codigos: string[] }>();
+  for (const r of rows) {
+    const rota = String(r['Observacoes'] ?? r['Observações'] ?? r['Rota'] ?? r['rota'] ?? '').trim() || 'Sem rota';
+    const previsao = toIsoDate(r['previsao_entrega_atualizada'] ?? r['previsao_entrega']);
+    const cod = String(r['Cod'] ?? r['cod'] ?? '').trim();
+    const cur = byRota.get(rota) ?? { previsoes: [], codigos: [] };
+    if (previsao) cur.previsoes.push(previsao);
+    if (cod) cur.codigos.push(cod);
+    byRota.set(rota, cur);
+  }
+  return [...byRota.entries()]
+    .map(([rota, v]) => ({
+      rota,
+      previsao_atual: formatDateRangePtBr(v.previsoes),
+      codigos: sortedUnique(v.codigos),
+    }))
+    .sort((a, b) => a.rota.localeCompare(b.rota, 'pt-BR'));
 }
 
 const STATUS_FINAIS_PERMITIDOS = new Set(['Atendido totalmente', 'Atendido com corte', 'Cancelado']);
@@ -190,12 +251,24 @@ export async function getPedidosErp(req: Request, res: Response): Promise<void> 
       dataOriginalEntrega: Date | string | null;
       rota: string | null;
     }>;
+    let previsaoAtualByPd = new Map<string, string>();
     // Restringir aos mesmos pedidos que aparecem no Gerenciador de Pedidos
     try {
       const { data: gerenciadorList } = await listarPedidos({});
       const pdNumbers = new Set(
         gerenciadorList.map((row: Record<string, unknown>) => String(row['PD'] ?? '').trim()).filter(Boolean)
       );
+      // Calcula a "previsão atual" efetiva para cada PD (usa menor data do intervalo quando existir)
+      for (const row of gerenciadorList as Array<Record<string, unknown>>) {
+        const pd = String(row['PD'] ?? '').trim();
+        if (!pd) continue;
+        const previsaoIso = toIsoDate(row['previsao_entrega_atualizada'] ?? row['previsao_entrega']);
+        if (!previsaoIso) continue;
+        const prev = previsaoAtualByPd.get(pd);
+        if (!prev || previsaoIso.localeCompare(prev, 'pt-BR') < 0) {
+          previsaoAtualByPd.set(pd, previsaoIso);
+        }
+      }
       if (pdNumbers.size > 0) {
         list = list.filter((r) => pdNumbers.has(String(r.nome ?? '').trim()));
       }
@@ -215,6 +288,7 @@ export async function getPedidosErp(req: Request, res: Response): Promise<void> 
       dataEmissao: r.dataEmissao instanceof Date ? r.dataEmissao.toISOString().slice(0, 10) : String(r.dataEmissao ?? '').slice(0, 10),
       dataEntregaPadrao: toDateStr(r.dataEntregaPadrao),
       dataOriginalEntrega: toDateStr(r.dataOriginalEntrega),
+      previsao_atual: previsaoAtualByPd.get(String(r.nome ?? '').trim() || '') ?? null,
       rota: r.rota != null && String(r.rota).trim() !== '' ? String(r.rota).trim() : null,
     }));
     res.json(data);
@@ -402,6 +476,14 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
         return values.length > 0 ? [...new Set(values)][0]! : null;
       })();
 
+      const vendedorNome = (() => {
+        const values = relevantRows
+          .map((r) => String(r['Vendedor/Representante'] ?? r['vendedor/representante'] ?? '').trim())
+          .filter(Boolean);
+        return values.length > 0 ? [...new Set(values)][0]! : null;
+      })();
+      const carradasInfo = buildCarradasInfo(relevantRows);
+
       const ruLogin = o.usuarioResponsavel?.login ? normalizeLogin(o.usuarioResponsavel.login) : null;
       return {
         id: o.id,
@@ -411,6 +493,8 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
         data_original: dataOriginalIso,
         previsao_atual: previsaoAtualIso,
         cliente_name: clienteNome,
+        vendedor_name: vendedorNome,
+        carradas_info: carradasInfo,
         tag_disponivel: !!o.tag_disponivel,
         status: o.status,
         is_urgent: o.is_urgent,
@@ -460,13 +544,14 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
     const creator_name = usuario?.nome ?? login;
 
     // Resolver itens do pedido no Gerenciador (para deduplicação por itens)
-    let itensDoPedido: Array<{ id_pedido: string; cod: string }> = [];
+    let itensDoPedido: Array<{ id_pedido: string; cod: string; rota: string }> = [];
     try {
       const { data } = await listarPedidos({ pd: String(order_number).trim(), limit: 500 });
       itensDoPedido = (data ?? [])
         .map((row: Record<string, unknown>) => ({
           id_pedido: String(row.id_pedido ?? '').trim(),
           cod: String(row.Cod ?? row.cod ?? '').trim(),
+          rota: String(row['Observacoes'] ?? row['Observações'] ?? row['Rota'] ?? row['rota'] ?? '').trim(),
         }))
         .filter((x) => x.id_pedido);
     } catch {
@@ -485,6 +570,22 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
     const selectedIds = reqIds.length > 0 ? reqIds.filter((id) => allItemIds.includes(id)) : allItemIds;
     if (selectedIds.length === 0) {
       res.status(400).json({ error: 'Selecione ao menos um item válido do pedido.' });
+      return;
+    }
+
+    // Regra: um card não pode nascer vinculado a mais de uma carrada (rotas que começam com "ROTA ").
+    const idToRota = new Map(itensDoPedido.map((i) => [i.id_pedido, i.rota]));
+    const carradasSelecionadas = new Set(
+      selectedIds
+        .map((id) => idToRota.get(id) ?? '')
+        .filter((r) => isCarradaRota(r))
+        .map((r) => String(r).trim())
+    );
+    if (carradasSelecionadas.size > 1) {
+      res.status(400).json({
+        error:
+          'Não é permitido criar um card com itens de mais de uma carrada. Selecione apenas os itens de uma única rota/carrada e crie outro card para as demais.',
+      });
       return;
     }
 
@@ -540,55 +641,58 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
         return;
       }
       const ruPerms = await getPermissoesUsuario(ru.login);
-      if (!usuarioPodeAtualizarCardNasPermissoes(ruPerms)) {
-        res.status(400).json({ error: 'O usuário escolhido não tem permissão para atualizar card na Comunicação PD.' });
+      const canViewPd = ruPerms.includes(PERMISSOES.COMUNICACAO_TELA_VER) || ruPerms.includes(PERMISSOES.COMUNICACAO_TOTAL);
+      if (!canViewPd) {
+        res.status(400).json({ error: 'O usuário escolhido não tem permissão para visualizar a Comunicação PD.' });
         return;
       }
       responsibleUserId = rid;
     }
 
-    const order = await prisma.sycroOrderOrder.create({
-      data: {
-        order_number: String(order_number).trim(),
-        delivery_method: String(delivery_method).trim(),
-        current_promised_date: String(promised_date).trim(),
-        status: 'PENDING',
-        is_urgent: is_urgent ? 1 : 0,
-        item_ids_json: JSON.stringify(selectedIds),
-        item_codes_json: selectedCodes.length ? JSON.stringify(selectedCodes) : null,
-        created_by,
-        creator_name,
+    const order = await prisma.$transaction(async (tx) => {
+      const created = await tx.sycroOrderOrder.create({
+        data: {
+          order_number: String(order_number).trim(),
+          delivery_method: String(delivery_method).trim(),
+          current_promised_date: String(promised_date).trim(),
+          status: 'PENDING',
+          is_urgent: is_urgent ? 1 : 0,
+          item_ids_json: JSON.stringify(selectedIds),
+          item_codes_json: selectedCodes.length ? JSON.stringify(selectedCodes) : null,
+          created_by,
+          creator_name,
+          responsible_user_id: responsibleUserId,
+        },
+      });
+
+      await tx.sycroOrderHistory.create({
+        data: {
+          order_id: created.id,
+          user_id: created_by,
+          user_name: creator_name,
+          action_type: 'CREATE',
+          new_date: created.current_promised_date,
+          observation: observation ? String(observation).trim() : null,
+        },
+      });
+
+      // Notificar apenas os responsáveis registrados no card:
+      const recipientIds = await resolveSycroOrderResponsibleRecipientUserIds({
+        delivery_method: delivery_method,
         responsible_user_id: responsibleUserId,
-      },
-    });
+      });
+      if (recipientIds.length > 0) {
+        const msg = `Novo card ${created.order_number} criado por ${creator_name}`;
+        await tx.sycroOrderNotification.createMany({
+          data: recipientIds.map((uid) => ({
+            user_id: uid,
+            message: msg,
+            order_id: created.id,
+          })),
+        });
+      }
 
-    await prisma.sycroOrderHistory.create({
-      data: {
-        order_id: order.id,
-        user_id: created_by,
-        user_name: creator_name,
-        action_type: 'CREATE',
-        new_date: order.current_promised_date,
-        observation: observation ? String(observation).trim() : null,
-      },
-    });
-
-    // Notificar usuários que têm permissão de pedidos (grupos com pedidos.ver)
-    const gruposComPedidos = await prisma.grupoUsuario.findMany({
-      where: { permissoes: { contains: 'pedidos.ver' } },
-      select: { id: true },
-    });
-    const userIds = await prisma.usuario.findMany({
-      where: { grupoId: { in: gruposComPedidos.map((g) => g.id) } },
-      select: { id: true },
-    });
-    const msg = `Novo pedido ${order.order_number} criado por ${creator_name}`;
-    await prisma.sycroOrderNotification.createMany({
-      data: userIds.map((u) => ({
-        user_id: u.id,
-        message: msg,
-        order_id: order.id,
-      })),
+      return created;
     });
 
     // Notificação WhatsApp para o número configurado (novo pedido + dados do card)
@@ -625,7 +729,7 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'ID inválido.' });
     return;
   }
-  const { status, new_date, observation, comentario, observacao, is_urgent, motivo, id_pedidos, tag_disponivel } = req.body as {
+  const { status, new_date, observation, comentario, observacao, is_urgent, motivo, id_pedidos, tag_disponivel, replicate_carrada } = req.body as {
     status?: OrderStatus;
     new_date?: string;
     /** @deprecated use comentario */
@@ -640,6 +744,8 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
     id_pedidos?: string[];
     /** Quando informado, atualiza a TAG de disponibilidade (DISPONÍVEL / NÃO DISPONÍVEL). */
     tag_disponivel?: boolean;
+    /** Se true, replica previsão/motivo/observação para todos os itens da mesma rota (carrada) no Gerenciador. */
+    replicate_carrada?: boolean;
   };
   const comentarioVal = (comentario != null && String(comentario).trim() !== '' ? String(comentario).trim() : null) ?? (observation != null && String(observation).trim() !== '' ? String(observation).trim() : null);
   const observacaoVal = observacao != null && String(observacao).trim() !== '' ? String(observacao).trim() : null;
@@ -690,6 +796,10 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
         res.status(400).json({ error: 'Seu perfil permite apenas inserir comentários neste card. Não é permitido alterar itens.' });
         return;
       }
+      if (replicate_carrada === true) {
+        res.status(400).json({ error: 'Seu perfil permite apenas inserir comentários neste card. Não é permitido replicar data por carrada.' });
+        return;
+      }
     }
     if (!newDateProvided && !comentarioVal) {
       res.status(400).json({ error: 'Comentário é obrigatório quando não informar uma nova data prometida.' });
@@ -701,6 +811,17 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
       const motivoTrim = motivo != null ? String(motivo).trim() : '';
       if (!motivoTrim) {
         res.status(400).json({ error: 'Ao informar Nova data prometida, o motivo é obrigatório (mesmas opções do Gerenciador de Pedidos).' });
+        return;
+      }
+    }
+
+    const replicateCarradaRequested = replicate_carrada === true;
+    if (replicateCarradaRequested && newDateProvided) {
+      const dm = String(order.delivery_method ?? '').trim();
+      if (!isCarradaRota(dm) || isExcludedSqlRotaCategory(dm)) {
+        res.status(400).json({
+          error: 'Replicação por carrada não se aplica a esta forma de entrega ou não está permitida.',
+        });
         return;
       }
     }
@@ -743,7 +864,15 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
       },
     });
 
-    // Citações no comentário (@login) -> cria notificações para os usuários citados
+    // Lista de destinatários: responsáveis gravados no card
+    const recipientIds = await resolveSycroOrderResponsibleRecipientUserIds({
+      delivery_method: String(order.delivery_method ?? ''),
+      responsible_user_id: (order.responsible_user_id as number | null | undefined) ?? null,
+    });
+    const recipientSet = new Set<number>(recipientIds);
+    let sentMentionNotificationToResponsible = false;
+
+    // Citações no comentário (@login) -> cria notificações SOMENTE para citados que também são responsáveis no card
     if (comentarioVal) {
       const mentionRegex = /@([a-zA-Z0-9_.]+)/g;
       const mentioned = [
@@ -757,15 +886,17 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
           where: { login: { in: mentioned } },
           select: { id: true, login: true },
         });
-        if (usersMentioned.length > 0) {
+        const mentionedResponsible = usersMentioned.filter((u) => recipientSet.has(u.id) && u.id !== user_id);
+        if (mentionedResponsible.length > 0) {
           const msg = `Você foi citado por ${user_name} no card ${order.order_number}.`;
           await prisma.sycroOrderNotification.createMany({
-            data: usersMentioned.map((u) => ({
+            data: mentionedResponsible.map((u) => ({
               user_id: u.id,
               message: msg,
               order_id: id,
             })),
           });
+          sentMentionNotificationToResponsible = true;
         }
       }
     }
@@ -789,15 +920,34 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
         const { data: gerenciadorList } = await listarPedidos({});
         const motivoTrim = String(motivo).trim();
         const orderNumber = String(order.order_number ?? '').trim();
-        const todosDoPedido = gerenciadorList
-          .filter((row: Record<string, unknown>) => String(row['PD'] ?? '').trim() === orderNumber)
-          .map((row: Record<string, unknown>) => String(row['id_pedido'] ?? '').trim())
-          .filter(Boolean);
-        const idsPedido =
-          Array.isArray(id_pedidos) && id_pedidos.length > 0
-            ? id_pedidos.map((id) => String(id ?? '').trim()).filter(Boolean).filter((id) => todosDoPedido.includes(id))
-            : todosDoPedido;
         const dataNova = new Date(nextDate);
+        const dm = String(order.delivery_method ?? '').trim();
+
+        let idsPedido: string[] = [];
+
+        if (replicateCarradaRequested) {
+          if (isCarradaRota(dm) && !isExcludedSqlRotaCategory(dm)) {
+            idsPedido = sortedUnique(
+              gerenciadorList
+                .filter((row: Record<string, unknown>) => {
+                  const rota = String(row['Observacoes'] ?? row['Observações'] ?? row['Rota'] ?? row['rota'] ?? '').trim();
+                  return rota === dm;
+                })
+                .map((row: Record<string, unknown>) => String(row['id_pedido'] ?? '').trim())
+                .filter(Boolean)
+            );
+          }
+        } else {
+          const todosDoPedido = gerenciadorList
+            .filter((row: Record<string, unknown>) => String(row['PD'] ?? '').trim() === orderNumber)
+            .map((row: Record<string, unknown>) => String(row['id_pedido'] ?? '').trim())
+            .filter(Boolean);
+          idsPedido =
+            Array.isArray(id_pedidos) && id_pedidos.length > 0
+              ? id_pedidos.map((id) => String(id ?? '').trim()).filter(Boolean).filter((id) => todosDoPedido.includes(id))
+              : todosDoPedido;
+        }
+
         for (const idPedido of idsPedido) {
           await registrarAjustePrevisao(idPedido, dataNova, motivoTrim, user_name ?? login, observacaoVal ?? undefined);
         }
@@ -806,36 +956,27 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
       }
     }
 
-    // Notificar criador do pedido (se diferente do usuário que atualizou e temos created_by)
-    // Observação: quando há menção no comentário, mantemos somente a notificação de citação como padrão.
-    if (!hasMentions && order.created_by && order.created_by !== user_id) {
-      await prisma.sycroOrderNotification.create({
-        data: {
-          user_id: order.created_by,
-          message: `PCP atualizou o pedido ${order.order_number}: ${nextStatus}`,
-          order_id: id,
-        },
-      });
-    }
+    // Notificar responsáveis gravados no card sobre a atualização.
+    // Se houver menções no comentário e nenhum destinatário de menção for responsável,
+    // ainda assim notificamos os responsáveis pelo card (garante que update não "some").
+    const recipientsToNotify = recipientIds.filter((uid) => uid !== user_id);
+    if (recipientsToNotify.length > 0) {
+      const msgBase =
+        nextUrgent === 1 || nextStatus === 'ESCALATED'
+          ? `Card ${order.order_number} atualizado (crítico/escalado): ${nextStatus}`
+          : `Card ${order.order_number} atualizado: ${nextStatus}`;
 
-    // Se escalado ou urgente, notificar quem tem pedidos.ver (mesmo lógica que create)
-    if (!hasMentions && (nextStatus === 'ESCALATED' || nextUrgent === 1)) {
-      const gruposComPedidos = await prisma.grupoUsuario.findMany({
-        where: { permissoes: { contains: 'pedidos.ver' } },
-        select: { id: true },
-      });
-      const userIds = await prisma.usuario.findMany({
-        where: { grupoId: { in: gruposComPedidos.map((g) => g.id) } },
-        select: { id: true },
-      });
-      const msg = `Atualização em pedido crítico/escalado ${order.order_number}`;
-      await prisma.sycroOrderNotification.createMany({
-        data: userIds.map((u) => ({
-          user_id: u.id,
-          message: msg,
-          order_id: id,
-        })),
-      });
+      // Se houve menção, mas não criou notificações para responsáveis, enviamos o update também.
+      const shouldSendUpdate = !hasMentions || !sentMentionNotificationToResponsible;
+      if (shouldSendUpdate) {
+        await prisma.sycroOrderNotification.createMany({
+          data: recipientsToNotify.map((uid) => ({
+            user_id: uid,
+            message: msgBase,
+            order_id: id,
+          })),
+        });
+      }
     }
 
     res.json({ success: true });
@@ -1218,10 +1359,15 @@ export async function listUsersResponsavelCard(req: Request, res: Response): Pro
     const out: Array<{ id: number; login: string; nome: string | null }> = [];
     for (const u of users) {
       if (u.grupo && u.grupo.ativo === false) continue;
+      const loginNorm = normalizeLogin(u.login);
+      // Josenildo e Vinicius já possuem outra regra (não listar como responsável adicional).
+      if (loginNorm === 'josenildo' || loginNorm === 'viniciusrodrigues' || loginNorm === 'vinicius') continue;
+
       const perms = await getPermissoesUsuario(u.login);
-      if (usuarioPodeAtualizarCardNasPermissoes(perms)) {
-        out.push({ id: u.id, login: u.login, nome: u.nome ?? null });
-      }
+      const canViewPd = perms.includes(PERMISSOES.COMUNICACAO_TELA_VER) || perms.includes(PERMISSOES.COMUNICACAO_TOTAL);
+      if (!canViewPd) continue;
+
+      out.push({ id: u.id, login: u.login, nome: u.nome ?? null });
     }
     res.json(out);
   } catch (e) {
@@ -1242,7 +1388,7 @@ export async function searchSycroOrderUsers(req: Request, res: Response): Promis
     }
 
     const list = await prisma.usuario.findMany({
-      where: { login: { contains: q, mode: 'insensitive' } },
+      where: { login: { contains: q } },
       take: 10,
       orderBy: { login: 'asc' },
       select: { id: true, login: true, nome: true },
@@ -1276,5 +1422,45 @@ export async function markNotificationsRead(req: Request, res: Response): Promis
   } catch (e) {
     console.error('sycroorder markNotificationsRead', e);
     res.status(503).json({ error: 'Erro ao marcar notificações.' });
+  }
+}
+
+/** PATCH /api/sycroorder/notifications/:id/read — marca uma notificação individual como lida/não lida */
+export async function setNotificationRead(req: Request, res: Response): Promise<void> {
+  const login = req.user?.login;
+  if (!login) {
+    res.status(401).json({ error: 'Não autorizado.' });
+    return;
+  }
+
+  const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) {
+    res.status(400).json({ error: 'ID inválido.' });
+    return;
+  }
+
+  const read = req.body?.read === true;
+
+  try {
+    const usuario = await getUsuarioAtual(login);
+    if (!usuario) {
+      res.status(401).json({ error: 'Usuário não encontrado.' });
+      return;
+    }
+
+    const updated = await prisma.sycroOrderNotification.updateMany({
+      where: { id, user_id: usuario.id },
+      data: { is_read: read ? 1 : 0 },
+    });
+
+    if (updated.count === 0) {
+      res.status(404).json({ error: 'Notificação não encontrada.' });
+      return;
+    }
+
+    res.json({ success: true, read });
+  } catch (e) {
+    console.error('sycroorder setNotificationRead', e);
+    res.status(503).json({ error: 'Erro ao atualizar notificação.' });
   }
 }

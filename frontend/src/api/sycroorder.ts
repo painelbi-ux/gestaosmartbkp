@@ -11,6 +11,14 @@ export interface SycroOrderOrder {
   previsao_atual?: string | null;
   /** Nome do cliente no ERP */
   cliente_name?: string | null;
+  /** Nome do vendedor/representante no ERP (Vendedor/Representante) */
+  vendedor_name?: string | null;
+  /** Resumo por carrada/rota do card (previsão atual e códigos). */
+  carradas_info?: Array<{
+    rota: string;
+    previsao_atual: string | null;
+    codigos: string[];
+  }>;
   /** TAG de disponibilidade (Comunicação PD) */
   tag_disponivel?: boolean;
   status: 'PENDING' | 'FINISHED' | 'ESCALATED';
@@ -61,6 +69,8 @@ export interface SycroOrderPedidoErp {
   dataEntregaPadrao: string | null;
   /** Data original de entrega do pedido (Gerenciador de Pedidos). */
   dataOriginalEntrega: string | null;
+  /** Previsão atual efetiva (Gerenciador de Pedidos). */
+  previsao_atual?: string | null;
   /** Rota / forma de entrega (Observacoes no Gerenciador). */
   rota: string | null;
 }
@@ -125,6 +135,8 @@ export async function updateSycroOrderOrder(
     motivo?: string;
     /** Aplicar ajuste apenas a estes id_pedido (quando alteração não é para todos os itens). */
     id_pedidos?: string[];
+    /** Replica motivo/observação e nova previsão para todos os itens da mesma rota/carrada no Gerenciador (rotas "ROTA ..."). */
+    replicate_carrada?: boolean;
     /** Atualiza TAG de disponibilidade (DISPONÍVEL / NÃO DISPONÍVEL). */
     tag_disponivel?: boolean;
   }
@@ -154,6 +166,14 @@ export async function getSycroOrderNotifications(): Promise<SycroOrderNotificati
 export async function markSycroOrderNotificationsRead(): Promise<{ success: boolean }> {
   return apiJson<{ success: boolean }>('/api/sycroorder/notifications/read', {
     method: 'POST',
+  });
+}
+
+/** Marca uma notificação individual como lida/não lida */
+export async function setSycroOrderNotificationRead(notificationId: number, body: { read: boolean }): Promise<{ success: boolean; read: boolean }> {
+  return apiJson<{ success: boolean; read: boolean }>(`/api/sycroorder/notifications/${notificationId}/read`, {
+    method: 'PATCH',
+    body,
   });
 }
 

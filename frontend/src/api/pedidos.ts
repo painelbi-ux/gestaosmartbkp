@@ -325,7 +325,13 @@ export async function checkPedidosEmSycro(id_pedidos: string[]): Promise<{ pd_em
 
 export async function ajustarPrevisao(
   idPedido: string,
-  payload: { previsao_nova: string; motivo: string; observacao?: string | null }
+  payload: {
+    previsao_nova: string;
+    motivo: string;
+    observacao?: string | null;
+    /** Replica para todos os itens da mesma rota/carrada (ROTA …). */
+    replicate_carrada?: boolean;
+  }
 ): Promise<Pedido> {
   const res = await apiFetch(`/api/pedidos/${encodeURIComponent(idPedido)}/ajustar-previsao`, {
     method: 'POST',

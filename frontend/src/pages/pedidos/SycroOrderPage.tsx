@@ -8,6 +8,7 @@ import {
   getSycroOrderHistory,
   getSycroOrderNotifications,
   markSycroOrderNotificationsRead,
+  setSycroOrderNotificationRead,
   setSycroOrderRead,
   setSycroOrderTagDisponivel,
   searchSycroOrderUsers,
@@ -94,6 +95,19 @@ function formatResponsavelLine(deliveryMethod: string, extraLogin: string | null
   return `Responsável por responder: ${base}`;
 }
 
+function HelpTooltipIcon({ text }: { text: string }) {
+  return (
+    <span
+      className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-slate-300 dark:border-slate-600 text-[11px] text-slate-600 dark:text-slate-300 cursor-help select-none"
+      title={text}
+      aria-label={text}
+      role="img"
+    >
+      ?
+    </span>
+  );
+}
+
 /** Tags para o filtro: regra josenildo/outros + login extra se houver. */
 function responsavelTagsForCard(o: Order): string[] {
   const fm = (o.delivery_method ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
@@ -101,10 +115,51 @@ function responsavelTagsForCard(o: Order): string[] {
     (fm.includes('entrega') && fm.includes('grande')) ||
     (fm.includes('retirada') && fm.includes('moveis')) ||
     fm.includes('so aco');
-  const tags: string[] = [josenildo ? 'josenildo' : 'outros'];
+  const tags: string[] = [josenildo ? 'josenildo' : 'PCP'];
   const ex = (o.responsible_user_login ?? '').trim().toLowerCase();
   if (ex) tags.push(ex);
   return tags;
+}
+
+function isCarradaRota(rota?: string | null): boolean {
+  const n = (rota ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  return n.startsWith('rota ');
+}
+
+/** Rotas definidas pela consulta SQL do Gerenciador — não entram na replicação por carrada. */
+const EXCLUDED_SQL_ROTA_CATEGORIES = new Set([
+  'retirada na so aco',
+  'retirada na so moveis',
+  'entrega grande teresina',
+  'inserir em romaneio',
+  'requisicao',
+]);
+
+function normalizeRotaNameStr(dm: string): string {
+  return dm.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+}
+
+function isExcludedSqlRotaCategory(dm: string): boolean {
+  return EXCLUDED_SQL_ROTA_CATEGORIES.has(normalizeRotaNameStr(dm));
+}
+
+function rotaFromPedidoRow(row: Record<string, unknown>): string {
+  return String(row['Observacoes'] ?? row['Observações'] ?? row['Rota'] ?? row['rota'] ?? '').trim();
+}
+
+/** Compara apenas a parte data (YYYY-MM-DD) — evita falha quando o card vem ISO e o input é type=date. */
+function normalizeDateKeyForCompare(isoOrDate: string | undefined | null): string {
+  if (isoOrDate == null) return '';
+  const t = String(isoOrDate).trim();
+  const m = t.match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1]! : t.slice(0, 10);
+}
+
+/** PD "47146" vs "PD 47146" → mesmo pedido para contagem na rota. */
+function normalizePdLabelForCompare(pd: string): string {
+  const s = String(pd ?? '').trim();
+  const digits = s.replace(/\D+/g, '');
+  return digits || s;
 }
 
 function formatDateTime(iso: string): string {
@@ -133,6 +188,8 @@ export default function SycroOrderPage() {
   const [tagLoadingOrderId, setTagLoadingOrderId] = useState<number | null>(null);
   const [modalHistorico, setModalHistorico] = useState<Order | null>(null);
   const [modalNotif, setModalNotif] = useState(false);
+  const [notifFilter, setNotifFilter] = useState<'todas' | 'lidas' | 'nao_lidas'>('nao_lidas');
+  const [notifTogglingId, setNotifTogglingId] = useState<number | null>(null);
   const [mostrarFiltros, setMostrarFiltros] = useState(true);
   const [history, setHistory] = useState<SycroOrderHistoryItem[]>([]);
   const [notifications, setNotifications] = useState<SycroOrderNotification[]>([]);
@@ -176,6 +233,18 @@ export default function SycroOrderPage() {
     getSycroOrderNotifications()
       .then(setNotifications)
       .catch(() => setNotifications([]));
+  }, []);
+
+  useEffect(() => {
+    const handler = () => {
+      setNotifFilter('nao_lidas');
+      setModalNotif(true);
+      getSycroOrderNotifications()
+        .then(setNotifications)
+        .catch(() => setNotifications([]));
+    };
+    window.addEventListener('sycroorder:openNotificacoes', handler);
+    return () => window.removeEventListener('sycroorder:openNotificacoes', handler);
   }, []);
 
   const acionarTagDisponivel = useCallback(
@@ -241,21 +310,12 @@ export default function SycroOrderPage() {
     }
   };
 
-  const abrirNotificacoes = async () => {
-    setModalNotif(true);
-    try {
-      const list = await getSycroOrderNotifications();
-      setNotifications(list);
-    } catch {
-      setNotifications([]);
-    }
-  };
-
   const marcarLidas = async () => {
     try {
       await markSycroOrderNotificationsRead();
       const list = await getSycroOrderNotifications();
       setNotifications(list);
+      window.dispatchEvent(new CustomEvent('sycroorder:notificationsUpdated'));
     } catch {}
   };
 
@@ -317,7 +377,7 @@ export default function SycroOrderPage() {
         // Opções do filtro devem refletir apenas os cards existentes.
         // Quando não há cards, a lista precisa ficar vazia (evita exibir "josenildo/outros" para nada).
         const opResponsavel = [...new Set(filteredBySearch.flatMap((o) => responsavelTagsForCard(o)))].sort((a, b) => {
-          const rank = (x: string) => (x === 'josenildo' ? 0 : x === 'outros' ? 1 : 2);
+          const rank = (x: string) => (x === 'josenildo' ? 0 : x === 'PCP' ? 1 : 2);
           const r = rank(a) - rank(b);
           return r !== 0 ? r : a.localeCompare(b, 'pt-BR');
         });
@@ -340,29 +400,13 @@ export default function SycroOrderPage() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={abrirNotificacoes}
-                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700/50 transition"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                    <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7" />
-                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                  </svg>
-                  Notificações
-                  {notifications.filter((n) => !n.is_read).length > 0 && (
-                    <span className="ml-1 inline-flex items-center justify-center min-w-5 px-1.5 py-0.5 rounded-full bg-red-600 text-white text-xs font-semibold">
-                      {notifications.filter((n) => !n.is_read).length}
-                    </span>
-                  )}
-                </button>
-                <button
-                  type="button"
                   onClick={() => setModalNovo(true)}
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium transition"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
                   </svg>
-                  Novo Pedido
+                  + Novo Card
                 </button>
               </div>
             </div>
@@ -433,7 +477,7 @@ export default function SycroOrderPage() {
                       <li key={v}>
                         <label className={itemClass}>
                           <input type="checkbox" checked={filtros.responsavel.includes(v)} onChange={() => toggle('responsavel', v)} className="rounded border-slate-300 dark:border-slate-600" />
-                          <span className="text-slate-700 dark:text-slate-300">{v === 'josenildo' ? 'josenildo' : 'Outros'}</span>
+                          <span className="text-slate-700 dark:text-slate-300">{v}</span>
                         </label>
                       </li>
                     ))}
@@ -600,6 +644,9 @@ export default function SycroOrderPage() {
                                   <p className="text-xs text-slate-600 dark:text-slate-400 truncate" title={o.cliente_name ?? '—'}>
                                     {o.cliente_name ?? '—'}
                                   </p>
+                                  <p className="text-xs text-slate-500 dark:text-slate-500 truncate" title={o.vendedor_name ?? '—'}>
+                                    {o.vendedor_name ?? '—'}
+                                  </p>
                                 </div>
                               </div>
                               <div className="flex flex-wrap gap-1 justify-end">
@@ -657,9 +704,23 @@ export default function SycroOrderPage() {
                                 )}
                               </div>
                             )}
-                            <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">{o.delivery_method}</p>
+                            {o.carradas_info && o.carradas_info.length > 1 ? (
+                              <div className="mt-1 space-y-0.5">
+                                {o.carradas_info.map((c) => (
+                                  <p key={`${o.id}-${c.rota}`} className="text-xs text-slate-600 dark:text-slate-400">
+                                    {c.rota}
+                                    {c.previsao_atual ? ` • Prev.: ${formatDate(c.previsao_atual)}` : ''}
+                                    {c.codigos.length > 0 ? ` • Cód.: ${c.codigos.join(', ')}` : ''}
+                                  </p>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">{o.delivery_method}</p>
+                            )}
                             <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">Data original: {formatDate(o.data_original ?? o.current_promised_date)}</p>
-                            <p className="text-xs text-slate-500 dark:text-slate-500">Previsão atual: {formatDate(o.previsao_atual ?? o.current_promised_date)}</p>
+                            {(!o.carradas_info || o.carradas_info.length <= 1) && (
+                              <p className="text-xs text-slate-500 dark:text-slate-500">Previsão atual: {formatDate(o.previsao_atual ?? o.current_promised_date)}</p>
+                            )}
                             <p className="text-xs text-slate-500 dark:text-slate-500">Criador: {o.creator_name ?? '—'}</p>
                             {(o.last_responder_name || o.last_response_at) ? (
                               <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">
@@ -799,9 +860,20 @@ export default function SycroOrderPage() {
                             <p className="text-sm text-slate-700 dark:text-slate-300 font-medium">
                               Data original: {formatDate(modalHistorico.data_original ?? modalHistorico.current_promised_date)}
                             </p>
-                            <p className="text-sm text-slate-700 dark:text-slate-300 font-medium">
-                              Previsão atual: {formatDate(modalHistorico.previsao_atual ?? modalHistorico.current_promised_date)}
-                            </p>
+                            {modalHistorico.carradas_info && modalHistorico.carradas_info.length > 0 ? (
+                              <div className="mt-1 space-y-0.5">
+                                {modalHistorico.carradas_info.map((c) => (
+                                  <p key={`hist-create-${modalHistorico.id}-${c.rota}`} className="text-sm text-slate-700 dark:text-slate-300 font-medium">
+                                    {c.rota}: {formatDate(c.previsao_atual ?? modalHistorico.previsao_atual ?? modalHistorico.current_promised_date)}
+                                    {c.codigos.length > 0 ? ` • Cód. ${c.codigos.join(', ')}` : ''}
+                                  </p>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-slate-700 dark:text-slate-300 font-medium">
+                                Previsão atual: {formatDate(modalHistorico.previsao_atual ?? modalHistorico.current_promised_date)}
+                              </p>
+                            )}
                           </div>
                         ) : (
                           isUpdate ? (
@@ -812,7 +884,7 @@ export default function SycroOrderPage() {
                                 </p>
                               ) : (
                                 <p className="text-sm text-slate-700 dark:text-slate-300 mt-1 font-medium">
-                                  Previsão atual: {newDateFormatted}
+                                  Previsão atual: {formatDate(modalHistorico.previsao_atual ?? modalHistorico.current_promised_date)}
                                 </p>
                               )
                             ) : null
@@ -844,23 +916,98 @@ export default function SycroOrderPage() {
             <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
               <h3 className="font-semibold text-slate-800 dark:text-slate-200">Notificações</h3>
               <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-700 rounded-lg p-1">
+                  <button
+                    type="button"
+                    onClick={() => setNotifFilter('nao_lidas')}
+                    className={`px-2 py-1 rounded-md text-xs font-medium transition ${
+                      notifFilter === 'nao_lidas'
+                        ? 'bg-primary-600 text-white'
+                        : 'text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    Não lidas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNotifFilter('lidas')}
+                    className={`px-2 py-1 rounded-md text-xs font-medium transition ${
+                      notifFilter === 'lidas'
+                        ? 'bg-primary-600 text-white'
+                        : 'text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    Lidas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNotifFilter('todas')}
+                    className={`px-2 py-1 rounded-md text-xs font-medium transition ${
+                      notifFilter === 'todas'
+                        ? 'bg-primary-600 text-white'
+                        : 'text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    Todas
+                  </button>
+                </div>
                 <button type="button" onClick={marcarLidas} className="text-sm text-primary-600 dark:text-primary-400 hover:underline">Marcar como lidas</button>
                 <button type="button" onClick={() => setModalNotif(false)} className="text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">✕</button>
               </div>
             </div>
             <div className="p-4 overflow-y-auto flex-1">
-              {notifications.length === 0 ? (
-                <p className="text-slate-500 dark:text-slate-400 text-sm">Nenhuma notificação.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {notifications.map((n) => (
-                    <li key={n.id} className={`text-sm py-2 px-3 rounded-lg ${n.is_read ? 'bg-slate-50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400' : 'bg-primary-50 dark:bg-primary-900/20 text-slate-800 dark:text-slate-200'}`}>
-                      {n.message}
-                      <span className="block text-xs text-slate-500 dark:text-slate-500 mt-1">{formatDateTime(n.created_at)}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              {(() => {
+                const list = notifications.filter((n) => {
+                  if (notifFilter === 'todas') return true;
+                  if (notifFilter === 'lidas') return !!n.is_read;
+                  return !n.is_read;
+                });
+                if (list.length === 0) return <p className="text-slate-500 dark:text-slate-400 text-sm">Nenhuma notificação.</p>;
+                return (
+                  <ul className="space-y-2">
+                    {list.map((n) => (
+                      <li
+                        key={n.id}
+                        className={`text-sm py-2 px-3 rounded-lg flex flex-col gap-1 ${
+                          n.is_read
+                            ? 'bg-slate-50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400'
+                            : 'bg-primary-50 dark:bg-primary-900/20 text-slate-800 dark:text-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span>{n.message}</span>
+                          <button
+                            type="button"
+                            disabled={notifTogglingId === n.id}
+                            onClick={() => {
+                              const nextRead = !n.is_read;
+                              setNotifTogglingId(n.id);
+                              setSycroOrderNotificationRead(n.id, { read: nextRead })
+                                .then(() => {
+                                  setNotifications((prev) =>
+                                    prev.map((x) => (x.id === n.id ? { ...x, is_read: nextRead ? 1 : 0 } : x))
+                                  );
+                                  window.dispatchEvent(new CustomEvent('sycroorder:notificationsUpdated'));
+                                })
+                                .catch(() => {})
+                                .finally(() => setNotifTogglingId(null));
+                            }}
+                            className={`shrink-0 text-xs rounded px-2 py-1 border transition ${
+                              n.is_read
+                                ? 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
+                                : 'bg-primary-600 border-primary-600 text-white hover:bg-primary-700'
+                            }`}
+                            title={n.is_read ? 'Marcar como não lida' : 'Marcar como lida'}
+                          >
+                            {n.is_read ? 'Não lida' : 'Lida'}
+                          </button>
+                        </div>
+                        <span className="block text-xs text-slate-500 dark:text-slate-500 mt-1">{formatDateTime(n.created_at)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -891,12 +1038,21 @@ function ModalNovoPedido({
   const [itensPedido, setItensPedido] = useState<ItemPedido[]>([]);
   const [loadingItens, setLoadingItens] = useState(false);
   const [selectedIdPedidos, setSelectedIdPedidos] = useState<Set<string>>(new Set());
+  const [modalSelecionarCarrada, setModalSelecionarCarrada] = useState(false);
+  const [carradasDisponiveis, setCarradasDisponiveis] = useState<Array<{ rota: string; itens: ItemPedido[] }>>([]);
+  const [carradaEscolhida, setCarradaEscolhida] = useState<string>('');
   const [usersResponsavel, setUsersResponsavel] = useState<Array<{ id: number; login: string; nome: string | null }>>([]);
   const [loadingUsersResp, setLoadingUsersResp] = useState(false);
   /** Um único usuário opcional com permissão de atualizar card. */
   const [responsibleUserId, setResponsibleUserId] = useState<number | ''>('');
 
   const selectedPedidoFull = selectedPedido ? pedidosErpList.find((p) => p.id === selectedPedido.id) : null;
+
+  const usersResponsavelSorted = [...usersResponsavel].sort((a, b) => {
+    const aa = String(a.login ?? '').trim();
+    const bb = String(b.login ?? '').trim();
+    return aa.localeCompare(bb, 'pt-BR');
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -975,6 +1131,9 @@ function ModalNovoPedido({
     setSelectedPedido(value);
     const pedido = value ? pedidosErpList.find((p) => p.id === value.id) : null;
     setDelivery_method(pedido?.rota ?? '');
+    setCarradasDisponiveis([]);
+    setCarradaEscolhida('');
+    setModalSelecionarCarrada(false);
   };
 
   useEffect(() => {
@@ -986,6 +1145,9 @@ function ModalNovoPedido({
     if (!pdRaw) {
       setItensPedido([]);
       setSelectedIdPedidos(new Set());
+      setCarradasDisponiveis([]);
+      setCarradaEscolhida('');
+      setModalSelecionarCarrada(false);
       return;
     }
     let cancelled = false;
@@ -998,16 +1160,44 @@ function ModalNovoPedido({
             id_pedido: String(row.id_pedido ?? '').trim(),
             cod: String(row.Cod ?? row.cod ?? '—').trim(),
             descricao: String(row['Descricao do produto'] ?? row.descricao ?? '—').trim(),
+            rota: String(row['Observacoes'] ?? row['Observações'] ?? row['Rota'] ?? row['rota'] ?? '').trim(),
+            qtde: Number(row['Qtde Pendente Real'] ?? row.qtde ?? row['Qtde pedida'] ?? 0) || 0,
           }))
           .filter((i) => i.id_pedido);
         const itensOrdenados = [...itens].sort((a, b) => a.descricao.localeCompare(b.descricao, 'pt-BR'));
-        setItensPedido(itensOrdenados);
-        setSelectedIdPedidos(new Set(itensOrdenados.map((i) => i.id_pedido)));
+        const carradasMap = new Map<string, ItemPedido[]>();
+        for (const item of itensOrdenados) {
+          const rota = (item.rota ?? '').trim();
+          if (!isCarradaRota(rota)) continue;
+          const arr = carradasMap.get(rota) ?? [];
+          arr.push(item);
+          carradasMap.set(rota, arr);
+        }
+        const carradas = [...carradasMap.entries()]
+          .map(([rota, itensRota]) => ({ rota, itens: itensRota }))
+          .sort((a, b) => a.rota.localeCompare(b.rota, 'pt-BR'));
+
+        if (carradas.length > 1) {
+          setCarradasDisponiveis(carradas);
+          setCarradaEscolhida(carradas[0]?.rota ?? '');
+          setItensPedido([]);
+          setSelectedIdPedidos(new Set());
+          setModalSelecionarCarrada(true);
+        } else {
+          setCarradasDisponiveis(carradas);
+          setCarradaEscolhida(carradas[0]?.rota ?? '');
+          setModalSelecionarCarrada(false);
+          setItensPedido(itensOrdenados);
+          setSelectedIdPedidos(new Set(itensOrdenados.map((i) => i.id_pedido)));
+        }
       })
       .catch(() => {
         if (cancelled) return;
         setItensPedido([]);
         setSelectedIdPedidos(new Set());
+        setCarradasDisponiveis([]);
+        setCarradaEscolhida('');
+        setModalSelecionarCarrada(false);
         // Se a listagem falhar (ex.: permissões), manter UI coerente e mostrar motivo ao usuário.
         setErro('Erro ao carregar os itens do pedido. Verifique suas permissões e tente novamente.');
       })
@@ -1036,6 +1226,10 @@ function ModalNovoPedido({
       setErro('Selecione o pedido (ERP) e a forma de entrega.');
       return;
     }
+    if (modalSelecionarCarrada) {
+      setErro('Selecione uma única carrada/rota para continuar.');
+      return;
+    }
     if (selectedIdPedidos.size === 0) {
       setErro('Selecione ao menos um item do pedido.');
       return;
@@ -1062,9 +1256,9 @@ function ModalNovoPedido({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+      <div className="relative bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
         <form onSubmit={submit} className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
-          <h3 className="font-semibold text-slate-800 dark:text-slate-200">Novo Pedido</h3>
+          <h3 className="font-semibold text-slate-800 dark:text-slate-200">Novo Card</h3>
           {erro && <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>}
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Número do pedido *</label>
@@ -1089,11 +1283,27 @@ function ModalNovoPedido({
           </div>
           {selectedPedidoFull && (
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Data Original de Entrega</label>
+              <div className="flex items-center gap-2">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Data Original de Entrega</label>
+                <HelpTooltipIcon text="Conforme Gerenciador de Pedidos" />
+              </div>
               <p className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 text-sm">
                 {selectedPedidoFull.dataOriginalEntrega ? formatDate(selectedPedidoFull.dataOriginalEntrega) : '—'}
               </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Conforme Gerenciador de Pedidos</p>
+
+              <div className="mt-3">
+                <div className="flex items-center gap-2">
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Previsão atual</label>
+                  <HelpTooltipIcon text="Conforme Gerenciador de Pedidos" />
+                </div>
+                <p className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 text-sm">
+                  {selectedPedidoFull.previsao_atual
+                    ? formatDate(selectedPedidoFull.previsao_atual)
+                    : selectedPedidoFull.dataEntregaPadrao
+                      ? formatDate(selectedPedidoFull.dataEntregaPadrao)
+                      : '—'}
+                </p>
+              </div>
             </div>
           )}
           <div>
@@ -1119,12 +1329,12 @@ function ModalNovoPedido({
             ) : null}
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Responsável adicional por responder (opcional)
-            </label>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">
-              Apenas usuários com permissão para atualizar card. Não substitui a regra josenildo / PCP; será exibido junto na capa do card.
-            </p>
+            <div className="flex items-center gap-2">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                Responsável adicional por responder (opcional)
+              </label>
+              <HelpTooltipIcon text="A lista do responsável adicional mostra apenas usuários com permissão para visualizar a Comunicação PD. Não substitui a regra josenildo / PCP; será exibido junto na capa do card." />
+            </div>
             {loadingUsersResp ? (
               <p className="text-sm text-slate-500 dark:text-slate-400 py-2">Carregando usuários...</p>
             ) : (
@@ -1137,7 +1347,7 @@ function ModalNovoPedido({
                 className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-sm"
               >
                 <option value="">Nenhum</option>
-                {usersResponsavel.map((u) => (
+                {usersResponsavelSorted.map((u) => (
                   <option key={u.id} value={u.id}>
                     {u.login}
                     {u.nome ? ` — ${u.nome}` : ''}
@@ -1151,7 +1361,10 @@ function ModalNovoPedido({
             <textarea value={observation} onChange={(e) => setObservation(e.target.value)} rows={2} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Itens do pedido</label>
+            <div className="flex items-center gap-2">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Itens do pedido</label>
+              <HelpTooltipIcon text="Escolha quais itens esse card vai acompanhar (evita duplicidade por itens)." />
+            </div>
             {loadingItens ? (
               <p className="text-sm text-slate-500 dark:text-slate-400 py-2">Carregando itens...</p>
             ) : itensPedido.length === 0 ? (
@@ -1162,14 +1375,16 @@ function ModalNovoPedido({
                   <button
                     type="button"
                     onClick={() => setSelectedIdPedidos(new Set(itensPedido.map((i) => i.id_pedido)))}
-                    className="text-xs text-primary-600 dark:text-primary-400 hover:underline"
+                    disabled={modalSelecionarCarrada}
+                    className="text-xs text-primary-600 dark:text-primary-400 hover:underline disabled:opacity-50"
                   >
                     Selecionar todos
                   </button>
                   <button
                     type="button"
                     onClick={() => setSelectedIdPedidos(new Set())}
-                    className="text-xs text-slate-500 dark:text-slate-400 hover:underline"
+                    disabled={modalSelecionarCarrada}
+                    className="text-xs text-slate-500 dark:text-slate-400 hover:underline disabled:opacity-50"
                   >
                     Limpar seleção
                   </button>
@@ -1181,6 +1396,7 @@ function ModalNovoPedido({
                         type="checkbox"
                         checked={selectedIdPedidos.has(item.id_pedido)}
                         onChange={() => toggleItemNovo(item.id_pedido)}
+                        disabled={modalSelecionarCarrada}
                         className="mt-1 rounded border-slate-300 dark:border-slate-600"
                       />
                       <span className="text-sm text-slate-800 dark:text-slate-200">
@@ -1189,7 +1405,11 @@ function ModalNovoPedido({
                     </label>
                   ))}
                 </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Escolha quais itens esse card vai acompanhar (evita duplicidade por itens).</p>
+                {modalSelecionarCarrada && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                    Este pedido possui itens em mais de uma carrada. Selecione uma única rota na janela abaixo para continuar.
+                  </p>
+                )}
               </>
             )}
           </div>
@@ -1198,17 +1418,87 @@ function ModalNovoPedido({
             <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50">Criar</button>
           </div>
         </form>
+
+        {modalSelecionarCarrada && (
+          <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+            <div className="w-full max-w-2xl rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-2xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                <h4 className="font-semibold text-slate-800 dark:text-slate-200">Selecione uma carrada para abrir o card</h4>
+                <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">✕</button>
+              </div>
+              <div className="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
+                <p className="text-sm text-slate-600 dark:text-slate-300">
+                  Este pedido possui itens em mais de uma carrada (rota iniciada por "ROTA"). Para evitar mistura de cargas, escolha apenas uma rota.
+                </p>
+                {carradasDisponiveis.map((c) => (
+                  <div key={c.rota} className="rounded-lg border border-slate-200 dark:border-slate-700 p-3">
+                    <label className="flex items-center gap-2 text-sm font-medium text-slate-800 dark:text-slate-200 mb-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="carrada-rota"
+                        checked={carradaEscolhida === c.rota}
+                        onChange={() => setCarradaEscolhida(c.rota)}
+                        className="rounded border-slate-300 dark:border-slate-600"
+                      />
+                      {c.rota}
+                    </label>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-slate-700 dark:text-slate-300">
+                        <thead>
+                          <tr className="text-left">
+                            <th className="py-1 pr-2">Código</th>
+                            <th className="py-1 pr-2">Descrição</th>
+                            <th className="py-1">Qtd</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {c.itens.map((i) => (
+                            <tr key={`${c.rota}-${i.id_pedido}`}>
+                              <td className="py-1 pr-2 whitespace-nowrap">{i.cod}</td>
+                              <td className="py-1 pr-2">{i.descricao}</td>
+                              <td className="py-1 whitespace-nowrap">{i.qtde ?? 0}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-2">
+                <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-300">Cancelar</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const selected = carradasDisponiveis.find((c) => c.rota === carradaEscolhida);
+                    if (!selected) return;
+                    setDelivery_method(selected.rota);
+                    setItensPedido(selected.itens);
+                    setSelectedIdPedidos(new Set(selected.itens.map((i) => i.id_pedido)));
+                    setModalSelecionarCarrada(false);
+                  }}
+                  disabled={!carradaEscolhida}
+                  className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50"
+                >
+                  Confirmar rota
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-type DialogStep = null | 'todos_itens' | 'sim_motivo' | 'nao_itens';
+type DialogStep = null | 'carrada_confirm' | 'todos_itens' | 'sim_motivo' | 'nao_itens';
 
 interface ItemPedido {
   id_pedido: string;
   cod: string;
   descricao: string;
+  rota?: string;
+  qtde?: number;
 }
 
 function ModalAtualizarPedido({
@@ -1232,7 +1522,8 @@ function ModalAtualizarPedido({
   const isCommentOnlyUser = ['wellingtonsousa', 'francelino', 'marcosamorim', 'gilvania'].includes((login ?? '').toLowerCase()) && !isAdminGrupo;
 
   const [querInformarNovaData, setQuerInformarNovaData] = useState<'sim' | 'nao' | null>(null);
-  const [new_date, setNew_date] = useState(order.current_promised_date);
+  // Quando o usuário escolher "Sim", o campo deve aparecer vazio e ser obrigatório.
+  const [new_date, setNew_date] = useState('');
   const [observation, setObservation] = useState('');
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionCandidates, setMentionCandidates] = useState<Array<{ login: string; nome: string | null }>>([]);
@@ -1267,6 +1558,10 @@ function ModalAtualizarPedido({
   }, [mentionQuery, mentionOpen, isCommentOnlyUser]);
 
   const [dialogStep, setDialogStep] = useState<DialogStep>(null);
+  const [carradaCheckLoading, setCarradaCheckLoading] = useState(false);
+  const [carradaConfirmRota, setCarradaConfirmRota] = useState('');
+  /** Usuário confirmou replicar data para todos os itens da mesma rota/carrada no Gerenciador. */
+  const [replicateCarradaConfirmed, setReplicateCarradaConfirmed] = useState(false);
   const [motivos, setMotivos] = useState<MotivoSugestao[]>([]);
   const [loadingMotivos, setLoadingMotivos] = useState(false);
   const [motivo, setMotivo] = useState('');
@@ -1278,7 +1573,8 @@ function ModalAtualizarPedido({
   const [abrirGerenciarMotivos, setAbrirGerenciarMotivos] = useState(false);
 
   const novaDataPreenchida = new_date.trim() !== '';
-  const dataAlterada = novaDataPreenchida && new_date.trim() !== order.current_promised_date.trim();
+  const dataAlterada =
+    novaDataPreenchida && normalizeDateKeyForCompare(new_date) !== normalizeDateKeyForCompare(order.current_promised_date);
 
   const carregarMotivos = useCallback(() => {
     setLoadingMotivos(true);
@@ -1288,7 +1584,7 @@ function ModalAtualizarPedido({
       .finally(() => setLoadingMotivos(false));
   }, []);
 
-  const handleSalvarClick = (e: React.FormEvent) => {
+  const handleSalvarClick = async (e: React.FormEvent) => {
     e.preventDefault();
     setErro(null);
     if (isCommentOnlyUser) {
@@ -1311,15 +1607,60 @@ function ModalAtualizarPedido({
       submitDireto();
       return;
     }
+    if (querInformarNovaData === 'sim' && !new_date.trim()) {
+      setErro('Nova data prometida é obrigatória.');
+      return;
+    }
+
+    if (querInformarNovaData === 'sim' && novaDataPreenchida && !dataAlterada) {
+      setErro('Informe uma data diferente da data prometida atual do card para continuar (ou escolha "Não" se for apenas comentário).');
+      return;
+    }
+
     if (dataAlterada) {
-      setDialogStep('todos_itens');
+      const dm = (order.delivery_method ?? '').trim();
+      if (isExcludedSqlRotaCategory(dm) || !isCarradaRota(dm)) {
+        setReplicateCarradaConfirmed(false);
+        setDialogStep('todos_itens');
+        return;
+      }
+      setCarradaCheckLoading(true);
+      try {
+        // Importante: GET /api/pedidos sem filtro retorna só a 1ª página (ex.: 500 linhas) do total do ERP.
+        // Filtramos pela própria rota (observacoes) para trazer só as linhas dessa carrada e contar PDs corretamente.
+        const res = await listarPedidos({ observacoes: dm, limit: 500, page: 1 });
+        if (res.erroConexao) {
+          setErro(`Não foi possível consultar o Gerenciador de Pedidos: ${res.erroConexao}`);
+          return;
+        }
+        const rows = res.data ?? [];
+        const pds = new Set(
+          rows.map((r) => normalizePdLabelForCompare(String((r as Record<string, unknown>)['PD'] ?? '').trim())).filter(Boolean)
+        );
+        if (pds.size > 1) {
+          setCarradaConfirmRota(dm);
+          setDialogStep('carrada_confirm');
+        } else {
+          setReplicateCarradaConfirmed(false);
+          setDialogStep('todos_itens');
+        }
+      } catch {
+        setErro('Erro ao consultar o Gerenciador de Pedidos. Tente novamente.');
+      } finally {
+        setCarradaCheckLoading(false);
+      }
       return;
     }
     // Escolheu informar nova data, mas não alterou: salva apenas com comentário (opcional)
     submitDireto();
   };
 
-  const submitDireto = async (payload?: { motivo?: string; id_pedidos?: string[]; observacao?: string }) => {
+  const submitDireto = async (payload?: {
+    motivo?: string;
+    id_pedidos?: string[];
+    observacao?: string;
+    replicate_carrada?: boolean;
+  }) => {
     setSaving(true);
     try {
       await updateSycroOrderOrder(order.id, {
@@ -1328,7 +1669,8 @@ function ModalAtualizarPedido({
         comentario: observation.trim() || undefined,
         observacao: payload?.observacao?.trim() || undefined,
         motivo: payload?.motivo?.trim() || undefined,
-        id_pedidos: payload?.id_pedidos?.length ? payload.id_pedidos : undefined,
+        id_pedidos: payload?.replicate_carrada ? undefined : payload?.id_pedidos?.length ? payload.id_pedidos : undefined,
+        replicate_carrada: payload?.replicate_carrada === true ? true : undefined,
       });
       onSuccess();
       onClose();
@@ -1340,11 +1682,27 @@ function ModalAtualizarPedido({
   };
 
   const handleTodosItensSim = () => {
+    setReplicateCarradaConfirmed(false);
     setDialogStep('sim_motivo');
     carregarMotivos();
   };
 
+  const handleCarradaConfirmSim = () => {
+    setReplicateCarradaConfirmed(true);
+    setDialogStep('sim_motivo');
+    carregarMotivos();
+  };
+
+  const handleCarradaConfirmNao = () => {
+    setDialogStep(null);
+    setQuerInformarNovaData(null);
+    setNew_date(order.current_promised_date);
+    setReplicateCarradaConfirmed(false);
+    setErro(null);
+  };
+
   const handleTodosItensNao = () => {
+    setReplicateCarradaConfirmed(false);
     setDialogStep('nao_itens');
     setLoadingItens(true);
     listarPedidos({ pd: order.order_number, limit: 500 })
@@ -1380,7 +1738,11 @@ function ModalAtualizarPedido({
       return;
     }
     setErro(null);
-    submitDireto({ motivo: motivoTrim, observacao: observacaoSim.trim() || undefined });
+    submitDireto({
+      motivo: motivoTrim,
+      observacao: observacaoSim.trim() || undefined,
+      replicate_carrada: replicateCarradaConfirmed ? true : undefined,
+    });
   };
 
   const handleSubmitNaoItens = (e: React.FormEvent) => {
@@ -1412,7 +1774,10 @@ function ModalAtualizarPedido({
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => setQuerInformarNovaData((p) => (p === 'sim' ? null : 'sim'))}
+                    onClick={() => {
+                      setQuerInformarNovaData('sim');
+                      setNew_date('');
+                    }}
                     className={`px-3 py-2 rounded-lg border text-sm font-medium transition ${
                       querInformarNovaData === 'sim'
                         ? 'bg-primary-600 border-primary-600 text-white'
@@ -1423,7 +1788,10 @@ function ModalAtualizarPedido({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setQuerInformarNovaData((p) => (p === 'nao' ? null : 'nao'))}
+                    onClick={() => {
+                      setQuerInformarNovaData('nao');
+                      setNew_date(order.current_promised_date);
+                    }}
                     className={`px-3 py-2 rounded-lg border text-sm font-medium transition ${
                       querInformarNovaData === 'nao'
                         ? 'bg-primary-600 border-primary-600 text-white'
@@ -1442,6 +1810,9 @@ function ModalAtualizarPedido({
                       onChange={(e) => setNew_date(e.target.value)}
                       className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200"
                     />
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5">
+                      Informe a nova data e clique em <strong>Salvar</strong>. Se a rota tiver mais de um pedido, será pedida uma confirmação antes do motivo.
+                    </p>
                   </div>
                 )}
               </div>
@@ -1495,9 +1866,28 @@ function ModalAtualizarPedido({
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm">Cancelar</button>
-              <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50">Salvar</button>
+              <button type="submit" disabled={saving || carradaCheckLoading} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50">
+                {carradaCheckLoading ? 'Verificando rota...' : 'Salvar'}
+              </button>
             </div>
           </form>
+        )}
+
+        {dialogStep === 'carrada_confirm' && (
+          <div className="p-4 space-y-4">
+            <h3 className="font-semibold text-slate-800 dark:text-slate-200">Replicação na mesma carrada</h3>
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              Este pedido está presente na <strong>{carradaConfirmRota}</strong> e a mesma possui outros pedidos. Quando você informar a nova data deste pedido, essa mesma data será replicada para todos os outros itens de pedido que também estão nessa ROTA (mesmo motivo e observação enviados ao Gerenciador de Pedidos). Deseja continuar?
+            </p>
+            <div className="flex gap-3">
+              <button type="button" onClick={handleCarradaConfirmSim} className="flex-1 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium">
+                Sim
+              </button>
+              <button type="button" onClick={handleCarradaConfirmNao} className="flex-1 px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium">
+                Não
+              </button>
+            </div>
+          </div>
         )}
 
         {dialogStep === 'todos_itens' && (
@@ -1515,7 +1905,11 @@ function ModalAtualizarPedido({
         {dialogStep === 'sim_motivo' && (
           <form onSubmit={handleSubmitSimMotivo} className="p-4 space-y-4 overflow-y-auto">
             <h3 className="font-semibold text-slate-800 dark:text-slate-200">Atualizar — {order.order_number}</h3>
-            <p className="text-sm text-slate-600 dark:text-slate-400">Alteração para todos os itens. Selecione o motivo.</p>
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              {replicateCarradaConfirmed
+                ? 'A alteração será aplicada a todos os itens desta rota no Gerenciador (todos os pedidos que compartilham a mesma carrada). Selecione o motivo.'
+                : 'Alteração para todos os itens deste pedido. Selecione o motivo.'}
+            </p>
             {erro && <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>}
             <div>
               <div className="flex items-center justify-between gap-2 mb-1">
@@ -1537,7 +1931,19 @@ function ModalAtualizarPedido({
               <textarea value={observacaoSim} onChange={(e) => setObservacaoSim(e.target.value)} rows={2} placeholder="Opcional" className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 placeholder-slate-500" />
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setDialogStep('todos_itens')} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm">Voltar</button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (replicateCarradaConfirmed) {
+                    setDialogStep('carrada_confirm');
+                  } else {
+                    setDialogStep('todos_itens');
+                  }
+                }}
+                className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm"
+              >
+                Voltar
+              </button>
               <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50">Salvar</button>
             </div>
           </form>

@@ -1,10 +1,16 @@
 import { useState, useEffect } from 'react';
 import { z } from 'zod';
-import type { Pedido } from '../api/pedidos';
+import { listarPedidos, type Pedido } from '../api/pedidos';
 import { listarMotivosSugestao, type MotivoSugestao } from '../api/motivosSugestao';
 import ModalGerenciarMotivos from './ModalGerenciarMotivos';
 import { useAuth } from '../contexts/AuthContext';
 import { PERMISSOES } from '../config/permissoes';
+import {
+  isCarradaRota,
+  isExcludedSqlRotaCategory,
+  normalizePdLabelForCompare,
+  rotaFromPedidoRow,
+} from '../utils/rotaCarrada';
 
 const ajusteSchema = z.object({
   previsao_nova: z.string().min(1, 'Informe a data'),
@@ -36,6 +42,9 @@ export default function ModalAjustePrevisao({
   const [sugestoes, setSugestoes] = useState<MotivoSugestao[]>([]);
   const [loadingSugestoes, setLoadingSugestoes] = useState(false);
   const [abrirGerenciar, setAbrirGerenciar] = useState(false);
+  const [flowStep, setFlowStep] = useState<'form' | 'carrada_confirm'>('form');
+  const [carradaRotaNome, setCarradaRotaNome] = useState('');
+  const [carradaCheckLoading, setCarradaCheckLoading] = useState(false);
   const { hasPermission } = useAuth();
   const podeGerenciarMotivos =
     hasPermission(PERMISSOES.PCP_MOTIVO_CRIAR) ||
@@ -55,6 +64,18 @@ export default function ModalAjustePrevisao({
     carregarSugestoes();
   }, []);
 
+  useEffect(() => {
+    if (!pedido) return;
+    setFlowStep('form');
+    setCarradaRotaNome('');
+    setPrevisaoNova(
+      pedido.previsao_entrega_atualizada ? String(pedido.previsao_entrega_atualizada).slice(0, 10) : ''
+    );
+    setMotivo('');
+    setObservacao('');
+    setErrors({});
+  }, [pedido?.id_pedido]);
+
   if (!pedido) return null;
 
   const pd = (pedido as Record<string, unknown>)['PD'] ?? pedido.id_pedido;
@@ -64,8 +85,32 @@ export default function ModalAjustePrevisao({
     ? String(pedido.previsao_entrega_atualizada).slice(0, 10)
     : '';
 
+  const runSave = async (
+    replicateCarrada: boolean,
+    data: { previsao_nova: string; motivo: string; observacao?: string }
+  ) => {
+    if (!pedido) return;
+    setLoading(true);
+    try {
+      const { ajustarPrevisao } = await import('../api/pedidos');
+      const atualizado = await ajustarPrevisao(pedido.id_pedido, {
+        previsao_nova: data.previsao_nova,
+        motivo: data.motivo,
+        observacao: data.observacao || null,
+        replicate_carrada: replicateCarrada ? true : undefined,
+      });
+      onSuccess(atualizado);
+      onClose();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Erro ao ajustar previsão.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (flowStep === 'carrada_confirm') return;
     const previsaoNovaNorm = previsao_nova.trim().slice(0, 10);
     if (previsaoAtualStr && previsaoNovaNorm === previsaoAtualStr) {
       setErrors({ previsao_nova: 'A data não foi alterada.' });
@@ -83,27 +128,60 @@ export default function ModalAjustePrevisao({
       return;
     }
     setErrors({});
-    setLoading(true);
-    try {
-      const { ajustarPrevisao } = await import('../api/pedidos');
-      const atualizado = await ajustarPrevisao(pedido.id_pedido, {
-        previsao_nova: parsed.data.previsao_nova,
-        motivo: parsed.data.motivo,
-        observacao: parsed.data.observacao || null,
-      });
-      onSuccess(atualizado);
-      onClose();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : 'Erro ao ajustar previsão.');
-    } finally {
-      setLoading(false);
+
+    const rota = rotaFromPedidoRow(pedido as Record<string, unknown>);
+    if (!isCarradaRota(rota) || isExcludedSqlRotaCategory(rota)) {
+      await runSave(false, parsed.data);
+      return;
     }
+
+    setCarradaCheckLoading(true);
+    try {
+      const res = await listarPedidos({ observacoes: rota.trim(), limit: 500, page: 1 });
+      if (res.erroConexao) {
+        onError(`Não foi possível consultar o Gerenciador de Pedidos: ${res.erroConexao}`);
+        return;
+      }
+      const rows = res.data ?? [];
+      const pds = new Set(
+        rows.map((r) => normalizePdLabelForCompare(String((r as Record<string, unknown>)['PD'] ?? '').trim())).filter(Boolean)
+      );
+      if (pds.size <= 1) {
+        await runSave(false, parsed.data);
+        return;
+      }
+      setCarradaRotaNome(rota);
+      setFlowStep('carrada_confirm');
+    } catch {
+      onError('Erro ao consultar o Gerenciador de Pedidos. Tente novamente.');
+    } finally {
+      setCarradaCheckLoading(false);
+    }
+  };
+
+  const handleCarradaConfirmSim = () => {
+    const parsed = ajusteSchema.safeParse({ previsao_nova, motivo, observacao });
+    if (!parsed.success) {
+      const fieldErrors: Record<string, string> = {};
+      parsed.error.flatten().fieldErrors?.previsao_nova &&
+        (fieldErrors.previsao_nova = parsed.error.flatten().fieldErrors.previsao_nova[0]);
+      parsed.error.flatten().fieldErrors?.motivo &&
+        (fieldErrors.motivo = parsed.error.flatten().fieldErrors.motivo[0]);
+      setErrors(fieldErrors);
+      return;
+    }
+    setFlowStep('form');
+    void runSave(true, parsed.data);
+  };
+
+  const handleCarradaConfirmNao = () => {
+    setFlowStep('form');
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={onClose}>
       <div
-        className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-xl max-w-md w-full p-6"
+        className="relative bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-xl max-w-md w-full p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-3">Ajustar previsão de entrega</h3>
@@ -181,13 +259,41 @@ export default function ModalAjustePrevisao({
             </button>
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || carradaCheckLoading}
               className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white text-sm font-medium"
             >
-              {loading ? 'Salvando...' : 'Salvar'}
+              {carradaCheckLoading ? 'Verificando rota...' : loading ? 'Salvando...' : 'Salvar'}
             </button>
           </div>
         </form>
+
+        {flowStep === 'carrada_confirm' && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-black/50 p-4">
+            <div className="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 p-4 shadow-xl">
+              <h4 className="font-semibold text-slate-900 dark:text-slate-100 mb-2">Replicação na mesma carrada</h4>
+              <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
+                Este pedido está presente na <strong>{carradaRotaNome}</strong> e a mesma possui outros pedidos. Quando você informar a nova data deste item, essa mesma data será replicada para todos os outros itens de pedido que também estão nessa ROTA (mesmo motivo e observação). Deseja continuar?
+              </p>
+              <div className="flex gap-3 justify-end">
+                <button
+                  type="button"
+                  onClick={handleCarradaConfirmNao}
+                  className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 text-sm font-medium"
+                >
+                  Não
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCarradaConfirmSim}
+                  disabled={loading}
+                  className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white text-sm font-medium"
+                >
+                  Sim
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
             {abrirGerenciar && podeGerenciarMotivos && (

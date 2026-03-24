@@ -28,6 +28,35 @@ import { listarPedidosQuerySchema } from '../validators/pedidos.js';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../config/prisma.js';
 
+function normalizeRotaName(dm: string): string {
+  return String(dm ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '');
+}
+
+function isCarradaRota(dm: string): boolean {
+  return normalizeRotaName(dm).startsWith('rota ');
+}
+
+/** Rotas parametrizadas pela SQL do Gerenciador — não replicam ajuste entre pedidos por carrada. */
+const EXCLUDED_SQL_ROTA_CATEGORIES = new Set([
+  'retirada na so aco',
+  'retirada na so moveis',
+  'entrega grande teresina',
+  'inserir em romaneio',
+  'requisicao',
+]);
+
+function isExcludedSqlRotaCategory(dm: string): boolean {
+  return EXCLUDED_SQL_ROTA_CATEGORIES.has(normalizeRotaName(dm));
+}
+
+function rotaFromPedidoRow(row: Record<string, unknown>): string {
+  return String(row['Observacoes'] ?? row['Observações'] ?? row['Rota'] ?? row['rota'] ?? '').trim();
+}
+
 /**
  * POST /api/pedidos/sincronizar - invalida cache e reconsulta ERP (atualiza lastSyncErp).
  * Retorna 503 com mensagem do ERP quando a conexão com o Nomus falha.
@@ -239,7 +268,7 @@ export async function ajustarPrevisao(req: Request, res: Response): Promise<void
     return;
   }
 
-  const { previsao_nova, motivo, observacao } = parsed.data;
+  const { previsao_nova, motivo, observacao, replicate_carrada } = parsed.data;
   const dataPrevisao = new Date(previsao_nova);
   if (Number.isNaN(dataPrevisao.getTime())) {
     res.status(400).json({ error: 'Data de previsão inválida.' });
@@ -260,6 +289,80 @@ export async function ajustarPrevisao(req: Request, res: Response): Promise<void
         return;
       }
     }
+
+    if (replicate_carrada === true) {
+      if (!pedidoAtual) {
+        res.status(404).json({ error: 'Pedido não encontrado.' });
+        return;
+      }
+      const rota = rotaFromPedidoRow(pedidoAtual as Record<string, unknown>);
+      if (!isCarradaRota(rota) || isExcludedSqlRotaCategory(rota)) {
+        res.status(400).json({ error: 'Replicação por carrada não se aplica a esta rota.' });
+        return;
+      }
+      const { data: rows } = await listarPedidos({ observacoes: rota });
+      const idsUnicos = [...new Set(rows.map((r) => String(r.id_pedido ?? '').trim()).filter(Boolean))];
+      if (idsUnicos.length === 0) {
+        res.status(400).json({ error: 'Nenhum item encontrado para esta rota no Gerenciador.' });
+        return;
+      }
+      const ajustes = idsUnicos.map((id) => ({
+        id_pedido: id,
+        previsao_nova: dataPrevisao,
+        motivo,
+        observacao: observacao ?? null,
+      }));
+      const resultado = await registrarAjustesPrevisaoLote(ajustes, usuario);
+      if (resultado.erros.length > 0) {
+        res.status(503).json({
+          error: resultado.erros[0]?.erro ?? 'Erro ao replicar ajustes na carrada.',
+          detalhes: resultado.erros,
+        });
+        return;
+      }
+      invalidatePedidosCache();
+      const pedido = await buscarPedidoPorId(idPedido);
+      if (!pedido) {
+        res.status(404).json({ error: 'Pedido não encontrado após ajuste.' });
+        return;
+      }
+      try {
+        const novaPrevisaoStr = dataPrevisao.toISOString().slice(0, 10);
+        const pedidoRow = pedido as Record<string, unknown>;
+        const getVal = (keys: string[]) => {
+          for (const k of keys) {
+            const v = pedidoRow[k];
+            if (v != null && String(v).trim() !== '') return String(v).trim();
+          }
+          return '';
+        };
+        const dataEntregaRaw = pedidoRow['Data de entrega'] ?? pedidoRow['dataEntrega'] ?? pedidoRow['Data de Entrega'];
+        const dataEntregaStr =
+          dataEntregaRaw != null
+            ? dataEntregaRaw instanceof Date
+              ? dataEntregaRaw.toISOString().slice(0, 10)
+              : String(dataEntregaRaw).slice(0, 10)
+            : '';
+        const msg = formatarMensagemAlteracaoPrevisao({
+          pedido: getVal(['PD', 'pd']) || undefined,
+          codigo: getVal(['Cod', 'Codigo', 'cod']) || undefined,
+          cliente: (pedido.cliente || getVal(['Cliente', 'cliente']) || '').trim() || undefined,
+          descricao: (pedido.produto || getVal(['Descricao do produto', 'descricao']) || '').trim() || undefined,
+          data_entrega: dataEntregaStr || undefined,
+          previsao_antiga: previsaoAntigaStr,
+          previsao_nova: novaPrevisaoStr,
+          motivo,
+          observacao: observacao ?? null,
+          usuario,
+        });
+        sendWhatsAppText(msg).catch(() => {});
+      } catch (_) {
+        // não falha o ajuste se o WhatsApp der erro
+      }
+      res.json(pedido);
+      return;
+    }
+
     await registrarAjustePrevisao(idPedido, dataPrevisao, motivo, usuario, observacao ?? undefined);
     invalidatePedidosCache();
     const pedido = await buscarPedidoPorId(idPedido);
