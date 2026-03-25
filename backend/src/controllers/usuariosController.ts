@@ -5,6 +5,8 @@ import { criarUsuarioSchema, atualizarUsuarioSchema } from '../validators/usuari
 import { PERMISSOES } from '../config/permissoes.js';
 import { getPermissoesUsuario } from '../middleware/requirePermission.js';
 
+const COMMERCIAL_TEAM_FLAG = '__time_comercial__';
+
 function parsePermissoes(json: string | null | undefined): string[] {
   if (!json) return [];
   try {
@@ -17,6 +19,17 @@ function parsePermissoes(json: string | null | undefined): string[] {
 
 function serializePermissoes(permissoes: string[] | null | undefined): string {
   return JSON.stringify(Array.isArray(permissoes) ? permissoes : []);
+}
+
+function withCommercialFlag(perms: string[] | null | undefined, isCommercialTeam: boolean | undefined): string[] {
+  const base = Array.isArray(perms) ? [...new Set(perms.map((p) => String(p).trim()).filter(Boolean))] : [];
+  if (isCommercialTeam === undefined) return base;
+  const withoutFlag = base.filter((p) => p !== COMMERCIAL_TEAM_FLAG);
+  return isCommercialTeam ? [...withoutFlag, COMMERCIAL_TEAM_FLAG] : withoutFlag;
+}
+
+function isCommercialTeamFromPerms(perms: string[] | null | undefined): boolean {
+  return Array.isArray(perms) && perms.includes(COMMERCIAL_TEAM_FLAG);
 }
 
 /**
@@ -39,17 +52,21 @@ export async function listarUsuarios(_req: Request, res: Response): Promise<void
       orderBy: { login: 'asc' },
     });
     res.json(
-      usuarios.map((u) => ({
-        id: u.id,
-        login: u.login,
-        nome: u.nome,
-        ativo: u.ativo,
-        permissoes: parsePermissoes(u.permissoes),
-        grupoId: u.grupoId,
-        fotoUrl: u.fotoUrl ?? null,
-        grupo: u.grupo?.nome ?? null,
-        createdAt: u.createdAt,
-      }))
+      usuarios.map((u) => {
+        const perms = parsePermissoes(u.permissoes);
+        return {
+          id: u.id,
+          login: u.login,
+          nome: u.nome,
+          ativo: u.ativo,
+          permissoes: perms.filter((p) => p !== COMMERCIAL_TEAM_FLAG),
+          isCommercialTeam: isCommercialTeamFromPerms(perms),
+          grupoId: u.grupoId,
+          fotoUrl: u.fotoUrl ?? null,
+          grupo: u.grupo?.nome ?? null,
+          createdAt: u.createdAt,
+        };
+      })
     );
   } catch (err) {
     console.error('listarUsuarios', err);
@@ -66,7 +83,7 @@ export async function criarUsuario(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Dados inválidos', details: parsed.error.flatten() });
     return;
   }
-  const { login: loginUser, senha, nome, grupoId, fotoUrl, ativo, permissoes } = parsed.data;
+  const { login: loginUser, senha, nome, grupoId, fotoUrl, ativo, permissoes, isCommercialTeam } = parsed.data;
   try {
     const senhaHash = await bcrypt.hash(senha, 10);
     const usuario = await prisma.usuario.create({
@@ -77,7 +94,7 @@ export async function criarUsuario(req: Request, res: Response): Promise<void> {
         grupoId: grupoId ?? null,
         fotoUrl: fotoUrl ?? null,
         ativo: ativo ?? true,
-        permissoes: serializePermissoes(permissoes ?? []),
+        permissoes: serializePermissoes(withCommercialFlag(permissoes ?? [], isCommercialTeam)),
       },
       select: {
         id: true,
@@ -96,7 +113,8 @@ export async function criarUsuario(req: Request, res: Response): Promise<void> {
       login: usuario.login,
       nome: usuario.nome,
       ativo: usuario.ativo,
-      permissoes: parsePermissoes(usuario.permissoes),
+      permissoes: parsePermissoes(usuario.permissoes).filter((p) => p !== COMMERCIAL_TEAM_FLAG),
+      isCommercialTeam: isCommercialTeamFromPerms(parsePermissoes(usuario.permissoes)),
       grupoId: usuario.grupoId,
       fotoUrl: usuario.fotoUrl ?? null,
       grupo: usuario.grupo?.nome ?? null,
@@ -129,9 +147,15 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const { senha, nome, grupoId, fotoUrl, ativo, permissoes } = parsed.data;
+  const { senha, nome, grupoId, fotoUrl, ativo, permissoes, isCommercialTeam } = parsed.data;
   const temAlgumaAlteracao =
-    senha !== undefined || nome !== undefined || grupoId !== undefined || fotoUrl !== undefined || ativo !== undefined || permissoes !== undefined;
+    senha !== undefined ||
+    nome !== undefined ||
+    grupoId !== undefined ||
+    fotoUrl !== undefined ||
+    ativo !== undefined ||
+    permissoes !== undefined ||
+    isCommercialTeam !== undefined;
   if (!temAlgumaAlteracao) {
     res.status(400).json({ error: 'Informe ao menos um campo para atualizar.' });
     return;
@@ -157,7 +181,8 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
     res.status(403).json({ error: 'Sem permissão para inativar/ativar usuário.' });
     return;
   }
-  const teveOutrosCampos = nome !== undefined || grupoId !== undefined || fotoUrl !== undefined || permissoes !== undefined;
+  const teveOutrosCampos =
+    nome !== undefined || grupoId !== undefined || fotoUrl !== undefined || permissoes !== undefined || isCommercialTeam !== undefined;
   if (teveOutrosCampos && !podeEditar) {
     res.status(403).json({ error: 'Sem permissão para editar usuário.' });
     return;
@@ -166,7 +191,7 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
   try {
     const existente = await prisma.usuario.findUnique({
       where: { id },
-      select: { id: true, grupoId: true },
+      select: { id: true, grupoId: true, permissoes: true },
     });
     if (!existente) {
       res.status(404).json({ error: 'Usuário não encontrado.' });
@@ -206,8 +231,10 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
     if (ativo !== undefined) {
       dataUpdate.ativo = ativo;
     }
-    if (permissoes !== undefined) {
-      dataUpdate.permissoes = serializePermissoes(permissoes ?? []);
+    if (permissoes !== undefined || isCommercialTeam !== undefined) {
+      const currentPerms = existente ? parsePermissoes(existente.permissoes) : [];
+      const nextPerms = withCommercialFlag(permissoes ?? currentPerms, isCommercialTeam);
+      dataUpdate.permissoes = serializePermissoes(nextPerms);
     }
 
     const usuario = await prisma.usuario.update({
@@ -231,7 +258,8 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
       login: usuario.login,
       nome: usuario.nome,
       ativo: usuario.ativo,
-      permissoes: parsePermissoes(usuario.permissoes),
+      permissoes: parsePermissoes(usuario.permissoes).filter((p) => p !== COMMERCIAL_TEAM_FLAG),
+      isCommercialTeam: isCommercialTeamFromPerms(parsePermissoes(usuario.permissoes)),
       grupoId: usuario.grupoId,
       fotoUrl: usuario.fotoUrl ?? null,
       grupo: usuario.grupo?.nome ?? null,

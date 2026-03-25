@@ -8,6 +8,7 @@ import { PERMISSOES } from '../config/permissoes.js';
 
 /** Número que recebe notificação de novo pedido SycroOrder (DDD + número, sem 55) */
 const SYCROORDER_WHATSAPP_NUMERO = '5586998660873';
+const COMMERCIAL_TEAM_FLAG = '__time_comercial__';
 
 type OrderStatus = 'PENDING' | 'FINISHED' | 'ESCALATED';
 
@@ -22,6 +23,13 @@ const PERMISSOES_PODEM_ATUALIZAR_CARD = [
 
 function usuarioPodeAtualizarCardNasPermissoes(perms: string[]): boolean {
   return PERMISSOES_PODEM_ATUALIZAR_CARD.some((p) => perms.includes(p));
+}
+
+/** Incluído no autocomplete @ dos comentários (Comunicação PD). */
+function usuarioPodeSerMencionadoEmComentarios(perms: string[]): boolean {
+  return (
+    perms.includes(PERMISSOES.COMUNICACAO_COMENTARIOS_PERMITIR_MENCAO) || perms.includes(PERMISSOES.COMUNICACAO_TOTAL)
+  );
 }
 
 function formatarDataBR(iso: string): string {
@@ -67,6 +75,15 @@ function parseJsonArray(value: string | null | undefined): string[] | null {
   }
 }
 
+function parsePermissoesJson(value: string | null | undefined): string[] {
+  const arr = parseJsonArray(value);
+  return arr ?? [];
+}
+
+function isUserCommercialTeamByPermsJson(permissoesJson: string | null | undefined): boolean {
+  return parsePermissoesJson(permissoesJson).includes(COMMERCIAL_TEAM_FLAG);
+}
+
 function sortedUnique(arr: string[]): string[] {
   return [...new Set(arr.map((s) => String(s ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
@@ -110,6 +127,33 @@ async function resolveSycroOrderResponsibleRecipientUserIds(args: {
   }
 
   return [...recipientIds];
+}
+
+/** Participantes do card que devem responder, exceto o autor do comentário — texto para a capa do card. */
+async function resolveAguardaRespostaDeLabel(args: {
+  delivery_method: string;
+  created_by: number | null;
+  responsible_user_id: number | null;
+  authorUserId: number | null;
+}): Promise<string> {
+  const recipientIds = await resolveSycroOrderResponsibleRecipientUserIds({
+    delivery_method: args.delivery_method,
+    responsible_user_id: args.responsible_user_id,
+  });
+  const pool = new Set<number>(recipientIds);
+  if (args.created_by != null && Number.isFinite(args.created_by)) pool.add(args.created_by);
+  if (args.authorUserId != null && Number.isFinite(args.authorUserId)) pool.delete(args.authorUserId);
+  const ids = [...pool];
+  if (ids.length > 0) {
+    const users = await prisma.usuario.findMany({
+      where: { id: { in: ids }, ativo: true },
+      select: { login: true, nome: true },
+      orderBy: { login: 'asc' },
+    });
+    const labels = users.map((u) => (u.nome?.trim() ? u.nome.trim() : u.login));
+    if (labels.length > 0) return labels.join(', ');
+  }
+  return isResponsavelJosenildo(args.delivery_method) ? 'josenildo' : 'PCP';
 }
 
 function isGrupoAdministrador(grupoNome?: string | null): boolean {
@@ -496,6 +540,9 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
         vendedor_name: vendedorNome,
         carradas_info: carradasInfo,
         tag_disponivel: !!o.tag_disponivel,
+        aguarda_resposta_pendente: Number((o as { aguarda_resposta_pendente?: number }).aguarda_resposta_pendente) === 1,
+        aguarda_resposta_de_label:
+          (o as { aguarda_resposta_de_label?: string | null }).aguarda_resposta_de_label ?? null,
         status: o.status,
         is_urgent: o.is_urgent,
         created_by: o.created_by,
@@ -523,7 +570,16 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
     res.status(401).json({ error: 'Não autorizado.' });
     return;
   }
-  const { order_number, delivery_method, promised_date, observation, is_urgent, id_pedidos, responsible_user_id } = req.body as {
+  const {
+    order_number,
+    delivery_method,
+    promised_date,
+    observation,
+    is_urgent,
+    id_pedidos,
+    responsible_user_id,
+    aguarda_resposta,
+  } = req.body as {
     order_number?: string;
     delivery_method?: string;
     promised_date?: string;
@@ -532,16 +588,31 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
     id_pedidos?: string[];
     /** Usuario.id opcional — deve ter permissão de atualizar card (mesma regra do PATCH). */
     responsible_user_id?: number | string | null;
+    /** Obrigatório com `observation`: indica se o comentário exige retorno de outro participante. */
+    aguarda_resposta?: boolean;
   };
+  const observationTrim = observation != null ? String(observation).trim() : '';
+  if (observationTrim && typeof aguarda_resposta !== 'boolean') {
+    res.status(400).json({ error: 'Com comentário inicial, informe se aguarda resposta (Não ou Sim).' });
+    return;
+  }
   if (!order_number || !delivery_method || !promised_date) {
     res.status(400).json({ error: 'order_number, delivery_method e promised_date são obrigatórios.' });
     return;
   }
 
   try {
-    const usuario = await getUsuarioAtual(login);
+    const usuario = await prisma.usuario.findUnique({
+      where: { login },
+      select: { id: true, nome: true, login: true, permissoes: true, grupo: { select: { nome: true, ativo: true } } },
+    });
     const created_by = usuario?.id ?? null;
     const creator_name = usuario?.nome ?? login;
+    const creatorIsCommercialTeam = isUserCommercialTeamByPermsJson(usuario?.permissoes);
+    const creatorPerms = await getPermissoesUsuario(login);
+    const canEditResponsible =
+      creatorPerms.includes(PERMISSOES.COMUNICACAO_EDITAR_RESPONSAVEL_CARD) ||
+      creatorPerms.includes(PERMISSOES.COMUNICACAO_TOTAL);
 
     // Resolver itens do pedido no Gerenciador (para deduplicação por itens)
     let itensDoPedido: Array<{ id_pedido: string; cod: string; rota: string }> = [];
@@ -623,7 +694,21 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
     const selectedCodes = sortedUnique(selectedIds.map((id) => idToCod.get(id) ?? '').filter(Boolean));
 
     let responsibleUserId: number | null = null;
-    if (responsible_user_id != null && String(responsible_user_id).trim() !== '') {
+    if (creatorIsCommercialTeam) {
+      if (!created_by) {
+        res.status(400).json({ error: 'Não foi possível identificar o usuário criador para definir o responsável adicional.' });
+        return;
+      }
+      responsibleUserId = created_by;
+    } else {
+      if (!canEditResponsible) {
+        res.status(403).json({ error: 'Seu perfil não possui permissão para editar responsável pelo card.' });
+        return;
+      }
+      if (responsible_user_id == null || String(responsible_user_id).trim() === '') {
+        res.status(400).json({ error: 'Para este perfil, o responsável adicional é obrigatório e deve pertencer ao Time comercial.' });
+        return;
+      }
       const rid =
         typeof responsible_user_id === 'number' && Number.isFinite(responsible_user_id)
           ? responsible_user_id
@@ -634,10 +719,14 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
       }
       const ru = await prisma.usuario.findUnique({
         where: { id: rid },
-        select: { id: true, login: true, ativo: true, grupo: { select: { ativo: true } } },
+        select: { id: true, login: true, ativo: true, permissoes: true, grupo: { select: { ativo: true } } },
       });
       if (!ru || !ru.ativo || (ru.grupo && ru.grupo.ativo === false)) {
         res.status(400).json({ error: 'Usuário responsável não encontrado ou inativo.' });
+        return;
+      }
+      if (!isUserCommercialTeamByPermsJson(ru.permissoes)) {
+        res.status(400).json({ error: 'O responsável adicional deve pertencer ao Time comercial.' });
         return;
       }
       const ruPerms = await getPermissoesUsuario(ru.login);
@@ -647,6 +736,16 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
         return;
       }
       responsibleUserId = rid;
+    }
+
+    let aguardaLabelInicial: string | null = null;
+    if (observationTrim && aguarda_resposta === true) {
+      aguardaLabelInicial = await resolveAguardaRespostaDeLabel({
+        delivery_method: String(delivery_method).trim(),
+        created_by,
+        responsible_user_id: responsibleUserId,
+        authorUserId: created_by,
+      });
     }
 
     const order = await prisma.$transaction(async (tx) => {
@@ -662,6 +761,8 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
           created_by,
           creator_name,
           responsible_user_id: responsibleUserId,
+          aguarda_resposta_pendente: observationTrim ? (aguarda_resposta === true ? 1 : 0) : 0,
+          aguarda_resposta_de_label: observationTrim && aguarda_resposta === true ? aguardaLabelInicial : null,
         },
       });
 
@@ -672,7 +773,7 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
           user_name: creator_name,
           action_type: 'CREATE',
           new_date: created.current_promised_date,
-          observation: observation ? String(observation).trim() : null,
+          observation: observationTrim || null,
         },
       });
 
@@ -729,7 +830,19 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'ID inválido.' });
     return;
   }
-  const { status, new_date, observation, comentario, observacao, is_urgent, motivo, id_pedidos, tag_disponivel, replicate_carrada } = req.body as {
+  const {
+    status,
+    new_date,
+    observation,
+    comentario,
+    observacao,
+    is_urgent,
+    motivo,
+    id_pedidos,
+    tag_disponivel,
+    replicate_carrada,
+    aguarda_resposta,
+  } = req.body as {
     status?: OrderStatus;
     new_date?: string;
     /** @deprecated use comentario */
@@ -746,6 +859,8 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
     tag_disponivel?: boolean;
     /** Se true, replica previsão/motivo/observação para todos os itens da mesma rota (carrada) no Gerenciador. */
     replicate_carrada?: boolean;
+    /** Obrigatório quando há comentário: true = aguarda retorno de outro participante; false = respondido. */
+    aguarda_resposta?: boolean;
   };
   const comentarioVal = (comentario != null && String(comentario).trim() !== '' ? String(comentario).trim() : null) ?? (observation != null && String(observation).trim() !== '' ? String(observation).trim() : null);
   const observacaoVal = observacao != null && String(observacao).trim() !== '' ? String(observacao).trim() : null;
@@ -806,6 +921,13 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    if (comentarioVal && typeof aguarda_resposta !== 'boolean') {
+      res.status(400).json({
+        error: 'Informe se aguarda resposta (defina Não ou Sim) ao enviar um comentário.',
+      });
+      return;
+    }
+
     const nextDate = new_date !== undefined && new_date !== null ? String(new_date).trim() : order.current_promised_date;
     if (newDateProvided) {
       const motivoTrim = motivo != null ? String(motivo).trim() : '';
@@ -846,6 +968,20 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
       is_urgent: nextUrgent,
     };
     if (tagDesejado !== undefined) updateData.tag_disponivel = tagDesejado ? 1 : 0;
+
+    if (comentarioVal && typeof aguarda_resposta === 'boolean') {
+      const label =
+        aguarda_resposta === true
+          ? await resolveAguardaRespostaDeLabel({
+              delivery_method: String(order.delivery_method ?? ''),
+              created_by: order.created_by ?? null,
+              responsible_user_id: (order.responsible_user_id as number | null) ?? null,
+              authorUserId: user_id,
+            })
+          : null;
+      updateData.aguarda_resposta_pendente = aguarda_resposta ? 1 : 0;
+      updateData.aguarda_resposta_de_label = aguarda_resposta ? label : null;
+    }
 
     await prisma.sycroOrderOrder.update({
       where: { id },
@@ -1020,10 +1156,10 @@ export async function setOrderTagDisponivel(req: Request, res: Response): Promis
     const usuario = await getUsuarioAtual(login);
     const user_id = usuario?.id ?? null;
     const user_name = usuario?.nome ?? login;
-    const isAdminGrupo = !!usuario?.grupo?.nome && isGrupoAdministrador(usuario.grupo.nome);
-
-    const isAllowedUser = isAdminGrupo || loginNorm === 'josenildo' || loginNorm === 'viniciusrodrigues';
-    if (!isAllowedUser) {
+    const perms = await getPermissoesUsuario(login);
+    const canControlTag =
+      perms.includes(PERMISSOES.COMUNICACAO_TAG_CONTROLAR) || perms.includes(PERMISSOES.COMUNICACAO_TOTAL);
+    if (!canControlTag) {
       res.status(403).json({ error: 'Você não tem permissão para alterar a TAG de disponibilidade.' });
       return;
     }
@@ -1055,6 +1191,90 @@ export async function setOrderTagDisponivel(req: Request, res: Response): Promis
   } catch (e) {
     console.error('sycroorder setOrderTagDisponivel', e);
     res.status(503).json({ error: 'Erro ao atualizar TAG de disponibilidade.' });
+  }
+}
+
+/** PATCH /api/sycroorder/orders/:id/responsavel — altera somente o segundo responsável do card */
+export async function setOrderResponsible(req: Request, res: Response): Promise<void> {
+  const login = req.user?.login;
+  if (!login) {
+    res.status(401).json({ error: 'Não autorizado.' });
+    return;
+  }
+  const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) {
+    res.status(400).json({ error: 'ID inválido.' });
+    return;
+  }
+  const rawRid = req.body?.responsible_user_id;
+  if (rawRid == null || String(rawRid).trim() === '') {
+    res.status(400).json({ error: 'responsible_user_id é obrigatório.' });
+    return;
+  }
+  const rid = typeof rawRid === 'number' && Number.isFinite(rawRid) ? rawRid : parseInt(String(rawRid), 10);
+  if (Number.isNaN(rid)) {
+    res.status(400).json({ error: 'responsible_user_id inválido.' });
+    return;
+  }
+
+  try {
+    const order = await prisma.sycroOrderOrder.findUnique({ where: { id } });
+    if (!order) {
+      res.status(404).json({ error: 'Pedido não encontrado.' });
+      return;
+    }
+    if (String(order.status) === 'FINISHED') {
+      res.status(403).json({ error: 'Este card está em Faturado/Entregue e não permite alterações.' });
+      return;
+    }
+
+    const ru = await prisma.usuario.findUnique({
+      where: { id: rid },
+      select: { id: true, login: true, ativo: true, permissoes: true, grupo: { select: { ativo: true } } },
+    });
+    if (!ru || !ru.ativo || (ru.grupo && ru.grupo.ativo === false)) {
+      res.status(400).json({ error: 'Usuário responsável não encontrado ou inativo.' });
+      return;
+    }
+    if (!isUserCommercialTeamByPermsJson(ru.permissoes)) {
+      res.status(400).json({ error: 'O segundo responsável deve pertencer ao Time comercial.' });
+      return;
+    }
+    const ruPerms = await getPermissoesUsuario(ru.login);
+    const canViewPd = ruPerms.includes(PERMISSOES.COMUNICACAO_TELA_VER) || ruPerms.includes(PERMISSOES.COMUNICACAO_TOTAL);
+    if (!canViewPd) {
+      res.status(400).json({ error: 'O usuário escolhido não tem permissão para visualizar a Comunicação PD.' });
+      return;
+    }
+
+    if (order.responsible_user_id === rid) {
+      res.json({ success: true });
+      return;
+    }
+
+    const usuario = await getUsuarioAtual(login);
+    await prisma.$transaction(async (tx) => {
+      await tx.sycroOrderOrder.update({
+        where: { id },
+        data: { responsible_user_id: rid },
+      });
+      await tx.sycroOrderHistory.create({
+        data: {
+          order_id: id,
+          user_id: usuario?.id ?? null,
+          user_name: usuario?.nome ?? login,
+          action_type: 'UPDATE_RESPONSIBLE',
+          previous_date: null,
+          new_date: null,
+          observation: `Segundo responsável alterado para @${ru.login}`,
+        },
+      });
+    });
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('sycroorder setOrderResponsible', e);
+    res.status(503).json({ error: 'Erro ao atualizar responsável do card.' });
   }
 }
 
@@ -1353,15 +1573,13 @@ export async function listUsersResponsavelCard(req: Request, res: Response): Pro
   try {
     const users = await prisma.usuario.findMany({
       where: { ativo: true },
-      select: { id: true, login: true, nome: true, grupo: { select: { ativo: true } } },
+      select: { id: true, login: true, nome: true, permissoes: true, grupo: { select: { ativo: true } } },
       orderBy: { login: 'asc' },
     });
     const out: Array<{ id: number; login: string; nome: string | null }> = [];
     for (const u of users) {
       if (u.grupo && u.grupo.ativo === false) continue;
-      const loginNorm = normalizeLogin(u.login);
-      // Josenildo e Vinicius já possuem outra regra (não listar como responsável adicional).
-      if (loginNorm === 'josenildo' || loginNorm === 'viniciusrodrigues' || loginNorm === 'vinicius') continue;
+      if (!isUserCommercialTeamByPermsJson(u.permissoes)) continue;
 
       const perms = await getPermissoesUsuario(u.login);
       const canViewPd = perms.includes(PERMISSOES.COMUNICACAO_TELA_VER) || perms.includes(PERMISSOES.COMUNICACAO_TOTAL);
@@ -1387,14 +1605,23 @@ export async function searchSycroOrderUsers(req: Request, res: Response): Promis
       return;
     }
 
-    const list = await prisma.usuario.findMany({
-      where: { login: { contains: q } },
-      take: 10,
+    const candidates = await prisma.usuario.findMany({
+      where: { ativo: true, login: { contains: q } },
+      take: 40,
       orderBy: { login: 'asc' },
-      select: { id: true, login: true, nome: true },
+      select: { login: true, nome: true, permissoes: true, grupo: { select: { ativo: true } } },
     });
 
-    res.json(list.map((u) => ({ login: u.login, nome: u.nome ?? null })));
+    const out: Array<{ login: string; nome: string | null }> = [];
+    for (const u of candidates) {
+      if (u.grupo && u.grupo.ativo === false) continue;
+      const perms = await getPermissoesUsuario(u.login);
+      if (!usuarioPodeSerMencionadoEmComentarios(perms)) continue;
+      out.push({ login: u.login, nome: u.nome ?? null });
+      if (out.length >= 10) break;
+    }
+
+    res.json(out);
   } catch (e) {
     console.error('sycroorder searchSycroOrderUsers', e);
     res.status(503).json({ error: 'Erro ao buscar usuários para menções.' });

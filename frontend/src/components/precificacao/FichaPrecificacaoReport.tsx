@@ -6,11 +6,17 @@
 import { jsPDF } from 'jspdf';
 import type { PrecificacaoItemRow } from '../../api/engenharia';
 import type { TicketDetalhe } from '../../api/integracao';
+import {
+  aplicarCalculoConsumiveisEspeciais,
+  isComponenteConsumivelCalculadoMarkup,
+} from '../../utils/precificacaoConsumiveis';
+import { computeResumoCalculoPrecificacao } from '../../utils/precificacaoResumoCalculo';
 
 export interface FichaPrecificacaoReportData {
   idPrecificacao: number;
   codigoProduto: string;
   descricaoProduto: string;
+  ncmCodigo?: string | null;
   dataPrecificacao?: string;
   usuario?: string;
   itens: PrecificacaoItemRow[];
@@ -40,6 +46,14 @@ function fmtCurrency(n: number | null | undefined): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+function normalizarTipoMaterial(v: string | null | undefined): 'Matéria Prima' | 'Material Secundário' | 'Embalagem' {
+  const s = String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  if (s.includes('embalag')) return 'Embalagem';
+  if (s.includes('secund')) return 'Material Secundário';
+  if (s.includes('materia prima') || s.includes('prima')) return 'Matéria Prima';
+  return 'Matéria Prima';
+}
+
 const MARGIN = 12;
 const PAGE_W = 210;
 const PAGE_H = 297;
@@ -54,6 +68,7 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
     idPrecificacao,
     codigoProduto,
     descricaoProduto,
+    ncmCodigo,
     dataPrecificacao,
     usuario,
     itens,
@@ -62,14 +77,20 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
     ticketId,
   } = data;
 
+  const itensAjustados = aplicarCalculoConsumiveisEspeciais(itens, valores);
+
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   let y = MARGIN;
   const maxW = PAGE_W - 2 * MARGIN;
+  const COLOR_PRIMARY = [37, 99, 235] as const;
+  const COLOR_BORDER = [203, 213, 225] as const;
+  const COLOR_BG_LIGHT = [248, 250, 252] as const;
+  const COLOR_TEXT = [30, 41, 59] as const;
 
   const v = (key: string) => valores[key]?.trim() || '—';
   const t = ticketDetalhe;
   const codigoCrm = ticketId ? `#${ticketId}` : '—';
-  const totalMateriais = itens.reduce((s, i) => s + (i.valorTotal ?? 0), 0);
+  const totalMateriais = itensAjustados.reduce((s, i) => s + (i.valorTotal ?? 0), 0);
   const now = new Date();
   const dataHoraImpressao = now.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
@@ -80,120 +101,262 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
     }
   };
 
+  const drawSectionHeader = (title: string) => {
+    newPageIfNeeded(10);
+    doc.setFillColor(...COLOR_PRIMARY);
+    doc.roundedRect(MARGIN, y, maxW, 8, 1.5, 1.5, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(FONT_NORMAL);
+    doc.text(title, MARGIN + 3, y + 5.3);
+    doc.setTextColor(...COLOR_TEXT);
+    y += 8;
+  };
+
+  const drawSectionBody = (height: number) => {
+    doc.setDrawColor(...COLOR_BORDER);
+    doc.setFillColor(...COLOR_BG_LIGHT);
+    doc.roundedRect(MARGIN, y, maxW, height, 1.5, 1.5, 'FD');
+  };
+
+  doc.setTextColor(...COLOR_TEXT);
   doc.setFontSize(FONT_TITLE);
   doc.setFont('helvetica', 'bold');
   doc.text('FICHA DE PRECIFICAÇÃO - SÓ AÇO INDUSTRIAL', PAGE_W / 2, y, { align: 'center' });
-  y += LINE_H + 2;
+  y += LINE_H + 1;
   doc.setFontSize(FONT_SMALL);
   doc.setFont('helvetica', 'normal');
+  doc.setTextColor(71, 85, 105);
   doc.text(dataHoraImpressao, PAGE_W / 2, y, { align: 'center' });
-  y += LINE_H + 4;
+  doc.setTextColor(...COLOR_TEXT);
+  y += LINE_H + 3;
 
+  drawSectionHeader('Dados da precificação');
+  const descLines = doc.splitTextToSize(descricaoProduto || '—', maxW - 6);
+  const dadosBodyH = 24.5 + descLines.length * 3.8;
+  drawSectionBody(dadosBodyH);
+  doc.setFontSize(FONT_SMALL);
+  doc.setFont('helvetica', 'normal');
+  let yy = y + 5;
+  doc.text(`Código Precificação: ${idPrecificacao}`, MARGIN + 3, yy);
+  doc.text(`Data Precificação: ${fmtDate(dataPrecificacao)}`, MARGIN + 68, yy);
+  yy += 4.5;
+  doc.text(`Código Produto: ${codigoProduto}`, MARGIN + 3, yy);
+  doc.text(`Usuário: ${usuario || '—'}`, MARGIN + 68, yy);
+  yy += 4.5;
+  doc.text(`NCM: ${ncmCodigo?.trim() ? ncmCodigo.trim() : '—'}`, MARGIN + 3, yy);
+  yy += 4.5;
+  doc.setFont('helvetica', 'bold');
+  doc.text('Produto:', MARGIN + 3, yy);
+  doc.setFont('helvetica', 'normal');
+  yy += 3.8;
+  doc.text(descLines, MARGIN + 3, yy);
+  y += dadosBodyH + 4;
+
+  drawSectionHeader('Dados CRM');
+  const crmBodyH = 19;
+  drawSectionBody(crmBodyH);
+  yy = y + 5;
+  doc.setFontSize(FONT_SMALL);
+  doc.text(`Código CRM: ${codigoCrm}`, MARGIN + 3, yy);
+  doc.text(`Cliente: ${(t?.cliente ?? '—').toString().slice(0, 42)}`, MARGIN + 68, yy);
+  yy += 4.5;
+  doc.text(`Município: ${(t?.municipio ?? '—').toString()}`, MARGIN + 3, yy);
+  doc.text(`UF: ${(t?.UF ?? '—').toString()}`, MARGIN + 68, yy);
+  yy += 4.5;
+  doc.text(`Vendedor/Representante: ${(t?.vendedorrep ?? '—').toString().slice(0, 34)}`, MARGIN + 3, yy);
+  doc.text(`Data Criação CRM: ${t?.datacriacao ? fmtDate(t.datacriacao) : '—'}`, MARGIN + 95, yy);
+  yy += 4.5;
+  doc.text(`Tipo Pessoa: ${(t?.tipopessoa ?? '—').toString()}`, MARGIN + 3, yy);
+  y += crmBodyH + 4;
+
+  drawSectionHeader('Materiais');
+  const grupos: Array<{ titulo: 'Matéria Prima' | 'Material Secundário' | 'Embalagem'; itens: PrecificacaoItemRow[] }> = [
+    { titulo: 'Matéria Prima', itens: [] },
+    { titulo: 'Material Secundário', itens: [] },
+    { titulo: 'Embalagem', itens: [] },
+  ];
+  for (const item of itensAjustados) {
+    const tipo = normalizarTipoMaterial(item.tipoMaterial);
+    grupos.find((g) => g.titulo === tipo)?.itens.push(item);
+  }
+
+  const colW = [26, 78, 20, 28, 28];
+  const headers = ['Código', 'Componente', 'Qtde', 'Valor Unitário', 'Valor Total'];
+
+  const renderTabelaGrupo = (tituloGrupo: string, itensGrupo: PrecificacaoItemRow[]) => {
+    newPageIfNeeded(18);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(FONT_NORMAL);
+    doc.text(tituloGrupo, MARGIN, y + 4);
+    y += 6;
+
+    let x = MARGIN;
+    const tableStartY = y;
+    doc.setFillColor(...COLOR_PRIMARY);
+    doc.setDrawColor(...COLOR_BORDER);
+    doc.rect(MARGIN, tableStartY, maxW, 8, 'FD');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(FONT_SMALL);
+    headers.forEach((h, i) => {
+      const alignRight = i >= 2;
+      const tx = alignRight ? x + colW[i] - 2 : x + 2;
+      doc.text(h, tx, tableStartY + 5.2, alignRight ? { align: 'right' } : {});
+      x += colW[i];
+    });
+    doc.setTextColor(...COLOR_TEXT);
+    y += 8;
+
+    if (itensGrupo.length === 0) {
+      doc.setDrawColor(...COLOR_BORDER);
+      doc.rect(MARGIN, y, maxW, 6.5);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(FONT_SMALL);
+      doc.text('Sem itens neste grupo', MARGIN + 2, y + 4.5);
+      y += 8.5;
+      return 0;
+    }
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(FONT_SMALL);
+    const totalGrupo = itensGrupo.reduce((acc, item) => acc + (item.valorTotal ?? 0), 0);
+
+    for (const item of itensGrupo) {
+      const compLines = doc.splitTextToSize(item.componente ?? '—', colW[1] - 4);
+      const rowH = Math.max(6.5, compLines.length * 3.8 + 2);
+      newPageIfNeeded(rowH + 2);
+      const consumivelMarkup = isComponenteConsumivelCalculadoMarkup(item);
+
+      x = MARGIN;
+      doc.setDrawColor(...COLOR_BORDER);
+      doc.rect(MARGIN, y, maxW, rowH);
+
+      doc.text(item.codigocomponente ?? '—', x + 2, y + 4.5);
+      x += colW[0];
+      doc.text(compLines, x + 2, y + 4.2);
+      x += colW[1];
+      doc.text(consumivelMarkup ? '—' : fmtNum(item.qtd), x + colW[2] - 2, y + 4.5, { align: 'right' });
+      x += colW[2];
+      doc.text(consumivelMarkup ? '—' : fmtCurrency(item.valorUnitario), x + colW[3] - 2, y + 4.5, { align: 'right' });
+      x += colW[3];
+      doc.text(fmtCurrency(item.valorTotal), x + colW[4] - 2, y + 4.5, { align: 'right' });
+
+      let vx = MARGIN;
+      for (const w of colW.slice(0, -1)) {
+        vx += w;
+        doc.line(vx, y, vx, y + rowH);
+      }
+      y += rowH;
+    }
+
+    newPageIfNeeded(8);
+    doc.setFillColor(226, 232, 240);
+    doc.rect(MARGIN, y, maxW, 7, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.text(`Total ${tituloGrupo}:`, MARGIN + maxW - colW[4] - 4, y + 4.8, { align: 'right' });
+    doc.text(fmtCurrency(totalGrupo), MARGIN + maxW - 2, y + 4.8, { align: 'right' });
+    y += 9;
+    return totalGrupo;
+  };
+
+  for (const grupo of grupos) {
+    renderTabelaGrupo(grupo.titulo, grupo.itens);
+    y += 1.5;
+  }
+
+  newPageIfNeeded(9);
+  doc.setFillColor(203, 213, 225);
+  doc.rect(MARGIN, y, maxW, 8, 'FD');
+  doc.setFont('helvetica', 'bold');
   doc.setFontSize(FONT_NORMAL);
-  doc.setFont('helvetica', 'bold');
-  doc.text('Dados da precificação', MARGIN, y);
-  y += LINE_H;
-  doc.setFont('helvetica', 'normal');
-  doc.text(`Código Precificação: ${idPrecificacao}`, MARGIN, y);
-  doc.text(`Data Precificação: ${fmtDate(dataPrecificacao)}`, MARGIN + 60, y);
-  y += LINE_H;
-  doc.text(`Código Produto: ${codigoProduto}`, MARGIN, y);
-  doc.text(`Usuário: ${usuario || '—'}`, MARGIN + 60, y);
-  y += LINE_H;
-  doc.text('Produto:', MARGIN, y);
-  y += LINE_H * 0.6;
-  const descLines = doc.splitTextToSize(descricaoProduto || '—', maxW);
-  doc.text(descLines, MARGIN, y);
-  y += descLines.length * LINE_H * 0.8 + 4;
+  doc.text('Total geral materiais:', MARGIN + maxW - colW[4] - 6, y + 5.5, { align: 'right' });
+  doc.text(fmtCurrency(totalMateriais), MARGIN + maxW - 2, y + 5.5, { align: 'right' });
+  y += 11;
 
-  newPageIfNeeded(20);
-  doc.setFont('helvetica', 'bold');
-  doc.text('Dados CRM', MARGIN, y);
-  y += LINE_H;
-  doc.setFont('helvetica', 'normal');
-  doc.text(`Código CRM: ${codigoCrm}`, MARGIN, y);
-  doc.text(`Cliente: ${(t?.cliente ?? '—').toString().slice(0, 40)}`, MARGIN + 70, y);
-  y += LINE_H;
-  doc.text(`Município: ${(t?.municipio ?? '—').toString()}`, MARGIN, y);
-  doc.text(`UF: ${(t?.UF ?? '—').toString()}`, MARGIN + 70, y);
-  y += LINE_H;
-  doc.text(`Vendedor/Representante: ${(t?.vendedorrep ?? '—').toString().slice(0, 35)}`, MARGIN, y);
-  doc.text(`Data Criação CRM: ${t?.datacriacao ? fmtDate(t.datacriacao) : '—'}`, MARGIN + 95, y);
-  y += LINE_H;
-  doc.text(`Tipo Pessoa: ${(t?.tipopessoa ?? '—').toString()}`, MARGIN, y);
-  y += LINE_H + 4;
+  const resumoCalculoPdf = computeResumoCalculoPrecificacao(itensAjustados, valores);
+  const precoVendaFinal = resumoCalculoPdf.precoVendaFinal;
 
-  newPageIfNeeded(30);
+  const calcLineH = 5.2;
+  /** Altura do corpo do resumo: linhas + faixa Preço Venda (ICMS/impostos detalhados ficam abaixo do bloco). */
+  const calcBodyH = 128;
+  newPageIfNeeded(calcBodyH + 45);
+  drawSectionHeader('Resumo de cálculo');
+  drawSectionBody(calcBodyH);
+  doc.setFontSize(FONT_SMALL);
+  doc.setTextColor(...COLOR_TEXT);
+
+  const resumoInnerRight = MARGIN + maxW - 3;
+  /** Coluna de % termina aqui; valores alinhados à borda direita do quadro (largura total). */
+  const percX = resumoInnerRight - 34;
+  const valX = resumoInnerRight;
+  const leftX = MARGIN + 3;
+  const resumoRowW = maxW - 2;
+  let cy = y + 5;
+  for (const row of resumoCalculoPdf.itens) {
+    if (row.tipo === 'espaco') {
+      cy += 1.5;
+      continue;
+    }
+    const { label, perc, valor, destaque } = row;
+    if (destaque) {
+      doc.setFillColor(226, 232, 240);
+      doc.rect(MARGIN + 1, cy - 3.5, resumoRowW, 5.2, 'F');
+      doc.setFont('helvetica', 'bold');
+    } else {
+      doc.setFont('helvetica', 'normal');
+    }
+    doc.text(label, leftX, cy);
+    if (perc != null) doc.text(`${perc.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`, percX, cy, { align: 'right' });
+    doc.text(valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), valX, cy, { align: 'right' });
+    cy += calcLineH;
+  }
+
+  const impostosRows: Array<[string, number, number]> = resumoCalculoPdf.impostosDetalhe.map(
+    (r) => [r.nome, r.perc, r.valor] as [string, number, number]
+  );
+
+  // faixa final preço venda (logo após o último passo do resumo)
+  cy += 2;
+  const finalY = cy;
+  doc.setFillColor(245, 242, 0);
+  doc.rect(MARGIN + 1, finalY, resumoRowW, 5.5, 'F');
   doc.setFont('helvetica', 'bold');
-  doc.text('Materiais', MARGIN, y);
-  y += LINE_H;
-  const colW = [22, 70, 18, 28, 32];
-  const headers = ['Código', 'Componente', 'Qtde', 'C. Unit.', 'C. Total'];
+  doc.setFontSize(FONT_NORMAL);
+  doc.text('Preço Venda:', leftX, finalY + 3.8);
+  doc.text(precoVendaFinal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), valX, finalY + 3.8, { align: 'right' });
+  y += calcBodyH + 4;
+
+  // Quadro detalhado de impostos abaixo do bloco "Resumo de cálculo"
+  const impostosHeaderH = 5.5;
+  const impostosRowH = 4.1;
+  const impostosBoxH = impostosHeaderH + impostosRows.length * impostosRowH + 2;
+  newPageIfNeeded(impostosBoxH + 14);
+  const boxX = MARGIN + 3;
+  const boxW = maxW - 6;
+  const boxY = y + 2;
+  doc.setDrawColor(...COLOR_BORDER);
+  doc.setFillColor(255, 255, 255);
+  doc.rect(boxX, boxY, boxW, impostosBoxH, 'FD');
+  doc.setFillColor(203, 213, 225);
+  doc.rect(boxX, boxY, boxW, impostosHeaderH, 'F');
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(FONT_SMALL);
-  let x = MARGIN;
-  headers.forEach((h, i) => {
-    doc.text(h, x + (i === 1 ? 0 : (colW[i] || 0) / 2), y, i >= 2 ? { align: 'right' } : {});
-    x += colW[i];
+  doc.setTextColor(...COLOR_TEXT);
+  doc.text('IMPOSTOS', boxX + boxW / 2, boxY + 3.8, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  let iy = boxY + impostosHeaderH + 4;
+  impostosRows.forEach(([nome, perc, val]) => {
+    doc.text(nome, boxX + 2, iy);
+    doc.text(`${perc.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`, boxX + boxW - 32, iy, { align: 'right' });
+    doc.text(val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), boxX + boxW - 2, iy, { align: 'right' });
+    iy += impostosRowH;
   });
-  y += LINE_H;
-  doc.setFont('helvetica', 'normal');
-  const rowH = 5.5;
-  for (const i of itens) {
-    newPageIfNeeded(rowH + 2);
-    x = MARGIN;
-    const comp = (i.componente ?? '—').slice(0, 45);
-    doc.text(i.codigocomponente ?? '—', x, y);
-    x += colW[0];
-    doc.text(comp, x, y);
-    x += colW[1];
-    doc.text(fmtNum(i.qtd), x + colW[2], y, { align: 'right' });
-    x += colW[2];
-    doc.text(fmtCurrency(i.valorUnitario), x + colW[3], y, { align: 'right' });
-    x += colW[3];
-    doc.text(fmtCurrency(i.valorTotal), x + colW[4], y, { align: 'right' });
-    y += rowH;
-  }
-  newPageIfNeeded(rowH + 2);
-  doc.setFont('helvetica', 'bold');
-  doc.text('Total:', MARGIN + colW[0] + colW[1] + colW[2] + colW[3], y, { align: 'right' });
-  doc.text(fmtCurrency(totalMateriais), PAGE_W - MARGIN - colW[4], y, { align: 'right' });
-  y += LINE_H + 4;
+  y = boxY + impostosBoxH + 6;
 
-  newPageIfNeeded(50);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(FONT_NORMAL);
-  doc.text('Campos de markup (%)', MARGIN, y);
-  y += LINE_H;
-  doc.setFont('helvetica', 'normal');
   doc.setFontSize(FONT_SMALL);
-  const markupItems = [
-    { key: 'maoDeObraDireta', title: 'Mão de Obra Direta' },
-    { key: 'maoDeObraIndireta', title: 'Mão de Obra Indireta' },
-    { key: 'depreciacao', title: 'Depreciação' },
-    { key: 'despesasAdministrativas', title: 'Despesas Administrativas' },
-    { key: 'frete', title: 'Frete' },
-    { key: 'propaganda', title: 'Propaganda' },
-    { key: 'embalagem', title: 'Embalagem' },
-    { key: 'lucro', title: 'Lucro' },
-    { key: 'cofins', title: 'COFINS' },
-    { key: 'icms', title: 'ICMS' },
-    { key: 'comissoes', title: 'Comissões' },
-    { key: 'pis', title: 'PIS' },
-    { key: 'csll', title: 'CSLL' },
-    { key: 'irpj', title: 'IRPJ' },
-    { key: 'ipi', title: 'IPI' },
-    { key: 'fosfatizacao', title: 'Fosfatização' },
-    { key: 'gasGlp', title: 'Gás GLP' },
-    { key: 'solda', title: 'Solda' },
-    { key: 'sucata', title: 'Sucata' },
-  ] as const;
-  for (const { key, title } of markupItems) {
-    doc.text(`${title}: ${v(key)}`, MARGIN, y);
-    y += LINE_H * 0.9;
-  }
-  y += 6;
-  doc.setFontSize(FONT_SMALL);
+  doc.setTextColor(71, 85, 105);
+  newPageIfNeeded(8);
   doc.text('Documento gerado pelo Gestão Smart 2.0', PAGE_W / 2, y, { align: 'center' });
 
   const fileName = `Ficha-Precificacao-${codigoProduto.replace(/\s/g, '-')}-${idPrecificacao}.pdf`;
@@ -205,6 +368,7 @@ export function buildFichaPrecificacaoPrintHtml(data: FichaPrecificacaoReportDat
     idPrecificacao,
     codigoProduto,
     descricaoProduto,
+    ncmCodigo,
     dataPrecificacao,
     usuario,
     itens,
@@ -213,7 +377,8 @@ export function buildFichaPrecificacaoPrintHtml(data: FichaPrecificacaoReportDat
     ticketId,
   } = data;
 
-  const totalMateriais = itens.reduce((s, i) => s + (i.valorTotal ?? 0), 0);
+  const itensAjustados = aplicarCalculoConsumiveisEspeciais(itens, valores);
+  const totalMateriais = itensAjustados.reduce((s, i) => s + (i.valorTotal ?? 0), 0);
   const now = new Date();
   const dataHoraImpressao = now.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
@@ -242,16 +407,18 @@ export function buildFichaPrecificacaoPrintHtml(data: FichaPrecificacaoReportDat
     { key: 'sucata', title: 'Sucata' },
   ] as const;
 
-  const rows = itens.map(
-    (i) =>
-      `<tr>
+  const rows = itensAjustados
+    .map((i) => {
+      const esp = isComponenteConsumivelCalculadoMarkup(i);
+      return `<tr>
         <td>${i.codigocomponente ?? '—'}</td>
         <td>${(i.componente ?? '—').replace(/</g, '&lt;')}</td>
-        <td class="num">${fmtNum(i.qtd)}</td>
-        <td class="num">${fmtCurrency(i.valorUnitario)}</td>
+        <td class="num">${esp ? '—' : fmtNum(i.qtd)}</td>
+        <td class="num">${esp ? '—' : fmtCurrency(i.valorUnitario)}</td>
         <td class="num">${fmtCurrency(i.valorTotal)}</td>
-      </tr>`
-  ).join('');
+      </tr>`;
+    })
+    .join('');
 
   const t = ticketDetalhe;
   const codigoCrm = ticketId ? `#${ticketId}` : '—';
@@ -322,6 +489,7 @@ export function buildFichaPrecificacaoPrintHtml(data: FichaPrecificacaoReportDat
       <div class="field"><span class="field-label">Data Precificação:</span> ${fmtDate(dataPrecificacao)}</div>
       <div class="field"><span class="field-label">Código Produto:</span> ${codigoProduto}</div>
       <div class="field"><span class="field-label">Usuário:</span> ${usuario || '—'}</div>
+      <div class="field"><span class="field-label">NCM:</span> ${ncmCodigo?.trim() ? String(ncmCodigo).replace(/</g, '&lt;') : '—'}</div>
     </div>
     <div style="margin-top:6px"><span class="field-label">Produto:</span><br>${(descricaoProduto || '—').replace(/</g, '&lt;')}</div>
   </div>

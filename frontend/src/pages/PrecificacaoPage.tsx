@@ -35,10 +35,12 @@ export default function PrecificacaoPage() {
     idPrecificacao: number;
     codigoProduto: string;
     descricaoProduto: string;
+    ncmCodigo?: string | null;
     dataPrecificacao?: string;
     usuario?: string;
     itens: PrecificacaoIniciarResponse['itens'];
     valoresCampos?: Record<string, string> | null;
+    ticketCrmId?: number | null;
   } | null>(null);
 
   const carregarLista = useCallback(async () => {
@@ -75,10 +77,12 @@ export default function PrecificacaoPage() {
       idPrecificacao: data.precificacao.id,
       codigoProduto: data.precificacao.codigoProduto ?? '',
       descricaoProduto: data.precificacao.descricaoProduto ?? '',
+      ncmCodigo: data.precificacao.ncmCodigo ?? null,
       dataPrecificacao: data.precificacao.data ?? '',
       usuario: data.precificacao.usuario ?? '',
-      itens: data.itens,
-      valoresCampos: undefined,
+      itens: Array.isArray(data.itens) ? data.itens : [],
+      valoresCampos: data.precificacao.valoresCampos ?? undefined,
+      ticketCrmId: data.precificacao.ticketCrmId ?? null,
     });
   }, []);
 
@@ -92,10 +96,12 @@ export default function PrecificacaoPage() {
       idPrecificacao: data.precificacao.id,
       codigoProduto: data.precificacao.codigoProduto ?? '',
       descricaoProduto: data.precificacao.descricaoProduto ?? '',
+      ncmCodigo: data.precificacao.ncmCodigo ?? null,
       dataPrecificacao: data.precificacao.data ?? '',
       usuario: data.precificacao.usuario ?? '',
-      itens: data.itens,
+      itens: Array.isArray(data.itens) ? data.itens : [],
       valoresCampos: data.precificacao.valoresCampos ?? null,
+      ticketCrmId: data.precificacao.ticketCrmId ?? null,
     });
   }, []);
 
@@ -202,10 +208,15 @@ export default function PrecificacaoPage() {
           idPrecificacao={resultadoModal.idPrecificacao}
           codigoProduto={resultadoModal.codigoProduto}
           descricaoProduto={resultadoModal.descricaoProduto}
+          ncmCodigo={resultadoModal.ncmCodigo}
           dataPrecificacao={resultadoModal.dataPrecificacao}
           usuario={resultadoModal.usuario}
           itens={resultadoModal.itens}
           initialValores={resultadoModal.valoresCampos ?? undefined}
+          initialTicketCrmId={resultadoModal.ticketCrmId ?? null}
+          onTicketSalvo={(ticketCrmId) =>
+            setResultadoModal((r) => (r ? { ...r, ticketCrmId } : null))
+          }
           onClose={() => setResultadoModal(null)}
         />
       )}

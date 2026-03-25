@@ -8,6 +8,8 @@ import {
   listPrecificacoes,
   getPrecificacaoResultado,
   salvarPrecificacaoValores,
+  atualizarValorUnitarioItemPrecificacao,
+  excluirItemPrecificacao,
 } from '../controllers/engenhariaController.js';
 
 const router = Router();
@@ -50,6 +52,18 @@ router.patch(
   '/precificacao/:id/valores',
   requirePermission(PERMISSOES.PRECIFICACAO_GERAR),
   async503(salvarPrecificacaoValores)
+);
+
+router.patch(
+  '/precificacao/:id/item/:itemId/valor-unitario',
+  requirePermission(PERMISSOES.PRECIFICACAO_GERAR),
+  async503(atualizarValorUnitarioItemPrecificacao)
+);
+
+router.delete(
+  '/precificacao/:id/item/:itemId',
+  requirePermission(PERMISSOES.PRECIFICACAO_GERAR),
+  async503(excluirItemPrecificacao)
 );
 
 export default router;

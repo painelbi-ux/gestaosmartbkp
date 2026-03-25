@@ -50,6 +50,10 @@ export const PERMISSOES = {
   COMUNICACAO_NOVO_PEDIDO: 'comunicacao.novo_pedido',
   COMUNICACAO_HISTORICO_VER: 'comunicacao.historico.ver',
   COMUNICACAO_ATUALIZAR_CARD: 'comunicacao.atualizar_card',
+  COMUNICACAO_EDITAR_RESPONSAVEL_CARD: 'comunicacao.editar_responsavel_card',
+  COMUNICACAO_TAG_CONTROLAR: 'comunicacao.tag.controlar',
+  COMUNICACAO_TAG_VISUALIZAR: 'comunicacao.tag.visualizar',
+  COMUNICACAO_COMENTARIOS_PERMITIR_MENCAO: 'comunicacao.comentarios.permitir_mencao',
   COMUNICACAO_TOTAL: 'comunicacao.total',
 
   // legado (mantido por compatibilidade)

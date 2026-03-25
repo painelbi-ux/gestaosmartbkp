@@ -18,6 +18,7 @@ const criarUsuarioSchema = z.object({
   nome: z.string().max(100).optional(),
   grupoId: z.number().int().positive().optional().nullable(),
   ativo: z.boolean().optional(),
+  isCommercialTeam: z.boolean().optional(),
   permissoes: z.array(z.string()).optional(),
   fotoUrl: z.string().max(MAX_FOTO_BASE64).optional().nullable(),
 });
@@ -27,6 +28,7 @@ const atualizarUsuarioSchema = z.object({
   nome: z.string().max(100).optional().nullable(),
   grupoId: z.number().int().positive().optional().nullable(),
   ativo: z.boolean().optional(),
+  isCommercialTeam: z.boolean().optional(),
   permissoes: z.array(z.string()).optional(),
   fotoUrl: z.string().max(MAX_FOTO_BASE64).optional().nullable(),
 });
@@ -85,6 +87,10 @@ function agruparPermissoes(permissoes: PermissaoItem[]): { secao: string; itens:
     'comunicacao.novo_pedido',
     'comunicacao.historico.ver',
     'comunicacao.atualizar_card',
+    'comunicacao.editar_responsavel_card',
+    'comunicacao.tag.controlar',
+    'comunicacao.tag.visualizar',
+    'comunicacao.comentarios.permitir_mencao',
     'comunicacao.total',
   ]);
 
@@ -129,6 +135,7 @@ export default function UsuariosPage() {
   const [nome, setNome] = useState('');
   const [grupoId, setGrupoId] = useState<number | ''>('');
   const [ativoNovo, setAtivoNovo] = useState(true);
+  const [isCommercialTeamNovo, setIsCommercialTeamNovo] = useState(false);
   const [fotoPreview, setFotoPreview] = useState<string | null>(null);
   const [fotoBase64, setFotoBase64] = useState<string | null>(null);
   const [salvandoUsuario, setSalvandoUsuario] = useState(false);
@@ -142,6 +149,7 @@ export default function UsuariosPage() {
   const [editGrupoId, setEditGrupoId] = useState<number | ''>('');
   const [editFotoPreview, setEditFotoPreview] = useState<string | null>(null);
   const [editAtivo, setEditAtivo] = useState(true);
+  const [editIsCommercialTeam, setEditIsCommercialTeam] = useState(false);
   const [editPermissoes, setEditPermissoes] = useState<string[]>([]);
   // undefined = não mexeu; null = remover; string = novo valor
   const [editFotoBase64, setEditFotoBase64] = useState<string | null | undefined>(undefined);
@@ -250,6 +258,7 @@ export default function UsuariosPage() {
       nome: nome || undefined,
       grupoId: grupoId === '' ? undefined : grupoId,
       ativo: ativoNovo,
+      isCommercialTeam: isCommercialTeamNovo,
       fotoUrl: fotoBase64 || undefined,
     });
     if (!parsed.success) {
@@ -265,6 +274,7 @@ export default function UsuariosPage() {
       setNome('');
       setGrupoId('');
       setAtivoNovo(true);
+      setIsCommercialTeamNovo(false);
       setFotoPreview(null);
       setFotoBase64(null);
       showToast('Usuário criado com sucesso.');
@@ -282,6 +292,7 @@ export default function UsuariosPage() {
     setEditNome(u.nome ?? '');
     setEditGrupoId(u.grupoId ?? '');
     setEditAtivo(u.ativo);
+    setEditIsCommercialTeam(!!u.isCommercialTeam);
     setEditPermissoes(u.permissoes ?? []);
     setEditFotoPreview(u.fotoUrl ?? null);
     setEditFotoBase64(undefined);
@@ -299,6 +310,7 @@ export default function UsuariosPage() {
     setFormErrorEditarUsuario('');
     setSalvandoEditarUsuario(false);
     setEditAtivo(true);
+    setEditIsCommercialTeam(false);
     setEditPermissoes([]);
   };
 
@@ -312,6 +324,7 @@ export default function UsuariosPage() {
       nome: editNome.trim() === '' ? null : editNome.trim(),
       grupoId: editGrupoId === '' ? null : Number(editGrupoId),
       ativo: editAtivo,
+      isCommercialTeam: editIsCommercialTeam,
       permissoes: editPermissoes,
     };
 
@@ -599,6 +612,18 @@ export default function UsuariosPage() {
                   Usuário ativo
                 </label>
               </div>
+              <div className="flex items-center gap-3">
+                <input
+                  id="novo-time-comercial"
+                  type="checkbox"
+                  checked={isCommercialTeamNovo}
+                  onChange={(e) => setIsCommercialTeamNovo(e.target.checked)}
+                  className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
+                />
+                <label htmlFor="novo-time-comercial" className="text-sm text-slate-700 dark:text-slate-300">
+                  Time comercial
+                </label>
+              </div>
               {formErrorUsuario && <p className="text-amber-600 dark:text-amber-400 text-sm">{formErrorUsuario}</p>}
               <button
                 type="submit"
@@ -627,7 +652,7 @@ export default function UsuariosPage() {
                   <div className="flex-1 min-w-0">
                     <span className="font-medium text-slate-800 dark:text-slate-200 block truncate">{u.login}</span>
                     <span className="text-xs text-slate-500 dark:text-slate-400 block truncate">
-                      {u.nome || '—'} · {u.grupo || 'Sem grupo'} · {u.ativo ? 'Ativo' : 'Inativo'}
+                      {u.nome || '—'} · {u.grupo || 'Sem grupo'} · {u.ativo ? 'Ativo' : 'Inativo'} · {u.isCommercialTeam ? 'Time comercial' : 'Não comercial'}
                     </span>
                   </div>
                   <button
@@ -723,6 +748,18 @@ export default function UsuariosPage() {
                         />
                         <label htmlFor="edit-ativo" className="text-sm text-slate-700 dark:text-slate-300">
                           Usuário ativo
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          id="edit-time-comercial"
+                          type="checkbox"
+                          checked={editIsCommercialTeam}
+                          onChange={(e) => setEditIsCommercialTeam(e.target.checked)}
+                          className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
+                        />
+                        <label htmlFor="edit-time-comercial" className="text-sm text-slate-700 dark:text-slate-300">
+                          Time comercial
                         </label>
                       </div>
                     </div>

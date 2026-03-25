@@ -110,6 +110,7 @@ export interface MeResponse {
   login: string;
   nome: string | null;
   grupo: string | null;
+  isCommercialTeam?: boolean;
   permissoes: string[];
 }
 

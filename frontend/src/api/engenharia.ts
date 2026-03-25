@@ -4,6 +4,8 @@ export interface ProdutoPrecificacao {
   id: number;
   nome: string;
   descricao: string | null;
+  idNcm: number | null;
+  codigoNcm: string | null;
 }
 
 export interface ProdutosPrecificacaoResponse {
@@ -52,9 +54,12 @@ export interface PrecificacaoItemRow {
   codigopai: string | null;
   descricaopai: string | null;
   idcomponente: number | null;
+  /** Família do componente no Nomus (base consumíveis 65/70/106). */
+  idFamiliaProduto?: number | null;
   codigocomponente: string | null;
   componente: string | null;
   qtd: number;
+  tipoMaterial?: string | null;
   valorUnitario: number | null;
   valorTotal: number | null;
 }
@@ -65,6 +70,11 @@ export interface PrecificacaoIniciarResponse {
     idProduto: number;
     codigoProduto: string | null;
     descricaoProduto: string | null;
+    ncmCodigo: string | null;
+    /** Preenchido quando o NCM encontra regra de tributação (ex.: ICMS da aba Markup). */
+    valoresCampos?: Record<string, string> | null;
+    /** Ticket CRM salvo; null na criação até o usuário clicar em Salvar. */
+    ticketCrmId?: number | null;
     data: string;
     usuario: string | null;
   };
@@ -76,9 +86,11 @@ export interface PrecificacaoResultadoResponse {
     id: number;
     codigoProduto: string | null;
     descricaoProduto: string | null;
+    ncmCodigo: string | null;
     data: string;
     usuario: string | null;
     valoresCampos?: Record<string, string> | null;
+    ticketCrmId?: number | null;
   };
   itens: PrecificacaoItemRow[];
 }
@@ -88,11 +100,45 @@ export type PrecificacaoValoresCampos = Record<string, string>;
 
 export async function salvarPrecificacaoValores(
   id: number,
-  valores: PrecificacaoValoresCampos
+  valores: PrecificacaoValoresCampos,
+  options?: { ticketCrmId?: number | null }
 ): Promise<{ error?: string }> {
+  const body: Record<string, unknown> = { ...valores };
+  if (options !== undefined) {
+    body.ticketCrmId = options.ticketCrmId ?? null;
+  }
   const res = await apiFetch(`/api/engenharia/precificacao/${id}/valores`, {
     method: 'PATCH',
-    body: valores,
+    body,
+  });
+  const json = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) return { error: json.error ?? res.statusText };
+  return {};
+}
+
+export async function atualizarValorUnitarioItemPrecificacao(
+  idPrecificacao: number,
+  idItem: number,
+  valorUnitario: number | null
+): Promise<{ item?: { id: number; valorUnitario: number | null; valorTotal: number | null }; error?: string }> {
+  const res = await apiFetch(`/api/engenharia/precificacao/${idPrecificacao}/item/${idItem}/valor-unitario`, {
+    method: 'PATCH',
+    body: { valorUnitario },
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    item?: { id: number; valorUnitario: number | null; valorTotal: number | null };
+    error?: string;
+  };
+  if (!res.ok) return { error: body.error ?? res.statusText };
+  return { item: body.item };
+}
+
+export async function excluirItemPrecificacao(
+  idPrecificacao: number,
+  idItem: number
+): Promise<{ error?: string }> {
+  const res = await apiFetch(`/api/engenharia/precificacao/${idPrecificacao}/item/${idItem}`, {
+    method: 'DELETE',
   });
   const body = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) return { error: body.error ?? res.statusText };

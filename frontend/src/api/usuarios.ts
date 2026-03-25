@@ -5,6 +5,7 @@ export interface Usuario {
   login: string;
   nome: string | null;
   ativo: boolean;
+  isCommercialTeam?: boolean;
   permissoes: string[];
   grupoId: number | null;
   grupo: string | null;
@@ -22,6 +23,7 @@ export async function criarUsuario(payload: {
   nome?: string;
   grupoId?: number | null;
   ativo?: boolean;
+  isCommercialTeam?: boolean;
   permissoes?: string[];
   fotoUrl?: string | null;
 }): Promise<Usuario> {
@@ -43,6 +45,7 @@ export async function atualizarUsuario(
     nome?: string | null;
     grupoId?: number | null;
     ativo?: boolean;
+    isCommercialTeam?: boolean;
     permissoes?: string[];
     fotoUrl?: string | null;
   }

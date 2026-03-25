@@ -6,10 +6,13 @@ const SQL_BASE = `
 SELECT
   produto.id,
   produto.nome,
-  produto.descricao
+  produto.descricao,
+  produto.idNcm,
+  n.codigo AS codigoNcm
 FROM
   produto
   LEFT JOIN tipoproduto ON tipoproduto.id = produto.idTipoProduto
+  LEFT JOIN ncm n ON n.id = produto.idNcm
 WHERE
   (produto.ativo = 1)
   AND (
@@ -446,6 +449,8 @@ export interface ProdutoPrecificacaoRow {
   id: number;
   nome: string;
   descricao: string | null;
+  idNcm: number | null;
+  codigoNcm: string | null;
 }
 
 /**
@@ -485,11 +490,21 @@ LIMIT ?`;
     }
     const [rows] = await pool.query(sql, params);
     const list = (Array.isArray(rows) ? rows : []) as Record<string, unknown>[];
-    const data = list.map((r: Record<string, unknown>) => ({
-      id: Number(r.id ?? r.ID ?? 0),
-      nome: String(r.nome ?? r.Nome ?? ''),
-      descricao: (r.descricao ?? r.Descricao) != null ? String(r.descricao ?? r.Descricao) : null,
-    }));
+    const data = list.map((r: Record<string, unknown>) => {
+      const idNcmRaw = r.idNcm ?? r.idncm ?? r.IdNcm;
+      const idNcm =
+        idNcmRaw != null && idNcmRaw !== '' && !Number.isNaN(Number(idNcmRaw)) ? Number(idNcmRaw) : null;
+      const codigoNcmRaw = r.codigoNcm ?? r.codigonc ?? r.CodigoNcm;
+      const codigoNcm =
+        codigoNcmRaw != null && String(codigoNcmRaw).trim() !== '' ? String(codigoNcmRaw).trim() : null;
+      return {
+        id: Number(r.id ?? r.ID ?? 0),
+        nome: String(r.nome ?? r.Nome ?? ''),
+        descricao: (r.descricao ?? r.Descricao) != null ? String(r.descricao ?? r.Descricao) : null,
+        idNcm,
+        codigoNcm,
+      };
+    });
     res.json({ data });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -511,6 +526,212 @@ function toFloat(v: unknown): number {
   if (v == null) return 0;
   const n = Number(v);
   return Number.isNaN(n) ? 0 : n;
+}
+
+/** Formata percentual para o padrão dos campos da ficha (pt-BR). */
+function formatPercentBr(n: number): string {
+  return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+
+function normalizeNcmDigitsForPsa(ncm: string | null | undefined): string {
+  if (ncm == null) return '';
+  return String(ncm).replace(/\D/g, '');
+}
+
+/**
+ * ICMS sugerido pela tabela PSA (SQLite), importada do CSV `psa_ncm_icms_bz0`.
+ * Usa o campo `icmsefetivo` quando o NCM (somente dígitos) existe na tabela.
+ */
+async function buscarIcmsPsaPorNcmBz0(ncmCodigo: string | null | undefined): Promise<number | null> {
+  const norm = normalizeNcmDigitsForPsa(ncmCodigo);
+  if (!norm) return null;
+  try {
+    const row = await prisma.psaNcmIcmsBz0.findUnique({
+      where: { ncmNormalizado: norm },
+    });
+    if (!row) return null;
+    const v = row.icmsefetivo;
+    if (!Number.isFinite(v) || v < 0) return null;
+    return v;
+  } catch (e) {
+    console.error('[engenhariaController] buscarIcmsPsaPorNcmBz0:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/**
+ * ICMS "real" (com redução de base) por código NCM nas regras "dentro" (Nomus).
+ * Parâmetro: código NCM (comparação exata ou só dígitos, sem pontos/espaços).
+ */
+const SQL_ICMS_REAL_POR_NCM = `
+SELECT
+  CASE
+    WHEN IfNull(tb.pRedBC, 0) IS NULL THEN tb.aliquotaICMS
+    ELSE ((tb.aliquotaICMS / 100) - ((tb.aliquotaICMS / 100) * (IfNull(tb.pRedBC, 0) / 100))) * 100
+  END AS aliquotaICMSReal
+FROM
+  regratributacao r
+  LEFT JOIN tiporegratributacao t ON t.id = r.idTipoRegraTributacao
+  LEFT JOIN tributacao tb ON r.idTributacao = tb.id
+  LEFT JOIN inputregratributacao irt ON irt.idRegraTributacao = r.id
+  LEFT JOIN ncm n ON n.id = irt.idEntidade
+WHERE
+  (r.nome NOT LIKE '%devol%')
+  AND (r.nome NOT LIKE '%compr%')
+  AND (r.nome LIKE '%dentro%')
+  AND (r.ativo = 1)
+  AND (IfNull(tb.pRedBC, 0) <> 0)
+  AND (t.id = 1)
+  AND (irt.discriminador = 'NCM')
+  AND (
+    TRIM(n.codigo) = TRIM(?)
+    OR REPLACE(REPLACE(TRIM(n.codigo), '.', ''), ' ', '') = REPLACE(REPLACE(TRIM(?), '.', ''), ' ', '')
+  )
+ORDER BY r.id ASC
+LIMIT 1
+`.trim();
+
+async function buscarAliquotaIcmsRealPorNcm(
+  pool: NonNullable<ReturnType<typeof getNomusPool>>,
+  codigoNcm: string | null | undefined
+): Promise<number | null> {
+  const raw = codigoNcm != null ? String(codigoNcm).trim() : '';
+  if (!raw) return null;
+  try {
+    const [rows] = await pool.query(SQL_ICMS_REAL_POR_NCM, [raw, raw]);
+    const list = (Array.isArray(rows) ? rows : []) as Record<string, unknown>[];
+    if (list.length === 0) return null;
+    const v =
+      list[0].aliquotaICMSReal ??
+      list[0].aliquotaicmsreal ??
+      list[0].AliquotaICMSReal;
+    const n = typeof v === 'number' ? v : Number(String(v).replace(',', '.'));
+    if (!Number.isFinite(n) || n < 0) return null;
+    return n;
+  } catch (e) {
+    console.error('[engenhariaController] buscarAliquotaIcmsRealPorNcm:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/**
+ * Alíquota de IPI por código NCM (regras com t.id = 2, discriminador NCM).
+ */
+const SQL_IPI_POR_NCM = `
+SELECT
+  tb.aliquotaIPI AS aliquotaIPI
+FROM
+  regratributacao r
+  LEFT JOIN tiporegratributacao t ON t.id = r.idTipoRegraTributacao
+  LEFT JOIN tributacao tb ON r.idTributacao = tb.id
+  LEFT JOIN inputregratributacao irt ON irt.idRegraTributacao = r.id
+  LEFT JOIN ncm n ON n.id = irt.idEntidade
+WHERE
+  (r.nome NOT LIKE '%devol%')
+  AND (r.nome NOT LIKE '%compr%')
+  AND (r.ativo = 1)
+  AND (t.id = 2)
+  AND (irt.discriminador = 'NCM')
+  AND (
+    TRIM(n.codigo) = TRIM(?)
+    OR REPLACE(REPLACE(TRIM(n.codigo), '.', ''), ' ', '') = REPLACE(REPLACE(TRIM(?), '.', ''), ' ', '')
+  )
+ORDER BY r.id ASC
+LIMIT 1
+`.trim();
+
+async function buscarAliquotaIpiPorNcm(
+  pool: NonNullable<ReturnType<typeof getNomusPool>>,
+  codigoNcm: string | null | undefined
+): Promise<number | null> {
+  const raw = codigoNcm != null ? String(codigoNcm).trim() : '';
+  if (!raw) return null;
+  try {
+    const [rows] = await pool.query(SQL_IPI_POR_NCM, [raw, raw]);
+    const list = (Array.isArray(rows) ? rows : []) as Record<string, unknown>[];
+    if (list.length === 0) return null;
+    const v =
+      list[0].aliquotaIPI ?? list[0].aliquotaipi ?? list[0].AliquotaIPI ?? list[0].aliquotaIpi;
+    if (v == null) return null;
+    const n = typeof v === 'number' ? v : Number(String(v).replace(',', '.'));
+    if (!Number.isFinite(n) || n < 0) return null;
+    return n;
+  } catch (e) {
+    console.error('[engenhariaController] buscarAliquotaIpiPorNcm:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+async function buscarIdFamiliaProdutoPorIds(
+  pool: NonNullable<ReturnType<typeof getNomusPool>>,
+  idsProduto: number[]
+): Promise<Map<number, number | null>> {
+  const mapa = new Map<number, number | null>();
+  if (idsProduto.length === 0) return mapa;
+  const uniq = [...new Set(idsProduto)];
+  const ph = uniq.map(() => '?').join(',');
+  const sql = `SELECT id, idFamiliaProduto FROM produto WHERE id IN (${ph})`.trim();
+  try {
+    const [rows] = await pool.query(sql, uniq);
+    const list = (Array.isArray(rows) ? rows : []) as Record<string, unknown>[];
+    for (const r of list) {
+      const id = toNum(r.id ?? r.ID);
+      const fp = toNum(r.idFamiliaProduto ?? r.idfamiliaproduto ?? r.IdFamiliaProduto);
+      if (id != null) mapa.set(id, fp);
+    }
+  } catch (e) {
+    console.error('[engenhariaController] buscarIdFamiliaProdutoPorIds:', e instanceof Error ? e.message : e);
+  }
+  return mapa;
+}
+
+async function buscarCodigoNcmProduto(
+  pool: NonNullable<ReturnType<typeof getNomusPool>>,
+  idProduto: number
+): Promise<string | null> {
+  const sql = `
+SELECT n.codigo AS codigoNcm
+FROM produto p
+LEFT JOIN ncm n ON n.id = p.idNcm
+WHERE p.id = ?
+LIMIT 1
+`.trim();
+  const [rows] = await pool.query(sql, [idProduto]);
+  const list = (Array.isArray(rows) ? rows : []) as Record<string, unknown>[];
+  if (list.length === 0) return null;
+  const c = toStr(list[0].codigoNcm ?? list[0].codigonc ?? list[0].codigo);
+  return c?.trim() ? c.trim() : null;
+}
+
+async function carregarTipoMaterialPorComponente(
+  pool: NonNullable<ReturnType<typeof getNomusPool>>,
+  idsComponentes: number[]
+): Promise<Map<number, string>> {
+  const mapa = new Map<number, string>();
+  if (idsComponentes.length === 0) return mapa;
+
+  const inPlaceholder = idsComponentes.map(() => '?').join(',');
+  const sqlTipoMaterial = `
+SELECT
+  p.id AS idProduto,
+  COALESCE(alo.opcao, 'Material Secundário') AS opcao
+FROM produto p
+LEFT JOIN atributoprodutovalor apv
+  ON apv.idProduto = p.id
+  AND apv.idAtributo = 540
+LEFT JOIN atributolistaopcao alo
+  ON alo.id = apv.idListaOpcao
+WHERE p.id IN (${inPlaceholder})
+`.trim();
+  const [rowsTipo] = await pool.query(sqlTipoMaterial, idsComponentes);
+  const listTipo = (Array.isArray(rowsTipo) ? rowsTipo : []) as Record<string, unknown>[];
+  for (const r of listTipo) {
+    const idProd = toNum(r.idProduto ?? r.idproduto);
+    const opcao = toStr(r.opcao)?.trim() || 'Material Secundário';
+    if (idProd == null) continue;
+    if (!mapa.has(idProd) || mapa.get(idProd) === '') mapa.set(idProd, opcao);
+  }
+  return mapa;
 }
 
 /**
@@ -562,17 +783,24 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
 
     // Segunda consulta: valor unitário por idProduto (idcomponente)
     const mapaValorUnitario = new Map<number, number>();
+    const mapaTipoMaterial = new Map<number, string>();
     if (idsComponentes.length > 0) {
-      const inPlaceholder = idsComponentes.map(() => '?').join(',');
-      const sqlValorUnitario = SQL_VALOR_UNITARIO_BASE.replace(/__IN_IDS__/g, inPlaceholder);
-      const paramsValor = [...idsComponentes, ...idsComponentes];
       try {
+        const inPlaceholder = idsComponentes.map(() => '?').join(',');
+        const sqlValorUnitario = SQL_VALOR_UNITARIO_BASE.replace(/__IN_IDS__/g, inPlaceholder);
+        const paramsValor = [...idsComponentes, ...idsComponentes];
         const [rowsValor] = await pool.query(sqlValorUnitario, paramsValor);
         const listValor = (Array.isArray(rowsValor) ? rowsValor : []) as Record<string, unknown>[];
         for (const r of listValor) {
           const idProd = toNum(r.idProduto ?? r.idproduto);
           const valor = toFloat(r.valorUnitario ?? r.valorunitario);
-          if (idProd != null) mapaValorUnitario.set(idProd, valor);
+          const opcao = toStr(r.opcao)?.trim() || '';
+          if (idProd != null) {
+            mapaValorUnitario.set(idProd, valor);
+            if (!mapaTipoMaterial.has(idProd) || mapaTipoMaterial.get(idProd) === '') {
+              mapaTipoMaterial.set(idProd, opcao);
+            }
+          }
         }
       } catch (errValor) {
         console.error('[engenhariaController] SQL valor unitário:', errValor instanceof Error ? errValor.message : errValor);
@@ -580,12 +808,28 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
       }
     }
 
+    const ncmCodigo = await buscarCodigoNcmProduto(pool, idProduto);
+
+    let valoresCamposIniciais: Record<string, string> | null = null;
+    let icmsReal = await buscarAliquotaIcmsRealPorNcm(pool, ncmCodigo);
+    if (icmsReal == null) {
+      icmsReal = await buscarIcmsPsaPorNcmBz0(ncmCodigo);
+    }
+    const ipiAliq = await buscarAliquotaIpiPorNcm(pool, ncmCodigo);
+    if (icmsReal != null || ipiAliq != null) {
+      valoresCamposIniciais = {};
+      if (icmsReal != null) valoresCamposIniciais.icms = formatPercentBr(icmsReal);
+      if (ipiAliq != null) valoresCamposIniciais.ipi = formatPercentBr(ipiAliq);
+    }
+
     const precificacao = await prisma.precificacao.create({
       data: {
         idProduto,
         codigoProduto,
         descricaoProduto,
+        ncmCodigo,
         usuario,
+        valoresCampos: valoresCamposIniciais ? JSON.stringify(valoresCamposIniciais) : null,
       },
     });
 
@@ -606,6 +850,10 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
       }
     }
 
+    const idsComps = [...agrupado.keys()];
+    const mapaFamilia =
+      idsComps.length > 0 ? await buscarIdFamiliaProdutoPorIds(pool, idsComps) : new Map<number, number | null>();
+
     const itensData = Array.from(agrupado.entries()).map(([idcomp, { sumQtd, first }]) => {
       const valorUnitario = mapaValorUnitario.get(idcomp) ?? null;
       const valorTotal = valorUnitario != null ? Math.round(sumQtd * valorUnitario * 100) / 100 : null;
@@ -615,6 +863,7 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
         codigopai: toStr(first.codigopai ?? first.codigoPai),
         descricaopai: toStr(first.descricaopai ?? first.descricaoPai),
         idcomponente: idcomp,
+        idFamiliaProduto: mapaFamilia.get(idcomp) ?? null,
         codigocomponente: toStr(first.codigocomponente ?? first.codigoComponente),
         componente: toStr(first.componente),
         qtd: Math.round(sumQtd * 100000) / 100000,
@@ -636,6 +885,9 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
         idProduto: precificacao.idProduto,
         codigoProduto: precificacao.codigoProduto,
         descricaoProduto: precificacao.descricaoProduto,
+        ncmCodigo: precificacao.ncmCodigo,
+        valoresCampos: valoresCamposIniciais,
+        ticketCrmId: precificacao.ticketCrmId ?? null,
         data: precificacao.data.toISOString(),
         usuario: precificacao.usuario,
       },
@@ -645,9 +897,11 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
         codigopai: i.codigopai,
         descricaopai: i.descricaopai,
         idcomponente: i.idcomponente,
+        idFamiliaProduto: i.idFamiliaProduto ?? null,
         codigocomponente: i.codigocomponente,
         componente: i.componente,
         qtd: i.qtd,
+        tipoMaterial: (typeof i.idcomponente === 'number' ? mapaTipoMaterial.get(i.idcomponente) : null) ?? null,
         valorUnitario: i.valorUnitario ?? null,
         valorTotal: i.valorTotal ?? null,
       })),
@@ -720,14 +974,100 @@ export async function getPrecificacaoResultado(req: Request, res: Response): Pro
       }
     }
 
+    const idsComponentes = precificacao.itens
+      .map((i) => (typeof i.idcomponente === 'number' ? i.idcomponente : null))
+      .filter((n): n is number => n != null);
+
+    let mapaTipoMaterial = new Map<number, string>();
+    let ncmCodigoResult = precificacao.ncmCodigo ?? null;
+    const pool = getNomusPool();
+    if (isNomusEnabled() && idsComponentes.length > 0 && pool) {
+      try {
+        mapaTipoMaterial = await carregarTipoMaterialPorComponente(pool, [...new Set(idsComponentes)]);
+      } catch (errTipo) {
+        console.error('[engenhariaController] getPrecificacaoResultado tipoMaterial:', errTipo instanceof Error ? errTipo.message : errTipo);
+      }
+    }
+
+    const idsSemFamilia = precificacao.itens
+      .filter((i) => i.idFamiliaProduto == null && typeof i.idcomponente === 'number')
+      .map((i) => i.idcomponente as number);
+    let mapaFamiliaExtra = new Map<number, number | null>();
+    if (isNomusEnabled() && pool && idsSemFamilia.length > 0) {
+      try {
+        mapaFamiliaExtra = await buscarIdFamiliaProdutoPorIds(pool, [...new Set(idsSemFamilia)]);
+      } catch (e) {
+        console.error('[engenhariaController] getPrecificacaoResultado idFamilia:', e instanceof Error ? e.message : e);
+      }
+    }
+
+    if (!ncmCodigoResult && isNomusEnabled() && pool) {
+      try {
+        ncmCodigoResult = await buscarCodigoNcmProduto(pool, precificacao.idProduto);
+      } catch {
+        /* mantém null */
+      }
+    }
+
+    const ncmParaIcms = ncmCodigoResult ?? precificacao.ncmCodigo ?? null;
+    const icmsAusente =
+      !valoresCampos ||
+      typeof valoresCampos !== 'object' ||
+      valoresCampos.icms == null ||
+      String(valoresCampos.icms).trim() === '';
+    if (icmsAusente && ncmParaIcms && pool && isNomusEnabled()) {
+      try {
+        const icmsReal = await buscarAliquotaIcmsRealPorNcm(pool, ncmParaIcms);
+        if (icmsReal != null) {
+          valoresCampos = { ...(valoresCampos ?? {}), icms: formatPercentBr(icmsReal) };
+        }
+      } catch (e) {
+        console.error('[engenhariaController] getPrecificacaoResultado icms NCM:', e instanceof Error ? e.message : e);
+      }
+    }
+
+    const icmsAindaAusente =
+      !valoresCampos ||
+      typeof valoresCampos !== 'object' ||
+      valoresCampos.icms == null ||
+      String(valoresCampos.icms).trim() === '';
+    if (icmsAindaAusente && ncmParaIcms) {
+      try {
+        const icmsPsa = await buscarIcmsPsaPorNcmBz0(ncmParaIcms);
+        if (icmsPsa != null) {
+          valoresCampos = { ...(valoresCampos ?? {}), icms: formatPercentBr(icmsPsa) };
+        }
+      } catch (e) {
+        console.error('[engenhariaController] getPrecificacaoResultado icms PSA:', e instanceof Error ? e.message : e);
+      }
+    }
+
+    const ipiAusente =
+      !valoresCampos ||
+      typeof valoresCampos !== 'object' ||
+      valoresCampos.ipi == null ||
+      String(valoresCampos.ipi).trim() === '';
+    if (ipiAusente && ncmParaIcms && pool && isNomusEnabled()) {
+      try {
+        const ipiAliq = await buscarAliquotaIpiPorNcm(pool, ncmParaIcms);
+        if (ipiAliq != null) {
+          valoresCampos = { ...(valoresCampos ?? {}), ipi: formatPercentBr(ipiAliq) };
+        }
+      } catch (e) {
+        console.error('[engenhariaController] getPrecificacaoResultado ipi NCM:', e instanceof Error ? e.message : e);
+      }
+    }
+
     res.json({
       precificacao: {
         id: precificacao.id,
         codigoProduto: precificacao.codigoProduto,
         descricaoProduto: precificacao.descricaoProduto,
+        ncmCodigo: ncmCodigoResult,
         data: precificacao.data.toISOString(),
         usuario: precificacao.usuario,
         valoresCampos,
+        ticketCrmId: precificacao.ticketCrmId ?? null,
       },
       itens: precificacao.itens.map((i) => ({
         id: i.id,
@@ -735,9 +1075,13 @@ export async function getPrecificacaoResultado(req: Request, res: Response): Pro
         codigopai: i.codigopai,
         descricaopai: i.descricaopai,
         idcomponente: i.idcomponente,
+        idFamiliaProduto:
+          i.idFamiliaProduto ??
+          (typeof i.idcomponente === 'number' ? mapaFamiliaExtra.get(i.idcomponente) ?? null : null),
         codigocomponente: i.codigocomponente,
         componente: i.componente,
         qtd: i.qtd,
+        tipoMaterial: (typeof i.idcomponente === 'number' ? mapaTipoMaterial.get(i.idcomponente) : null) ?? null,
         valorUnitario: i.valorUnitario ?? null,
         valorTotal: i.valorTotal ?? null,
       })),
@@ -774,20 +1118,122 @@ export async function salvarPrecificacaoValores(req: Request, res: Response): Pr
     const v = body[key];
     if (v !== undefined && v !== null) valores[key] = String(v).trim();
   }
+
+  let ticketCrmId: number | null | undefined = undefined;
+  if (Object.prototype.hasOwnProperty.call(body, 'ticketCrmId')) {
+    const raw = body.ticketCrmId;
+    if (raw === null || raw === '' || raw === undefined) {
+      ticketCrmId = null;
+    } else {
+      const n = parseInt(String(raw), 10);
+      ticketCrmId = Number.isFinite(n) && n >= 1 ? n : null;
+    }
+  }
+
   try {
     const precificacao = await prisma.precificacao.findUnique({ where: { id } });
     if (!precificacao) {
       res.status(404).json({ error: 'Precificação não encontrada' });
       return;
     }
+    const data: { valoresCampos: string; ticketCrmId?: number | null } = {
+      valoresCampos: JSON.stringify(valores),
+    };
+    if (ticketCrmId !== undefined) {
+      data.ticketCrmId = ticketCrmId;
+    }
     await prisma.precificacao.update({
       where: { id },
-      data: { valoresCampos: JSON.stringify(valores) },
+      data,
     });
     res.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[engenhariaController] salvarPrecificacaoValores:', msg);
+    res.status(503).json({ error: msg });
+  }
+}
+
+/**
+ * PATCH /api/engenharia/precificacao/:id/item/:itemId/valor-unitario
+ * Atualiza o valor unitário de um item da precificação e recalcula valor total.
+ * Body: { valorUnitario: number | null }
+ */
+export async function atualizarValorUnitarioItemPrecificacao(req: Request, res: Response): Promise<void> {
+  const id = parseInt(String(req.params.id), 10);
+  const itemId = parseInt(String(req.params.itemId), 10);
+  if (Number.isNaN(id) || id < 1 || Number.isNaN(itemId) || itemId < 1) {
+    res.status(400).json({ error: 'IDs inválidos' });
+    return;
+  }
+
+  const valorRaw = (req.body as { valorUnitario?: unknown } | undefined)?.valorUnitario;
+  let valorUnitario: number | null = null;
+  if (valorRaw !== null && valorRaw !== undefined && String(valorRaw).trim() !== '') {
+    const parsed = Number(valorRaw);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      res.status(400).json({ error: 'valorUnitario inválido' });
+      return;
+    }
+    valorUnitario = Math.round(parsed * 100000) / 100000;
+  }
+
+  try {
+    const item = await prisma.precificacaoItem.findFirst({
+      where: { id: itemId, precificacaoId: id },
+      select: { id: true, qtd: true },
+    });
+    if (!item) {
+      res.status(404).json({ error: 'Item da precificação não encontrado' });
+      return;
+    }
+
+    const valorTotal = valorUnitario != null ? Math.round(item.qtd * valorUnitario * 100) / 100 : null;
+    const atualizado = await prisma.precificacaoItem.update({
+      where: { id: itemId },
+      data: { valorUnitario, valorTotal },
+      select: { id: true, valorUnitario: true, valorTotal: true },
+    });
+
+    res.json({
+      ok: true,
+      item: {
+        id: atualizado.id,
+        valorUnitario: atualizado.valorUnitario,
+        valorTotal: atualizado.valorTotal,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[engenhariaController] atualizarValorUnitarioItemPrecificacao:', msg);
+    res.status(503).json({ error: msg });
+  }
+}
+
+/**
+ * DELETE /api/engenharia/precificacao/:id/item/:itemId
+ * Remove um insumo (linha) da composição da precificação.
+ */
+export async function excluirItemPrecificacao(req: Request, res: Response): Promise<void> {
+  const id = parseInt(String(req.params.id), 10);
+  const itemId = parseInt(String(req.params.itemId), 10);
+  if (Number.isNaN(id) || id < 1 || Number.isNaN(itemId) || itemId < 1) {
+    res.status(400).json({ error: 'IDs inválidos' });
+    return;
+  }
+
+  try {
+    const del = await prisma.precificacaoItem.deleteMany({
+      where: { id: itemId, precificacaoId: id },
+    });
+    if (del.count === 0) {
+      res.status(404).json({ error: 'Item da precificação não encontrado' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[engenhariaController] excluirItemPrecificacao:', msg);
     res.status(503).json({ error: msg });
   }
 }

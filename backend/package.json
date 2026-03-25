@@ -19,7 +19,8 @@
     "fix:datas-ajuste": "tsx scripts/normalizar-datas-pedido-previsao-ajuste.ts",
     "limpar-coletas-precos": "tsx scripts/limpar-coletas-precos.ts",
     "coleta-teste-72h": "tsx scripts/coleta-teste-72h.ts",
-    "coleta-desfazer-teste-72h": "tsx scripts/coleta-desfazer-teste-72h.ts"
+    "coleta-desfazer-teste-72h": "tsx scripts/coleta-desfazer-teste-72h.ts",
+    "import:psa-ncm-icms": "tsx scripts/import-psa-ncm-icms.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

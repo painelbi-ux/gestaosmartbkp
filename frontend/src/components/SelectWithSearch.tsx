@@ -100,7 +100,7 @@ export default function SelectWithSearch({
               className="w-full rounded-md bg-slate-100 dark:bg-slate-600 border border-slate-300 dark:border-slate-500 text-slate-800 dark:text-slate-100 px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
             />
           </div>
-          <div className="overflow-y-auto py-1" style={{ maxHeight }}>
+          <div className="overflow-y-auto py-1" style={{ maxHeight: maxListHeight }}>
             {filteredOptions.length === 0 ? (
               <p className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Nenhum resultado</p>
             ) : (

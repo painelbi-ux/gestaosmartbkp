@@ -6,6 +6,7 @@ export const criarUsuarioSchema = z.object({
   nome: z.string().max(100).optional(),
   grupoId: z.number().int().positive().optional().nullable(),
   ativo: z.boolean().optional().default(true),
+  isCommercialTeam: z.boolean().optional().default(false),
   permissoes: z.array(z.string()).optional().default([]),
   /** Foto do usuário (data URL base64 ou URL). Opcional; máx. 500KB em base64. */
   fotoUrl: z.string().max(700000).optional().nullable(),
@@ -19,6 +20,7 @@ export const atualizarUsuarioSchema = z.object({
   /** Se `null`, remove do grupo. Se `undefined`, não altera. */
   grupoId: z.number().int().positive().optional().nullable(),
   ativo: z.boolean().optional(),
+  isCommercialTeam: z.boolean().optional(),
   permissoes: z.array(z.string()).optional(),
   /** Se `null`, remove a foto. Se `undefined`, não altera. */
   fotoUrl: z.string().max(700000).optional().nullable(),

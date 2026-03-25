@@ -21,6 +21,10 @@ export interface SycroOrderOrder {
   }>;
   /** TAG de disponibilidade (Comunicação PD) */
   tag_disponivel?: boolean;
+  /** Último comentário pede retorno de outro participante. */
+  aguarda_resposta_pendente?: boolean;
+  /** Nomes exibidos em “Aguarda resposta de …”. */
+  aguarda_resposta_de_label?: string | null;
   status: 'PENDING' | 'FINISHED' | 'ESCALATED';
   is_urgent: number;
   created_by: number | null;
@@ -115,6 +119,8 @@ export async function createSycroOrderOrder(body: {
   id_pedidos?: string[];
   /** Opcional: um usuário com permissão de atualizar card. */
   responsible_user_id?: number;
+  /** Obrigatório se houver comentário inicial: se o card aguarda retorno. */
+  aguarda_resposta?: boolean;
 }): Promise<{ id: number }> {
   return apiJson<{ id: number }>('/api/sycroorder/orders', {
     method: 'POST',
@@ -139,9 +145,22 @@ export async function updateSycroOrderOrder(
     replicate_carrada?: boolean;
     /** Atualiza TAG de disponibilidade (DISPONÍVEL / NÃO DISPONÍVEL). */
     tag_disponivel?: boolean;
+    /** Obrigatório com comentário: false = respondido; true = aguarda retorno. */
+    aguarda_resposta?: boolean;
   }
 ): Promise<{ success: boolean }> {
   return apiJson<{ success: boolean }>(`/api/sycroorder/orders/${id}`, {
+    method: 'PATCH',
+    body,
+  });
+}
+
+/** Altera somente o segundo responsável do card. */
+export async function setSycroOrderResponsible(
+  orderId: number,
+  body: { responsible_user_id: number }
+): Promise<{ success: boolean }> {
+  return apiJson<{ success: boolean }>(`/api/sycroorder/orders/${orderId}/responsavel`, {
     method: 'PATCH',
     body,
   });

@@ -50,6 +50,11 @@ export const PERMISSOES = {
   COMUNICACAO_NOVO_PEDIDO: 'comunicacao.novo_pedido',
   COMUNICACAO_HISTORICO_VER: 'comunicacao.historico.ver',
   COMUNICACAO_ATUALIZAR_CARD: 'comunicacao.atualizar_card',
+  COMUNICACAO_EDITAR_RESPONSAVEL_CARD: 'comunicacao.editar_responsavel_card',
+  COMUNICACAO_TAG_CONTROLAR: 'comunicacao.tag.controlar',
+  COMUNICACAO_TAG_VISUALIZAR: 'comunicacao.tag.visualizar',
+  /** Aparece no @ do autocomplete de comentários (Comunicação PD). */
+  COMUNICACAO_COMENTARIOS_PERMITIR_MENCAO: 'comunicacao.comentarios.permitir_mencao',
   COMUNICACAO_TOTAL: 'comunicacao.total',
 
   // Permissão legado (mantida para compatibilidade)
@@ -104,6 +109,10 @@ export const TODAS_PERMISSOES: CodigoPermissao[] = [
   PERMISSOES.COMUNICACAO_NOVO_PEDIDO,
   PERMISSOES.COMUNICACAO_HISTORICO_VER,
   PERMISSOES.COMUNICACAO_ATUALIZAR_CARD,
+  PERMISSOES.COMUNICACAO_EDITAR_RESPONSAVEL_CARD,
+  PERMISSOES.COMUNICACAO_TAG_CONTROLAR,
+  PERMISSOES.COMUNICACAO_TAG_VISUALIZAR,
+  PERMISSOES.COMUNICACAO_COMENTARIOS_PERMITIR_MENCAO,
   PERMISSOES.COMUNICACAO_TOTAL,
 
   // legado
@@ -158,6 +167,10 @@ export const LABELS_PERMISSOES: Record<CodigoPermissao, string> = {
   [PERMISSOES.COMUNICACAO_NOVO_PEDIDO]: 'Adicionar novo pedido (novo card)',
   [PERMISSOES.COMUNICACAO_HISTORICO_VER]: 'Ver histórico',
   [PERMISSOES.COMUNICACAO_ATUALIZAR_CARD]: 'Atualizar card',
+  [PERMISSOES.COMUNICACAO_EDITAR_RESPONSAVEL_CARD]: 'Editar responsável pelo card',
+  [PERMISSOES.COMUNICACAO_TAG_CONTROLAR]: 'Permitir habilitar card como disponível/indisponível',
+  [PERMISSOES.COMUNICACAO_TAG_VISUALIZAR]: 'Permitir visualizar card como disponível/indisponível',
+  [PERMISSOES.COMUNICACAO_COMENTARIOS_PERMITIR_MENCAO]: 'Permite ser marcado nos comentários',
   [PERMISSOES.COMUNICACAO_TOTAL]: 'Permissão total',
 
   // legado

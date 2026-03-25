@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   getSycroOrderOrders,
   getSycroOrderPedidosErp,
@@ -10,6 +10,7 @@ import {
   markSycroOrderNotificationsRead,
   setSycroOrderNotificationRead,
   setSycroOrderRead,
+  setSycroOrderResponsible,
   setSycroOrderTagDisponivel,
   searchSycroOrderUsers,
   type SycroOrderOrder as Order,
@@ -22,6 +23,7 @@ import { listarPedidos } from '../../api/pedidos';
 import SingleSelectWithSearch, { type OptionItem } from '../../components/SingleSelectWithSearch';
 import ModalGerenciarMotivos from '../../components/ModalGerenciarMotivos';
 import { useAuth } from '../../contexts/AuthContext';
+import { PERMISSOES } from '../../config/permissoes';
 
 function formatDate(iso: string): string {
   try {
@@ -143,6 +145,109 @@ function isExcludedSqlRotaCategory(dm: string): boolean {
   return EXCLUDED_SQL_ROTA_CATEGORIES.has(normalizeRotaNameStr(dm));
 }
 
+/** Rota / forma de entrega = "Inserir em romaneio" (Gerenciador). */
+function isInserirEmRomaneio(rotaOuForma?: string | null): boolean {
+  return normalizeRotaNameStr(rotaOuForma ?? '') === 'inserir em romaneio';
+}
+
+/** Card em coluna Carradas: alguma rota tipo "Rota …" ou inserir em romaneio (forma ou linha em carradas_info). */
+function orderTemCarradaOuRomaneio(o: Order): boolean {
+  if (isInserirEmRomaneio(o.delivery_method)) return true;
+  if (isCarradaRota(o.delivery_method)) return true;
+  for (const c of o.carradas_info ?? []) {
+    if (isCarradaRota(c.rota)) return true;
+    if (isInserirEmRomaneio(c.rota)) return true;
+  }
+  return false;
+}
+
+type KanbanLaneId = 'ABERTO' | 'CARRADAS_ANDAMENTO' | 'GTER_ANDAMENTO' | 'DISPONIVEL' | 'FATURADO';
+
+function kanbanLaneIdForOrder(o: Order): KanbanLaneId {
+  if (o.status === 'FINISHED') return 'FATURADO';
+  if (o.tag_disponivel) return 'DISPONIVEL';
+  if (o.status === 'PENDING') return 'ABERTO';
+  if (orderTemCarradaOuRomaneio(o)) return 'CARRADAS_ANDAMENTO';
+  return 'GTER_ANDAMENTO';
+}
+
+function normalizePersonToken(s: string): string {
+  return s.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+}
+
+/** "Aguarda resposta de …" no card refere-se ao usuário logado (nome ou login no rótulo). */
+function aguardaRespostaApontaParaUsuario(
+  o: Pick<Order, 'aguarda_resposta_pendente' | 'aguarda_resposta_de_label'>,
+  login: string | null | undefined,
+  nome: string | null | undefined
+): boolean {
+  if (!login || !o.aguarda_resposta_pendente) return false;
+  const labelRaw = (o.aguarda_resposta_de_label ?? '').trim();
+  if (!labelRaw) return false;
+  const lLogin = normalizePersonToken(login);
+  const lNome = normalizePersonToken(nome ?? '');
+  const labelNorm = normalizePersonToken(labelRaw);
+  if (lNome && (labelNorm === lNome || labelNorm.includes(lNome))) return true;
+  if (lLogin && (labelNorm === lLogin || labelNorm.includes(lLogin))) return true;
+  for (const seg of labelRaw.split(',')) {
+    const t = normalizePersonToken(seg);
+    if (lNome && t === lNome) return true;
+    if (lLogin && t === lLogin) return true;
+  }
+  return false;
+}
+
+function isEntregaHojeOuAmanha(o: Pick<Order, 'previsao_atual' | 'current_promised_date'>): boolean {
+  const d = getDaysUntilEffectivePrevisao(o);
+  return d != null && d <= 1;
+}
+
+function isCardNaoRespondido(o: Pick<Order, 'aguarda_resposta_pendente'>): boolean {
+  return !!o.aguarda_resposta_pendente;
+}
+
+/** 1 = aguarda sua resposta; 2 = não respondido + entrega hoje/amanhã (e não é tier 1); 3 = demais. */
+function sortTierForKanbanUser(o: Order, login: string | null, nome: string | null): 1 | 2 | 3 {
+  if (login && aguardaRespostaApontaParaUsuario(o, login, nome)) return 1;
+  if (isCardNaoRespondido(o) && isEntregaHojeOuAmanha(o)) return 2;
+  return 3;
+}
+
+function lastActivityTimeMs(o: Order): number {
+  return new Date(o.last_response_at || o.created_at).getTime();
+}
+
+function horasDesdeUltimaAtividade(o: Order): number {
+  return (Date.now() - lastActivityTimeMs(o)) / (60 * 60 * 1000);
+}
+
+/** Ordenação por coluna do Kanban, personalizada pelo usuário logado. */
+function compareOrdersKanbanForLoggedUser(a: Order, b: Order, login: string | null, nome: string | null): number {
+  if (!login) {
+    return lastActivityTimeMs(b) - lastActivityTimeMs(a);
+  }
+  const ta = sortTierForKanbanUser(a, login, nome);
+  const tb = sortTierForKanbanUser(b, login, nome);
+  if (ta !== tb) return ta - tb;
+  if (ta === 1) {
+    return lastActivityTimeMs(a) - lastActivityTimeMs(b);
+  }
+  if (ta === 2) {
+    const da = getDaysUntilEffectivePrevisao(a);
+    const db = getDaysUntilEffectivePrevisao(b);
+    if (da != null && db != null && da !== db) return da - db;
+    if (da == null && db != null) return 1;
+    if (da != null && db == null) return -1;
+    return lastActivityTimeMs(b) - lastActivityTimeMs(a);
+  }
+  const da = getDaysUntilEffectivePrevisao(a);
+  const db = getDaysUntilEffectivePrevisao(b);
+  if (da != null && db != null && da !== db) return da - db;
+  if (da == null && db != null) return 1;
+  if (da != null && db == null) return -1;
+  return lastActivityTimeMs(b) - lastActivityTimeMs(a);
+}
+
 function rotaFromPedidoRow(row: Record<string, unknown>): string {
   return String(row['Observacoes'] ?? row['Observações'] ?? row['Rota'] ?? row['rota'] ?? '').trim();
 }
@@ -171,15 +276,29 @@ function formatDateTime(iso: string): string {
   }
 }
 
-/** Faixas do Kanban: status do backend e cor do cabeçalho */
-const KANBAN_LANES: { status: Order['status']; label: string; headerClass: string }[] = [
-  { status: 'PENDING', label: 'Aberto', headerClass: 'bg-red-500 text-white border-red-600 dark:bg-red-600 dark:border-red-700' },
-  { status: 'ESCALATED', label: 'Em andamento', headerClass: 'bg-amber-400 text-slate-900 border-amber-500 dark:bg-amber-500 dark:text-slate-900 dark:border-amber-600' },
-  { status: 'FINISHED', label: 'Faturado/Entregue', headerClass: 'bg-green-500 text-white border-green-600 dark:bg-green-600 dark:border-green-700' },
+/** Faixas do Kanban (lógica em `kanbanLaneIdForOrder`; backend mantém PENDING / ESCALATED / FINISHED). */
+const KANBAN_LANES: { id: KanbanLaneId; label: string; headerClass: string }[] = [
+  { id: 'ABERTO', label: 'Aberto', headerClass: 'bg-red-500 text-white border-red-600 dark:bg-red-600 dark:border-red-700' },
+  {
+    id: 'CARRADAS_ANDAMENTO',
+    label: 'Carradas - Em andamento',
+    headerClass: 'bg-amber-400 text-slate-900 border-amber-500 dark:bg-amber-500 dark:text-slate-900 dark:border-amber-600',
+  },
+  {
+    id: 'GTER_ANDAMENTO',
+    label: 'G. The e Retiradas - Em andamento',
+    headerClass: 'bg-violet-500 text-white border-violet-600 dark:bg-violet-600 dark:border-violet-700',
+  },
+  {
+    id: 'DISPONIVEL',
+    label: 'Disponível',
+    headerClass: 'bg-emerald-600 text-white border-emerald-700 dark:bg-emerald-700 dark:border-emerald-800',
+  },
+  { id: 'FATURADO', label: 'Faturado/Entregue', headerClass: 'bg-green-500 text-white border-green-600 dark:bg-green-600 dark:border-green-700' },
 ];
 
 export default function SycroOrderPage() {
-  const { login, grupo } = useAuth();
+  const { login, nome, grupo, hasPermission } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalNovo, setModalNovo] = useState(false);
@@ -195,6 +314,10 @@ export default function SycroOrderPage() {
   const [notifications, setNotifications] = useState<SycroOrderNotification[]>([]);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [modalEditarResponsavel, setModalEditarResponsavel] = useState<Order | null>(null);
+  const [usersResponsavel, setUsersResponsavel] = useState<Array<{ id: number; login: string; nome: string | null }>>([]);
+  const [loadingUsersResp, setLoadingUsersResp] = useState(false);
+  const [savingResponsible, setSavingResponsible] = useState(false);
   const [filtros, setFiltros] = useState<{
     pedido: string[];
     criadoPor: string[];
@@ -211,6 +334,7 @@ export default function SycroOrderPage() {
     formaEntrega: string;
     responsavel: string;
   }>({ pedido: '', criadoPor: '', ultimaRespostaPor: '', formaEntrega: '', responsavel: '' });
+  const [filtroMinhaFila, setFiltroMinhaFila] = useState(false);
 
   const carregar = useCallback(async () => {
     setLoading(true);
@@ -234,6 +358,25 @@ export default function SycroOrderPage() {
       .then(setNotifications)
       .catch(() => setNotifications([]));
   }, []);
+
+  useEffect(() => {
+    if (!modalEditarResponsavel) return;
+    let cancelled = false;
+    setLoadingUsersResp(true);
+    getSycroOrderUsersResponsavel()
+      .then((list) => {
+        if (!cancelled) setUsersResponsavel(list);
+      })
+      .catch(() => {
+        if (!cancelled) setUsersResponsavel([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingUsersResp(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modalEditarResponsavel]);
 
   useEffect(() => {
     const handler = () => {
@@ -268,6 +411,9 @@ export default function SycroOrderPage() {
   const filteredBySearch = orders;
 
   const filtered = filteredBySearch.filter((o) => {
+    if (filtroMinhaFila) {
+      if (!login || !aguardaRespostaApontaParaUsuario(o, login, nome)) return false;
+    }
     if (filtros.pedido.length > 0 && !filtros.pedido.includes(o.order_number)) return false;
     const criador = (o.creator_name ?? '').trim() || '—';
     if (filtros.criadoPor.length > 0 && !filtros.criadoPor.includes(criador)) return false;
@@ -289,14 +435,20 @@ export default function SycroOrderPage() {
     return true;
   });
 
-  /** Pedidos por faixa: no topo os mais recentes (criados ou atualizados) */
-  const ordersByLane = (status: Order['status']) => {
-    const lane = filtered.filter((o) => o.status === status);
-    return [...lane].sort((a, b) => {
-      const aAt = a.last_response_at || a.created_at;
-      const bAt = b.last_response_at || b.created_at;
-      return new Date(bAt).getTime() - new Date(aAt).getTime();
-    });
+  const minhaFilaResumo = useMemo(() => {
+    if (!login) return { total: 0, entregaHojeAmanha: 0, mais24h: 0 };
+    const pendentesMim = orders.filter((o) => aguardaRespostaApontaParaUsuario(o, login, nome));
+    return {
+      total: pendentesMim.length,
+      entregaHojeAmanha: pendentesMim.filter((o) => isEntregaHojeOuAmanha(o)).length,
+      mais24h: pendentesMim.filter((o) => horasDesdeUltimaAtividade(o) >= 24).length,
+    };
+  }, [orders, login, nome]);
+
+  /** Pedidos por faixa: ordenação personalizada por usuário (tiers + previsão). */
+  const ordersByLane = (laneId: KanbanLaneId) => {
+    const lane = filtered.filter((o) => kanbanLaneIdForOrder(o) === laneId);
+    return [...lane].sort((a, b) => compareOrdersKanbanForLoggedUser(a, b, login, nome));
   };
 
 
@@ -346,6 +498,68 @@ export default function SycroOrderPage() {
         </div>
       </div>
 
+      {login && (
+        <div
+          className={`rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-4 cursor-pointer select-none transition shadow-md ${
+            filtroMinhaFila
+              ? 'border-primary-500/70 bg-slate-900 ring-2 ring-primary-500/50 dark:bg-slate-950'
+              : 'border-slate-700/90 bg-slate-900 hover:border-slate-600 dark:bg-slate-950/95'
+          }`}
+          onClick={() => setFiltroMinhaFila((f) => !f)}
+        >
+          <div className="flex flex-wrap items-center gap-4 min-w-0">
+            <p className="text-sm font-bold text-slate-100 tracking-wide shrink-0">
+              MINHA FILA <span className="font-normal text-slate-500">|</span>{' '}
+              <span className="font-semibold text-slate-200">{nome?.trim() || login}</span>
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <div className="flex items-center gap-2 rounded-lg border-2 border-sky-500/80 bg-slate-800/80 px-3 py-2 min-w-[10rem]">
+                <span className="text-2xl font-bold text-sky-400 tabular-nums">{minhaFilaResumo.total}</span>
+                <span className="text-xs text-slate-300 leading-tight">Aguardando sua resposta</span>
+              </div>
+              <div className="flex items-center gap-2 rounded-lg border-2 border-red-500/80 bg-slate-800/80 px-3 py-2 min-w-[10rem]">
+                <span className="text-2xl font-bold text-red-400 tabular-nums">{minhaFilaResumo.entregaHojeAmanha}</span>
+                <span className="text-xs text-slate-300 leading-tight inline-flex items-center gap-1">
+                  Entrega hoje ou amanhã
+                  <svg className="text-amber-400 shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                    <path d="M12 3L2 20h20L12 3zm0 4.5L17.5 18h-11L12 7.5z" />
+                  </svg>
+                </span>
+              </div>
+              <div className="flex items-center gap-2 rounded-lg border-2 border-amber-500/80 bg-slate-800/80 px-3 py-2 min-w-[10rem]">
+                <span className="text-2xl font-bold text-amber-400 tabular-nums">{minhaFilaResumo.mais24h}</span>
+                <span className="text-xs text-slate-300 leading-tight inline-flex items-center gap-1">
+                  +24h sem resposta sua
+                  <svg className="text-violet-400 shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 7v5l3 2" />
+                  </svg>
+                </span>
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setFiltroMinhaFila((f) => !f);
+            }}
+            className="inline-flex items-center gap-2 shrink-0 px-4 py-2.5 rounded-lg text-sm font-medium text-white bg-gradient-to-r from-sky-600 to-violet-600 hover:from-sky-500 hover:to-violet-500 shadow-lg border border-white/10"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+            {filtroMinhaFila ? 'Ver todos' : 'Ver apenas os meus'}
+          </button>
+        </div>
+      )}
+      {filtroMinhaFila && login && (
+        <p className="text-xs text-sky-700 dark:text-sky-400 -mt-2">
+          Filtro ativo: apenas cards em que a capa indica aguardar resposta de você.
+        </p>
+      )}
+
       {toast && (
         <div className="rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 px-4 py-2 text-sm text-green-800 dark:text-green-200">
           {toast}
@@ -383,6 +597,7 @@ export default function SycroOrderPage() {
         });
         const opResponsavelFiltrado = filterBySearch(buscaFiltro.responsavel, opResponsavel);
         const temFiltro =
+          filtroMinhaFila ||
           filtros.pedido.length > 0 ||
           filtros.criadoPor.length > 0 ||
           filtros.ultimaRespostaPor.length > 0 ||
@@ -563,7 +778,8 @@ export default function SycroOrderPage() {
               {temFiltro && (
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    setFiltroMinhaFila(false);
                     setFiltros({
                       pedido: [],
                       criadoPor: [],
@@ -572,8 +788,8 @@ export default function SycroOrderPage() {
                       responsavel: [],
                       entrega7d: 'todos',
                       leitura: 'todos',
-                    })
-                  }
+                    });
+                  }}
                   className="text-sm text-primary-600 dark:text-primary-400 hover:underline self-center"
                 >
                   Limpar filtros
@@ -598,31 +814,35 @@ export default function SycroOrderPage() {
               }
               .sycro-card-unread { animation: sycro-blink-red 1.2s ease-in-out infinite; }
             `}</style>
-            <div className="flex gap-4 p-4 min-h-[420px] w-full">
-              {KANBAN_LANES.map(({ status, label, headerClass }) => (
+            <div className="flex gap-4 p-4 min-h-[420px] w-full overflow-x-auto">
+              {KANBAN_LANES.map(({ id, label, headerClass }) => (
                 <div
-                  key={status}
-                  data-lane={status}
-                  className="flex-1 min-w-0 flex flex-col rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50"
+                  key={id}
+                  data-lane={id}
+                  className="flex-none w-[min(100%,17.5rem)] sm:flex-1 sm:min-w-0 flex flex-col rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50"
                 >
-                  <div className={`px-3 py-2 border-b rounded-t-xl flex items-center justify-between ${headerClass}`}>
-                    <span className="font-medium">{label}</span>
-                    <span className="text-xs opacity-90 bg-black/10 dark:bg-white/20 px-2 py-0.5 rounded">
-                      {ordersByLane(status).length}
+                  <div className={`px-3 py-2 border-b rounded-t-xl flex items-center justify-between gap-2 ${headerClass}`}>
+                    <span className="font-medium text-sm leading-tight">{label}</span>
+                    <span className="text-xs opacity-90 bg-black/10 dark:bg-white/20 px-2 py-0.5 rounded shrink-0">
+                      {ordersByLane(id).length}
                     </span>
                   </div>
                   <div className="p-2 space-y-2 min-h-[320px] overflow-y-auto max-h-[calc(100vh - 280px)] flex-1">
-                    {ordersByLane(status).map((o) => {
+                    {ordersByLane(id).map((o) => {
                       const entregaLabel = entregaProximityLabel(o);
                       const unread = !o.read_by_me && o.status !== 'FINISHED';
-                      const loginNorm = (login ?? '').toLowerCase();
-                      const grupoNorm = (grupo ?? '').toLowerCase();
-                      const isAdminGrupo = grupoNorm === 'admin' || grupoNorm === 'administrador';
-                      const isControlTagUser = isAdminGrupo || loginNorm === 'josenildo' || loginNorm === 'viniciusrodrigues';
-                      const farolUsers = ['wellingtonsousa', 'francelino', 'marcosamorim', 'gilvania'];
-                      const isFarolUser = farolUsers.includes(loginNorm);
+                      const isControlTagUser =
+                        hasPermission(PERMISSOES.COMUNICACAO_TAG_CONTROLAR) ||
+                        hasPermission(PERMISSOES.COMUNICACAO_TOTAL);
+                      const canEditResponsible =
+                        hasPermission(PERMISSOES.COMUNICACAO_EDITAR_RESPONSAVEL_CARD) ||
+                        hasPermission(PERMISSOES.COMUNICACAO_TOTAL);
+                      const canViewTag =
+                        hasPermission(PERMISSOES.COMUNICACAO_TAG_VISUALIZAR) ||
+                        hasPermission(PERMISSOES.COMUNICACAO_TOTAL) ||
+                        isControlTagUser;
                       const tagDesejado = !!o.tag_disponivel;
-                      const showTag = isControlTagUser || (isFarolUser && tagDesejado);
+                      const showTag = canViewTag && (isControlTagUser || tagDesejado);
                       const tagDisabled = o.status === 'FINISHED';
                       return (
                         <div
@@ -633,7 +853,7 @@ export default function SycroOrderPage() {
                         >
                           <div className="p-3">
                             <div className="flex items-start justify-between gap-2">
-                              <div className="flex items-start gap-1.5 min-w-0">
+                              <div className="flex items-start gap-1.5 min-w-0 flex-1">
                                 <span
                                   title={o.read_by_me ? 'Lido' : 'Não lido'}
                                   className={`flex-shrink-0 w-2.5 h-2.5 rounded-full ${o.read_by_me ? 'bg-emerald-500' : 'bg-amber-500'}`}
@@ -649,15 +869,12 @@ export default function SycroOrderPage() {
                                   </p>
                                 </div>
                               </div>
-                              <div className="flex flex-wrap gap-1 justify-end">
+                              <div className="flex flex-wrap gap-1 justify-end items-start shrink-0">
                                 {entregaLabel && o.status !== 'FINISHED' && (
                                   <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200 flex-shrink-0">
                                     {entregaLabel}
                                   </span>
                                 )}
-                                <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-primary-100 dark:bg-primary-900/50 text-primary-800 dark:text-primary-200 flex-shrink-0">
-                                  {formatResponsavelLine(o.delivery_method, o.responsible_user_login)}
-                                </span>
                                 {o.is_urgent ? (
                                   <>
                                     <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 flex-shrink-0">Urgente</span>
@@ -704,6 +921,24 @@ export default function SycroOrderPage() {
                                 )}
                               </div>
                             )}
+                            <p
+                              className={`text-xs mt-1.5 font-medium ${
+                                o.aguarda_resposta_pendente
+                                  ? 'text-amber-700 dark:text-amber-300'
+                                  : 'text-emerald-700 dark:text-emerald-300'
+                              }`}
+                            >
+                              {o.aguarda_resposta_pendente ? (
+                                <>
+                                  Aguarda resposta de{' '}
+                                  <span className="text-slate-800 dark:text-slate-200">
+                                    {(o.aguarda_resposta_de_label ?? '').trim() || '—'}
+                                  </span>
+                                </>
+                              ) : (
+                                'Respondido'
+                              )}
+                            </p>
                             {o.carradas_info && o.carradas_info.length > 1 ? (
                               <div className="mt-1 space-y-0.5">
                                 {o.carradas_info.map((c) => (
@@ -717,6 +952,24 @@ export default function SycroOrderPage() {
                             ) : (
                               <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">{o.delivery_method}</p>
                             )}
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <p className="text-xs text-slate-500 dark:text-slate-500 break-words min-w-0">
+                                {formatResponsavelLine(o.delivery_method, o.responsible_user_login)}
+                              </p>
+                              {canEditResponsible && o.status !== 'FINISHED' && (
+                                <button
+                                  type="button"
+                                  title="Editar segundo responsável"
+                                  onClick={() => setModalEditarResponsavel(o)}
+                                  className="inline-flex items-center justify-center p-0.5 rounded text-slate-500 hover:text-primary-600 dark:text-slate-400 dark:hover:text-primary-400"
+                                >
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                    <path d="M12 20h9" />
+                                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
                             <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">Data original: {formatDate(o.data_original ?? o.current_promised_date)}</p>
                             {(!o.carradas_info || o.carradas_info.length <= 1) && (
                               <p className="text-xs text-slate-500 dark:text-slate-500">Previsão atual: {formatDate(o.previsao_atual ?? o.current_promised_date)}</p>
@@ -909,6 +1162,31 @@ export default function SycroOrderPage() {
         </div>
       )}
 
+      {modalEditarResponsavel && (
+        <ModalEditarResponsavel
+          order={modalEditarResponsavel}
+          users={usersResponsavel}
+          loadingUsers={loadingUsersResp}
+          saving={savingResponsible}
+          onClose={() => setModalEditarResponsavel(null)}
+          onSubmit={async (userId) => {
+            setSavingResponsible(true);
+            try {
+              await setSycroOrderResponsible(modalEditarResponsavel.id, { responsible_user_id: userId });
+              setModalEditarResponsavel(null);
+              await carregar();
+              setToast('Segundo responsável atualizado.');
+              setTimeout(() => setToast(null), 3000);
+            } catch (err) {
+              setToast(err instanceof Error ? err.message : 'Erro ao atualizar responsável.');
+              setTimeout(() => setToast(null), 3500);
+            } finally {
+              setSavingResponsible(false);
+            }
+          }}
+        />
+      )}
+
       {/* Modal Notificações */}
       {modalNotif && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setModalNotif(false)}>
@@ -1016,6 +1294,49 @@ export default function SycroOrderPage() {
   );
 }
 
+/** Três posições: esquerda = não (respondido), meio = indefinido (obrigatório escolher ao salvar com comentário), direita = sim. */
+type AguardaRespostaTri = 'unset' | 'nao' | 'sim';
+
+function AguardaRespostaCommentToggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: AguardaRespostaTri;
+  onChange: (v: AguardaRespostaTri) => void;
+  disabled?: boolean;
+}) {
+  const seg = (key: AguardaRespostaTri, label: string) => (
+    <button
+      key={key}
+      type="button"
+      disabled={disabled}
+      onClick={() => onChange(key)}
+      className={`px-2.5 py-1 rounded-md transition text-[11px] font-medium min-w-[2.75rem] ${
+        value === key
+          ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm ring-1 ring-slate-200/80 dark:ring-slate-600'
+          : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+      }`}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
+      <span className="shrink-0">Aguarda resposta</span>
+      <div
+        className="inline-flex rounded-lg border border-slate-300 dark:border-slate-600 p-0.5 bg-slate-100/90 dark:bg-slate-900/70"
+        role="group"
+        aria-label="Aguarda resposta ao comentário"
+      >
+        {seg('nao', 'Não')}
+        {seg('unset', '—')}
+        {seg('sim', 'Sim')}
+      </div>
+    </div>
+  );
+}
+
 function ModalNovoPedido({
   onClose,
   onSuccess,
@@ -1027,6 +1348,10 @@ function ModalNovoPedido({
   saving: boolean;
   setSaving: (v: boolean) => void;
 }) {
+  const { isCommercialTeam, login, hasPermission } = useAuth();
+  const canEditResponsible =
+    hasPermission(PERMISSOES.COMUNICACAO_EDITAR_RESPONSAVEL_CARD) ||
+    hasPermission(PERMISSOES.COMUNICACAO_TOTAL);
   const [pedidosErpList, setPedidosErpList] = useState<SycroOrderPedidoErp[]>([]);
   const [pedidosErpOptions, setPedidosErpOptions] = useState<OptionItem[]>([]);
   const [selectedPedido, setSelectedPedido] = useState<OptionItem | null>(null);
@@ -1045,6 +1370,9 @@ function ModalNovoPedido({
   const [loadingUsersResp, setLoadingUsersResp] = useState(false);
   /** Um único usuário opcional com permissão de atualizar card. */
   const [responsibleUserId, setResponsibleUserId] = useState<number | ''>('');
+  const [aguardaRespostaTri, setAguardaRespostaTri] = useState<AguardaRespostaTri>('unset');
+  /** Só fecha pelo overlay se o pressionar começou no backdrop (evita fechar ao soltar após redimensionar o modal). */
+  const pointerStartedOnBackdropNovo = useRef(false);
 
   const selectedPedidoFull = selectedPedido ? pedidosErpList.find((p) => p.id === selectedPedido.id) : null;
 
@@ -1056,6 +1384,11 @@ function ModalNovoPedido({
 
   useEffect(() => {
     let cancelled = false;
+    if (isCommercialTeam) {
+      setUsersResponsavel([]);
+      setLoadingUsersResp(false);
+      return;
+    }
     setLoadingUsersResp(true);
     getSycroOrderUsersResponsavel()
       .then((list) => {
@@ -1070,7 +1403,7 @@ function ModalNovoPedido({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isCommercialTeam]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1234,6 +1567,20 @@ function ModalNovoPedido({
       setErro('Selecione ao menos um item do pedido.');
       return;
     }
+    if (!isCommercialTeam) {
+      if (!canEditResponsible) {
+        setErro('Seu perfil não possui permissão para editar responsável pelo card.');
+        return;
+      }
+      if (responsibleUserId === '') {
+        setErro('Para este perfil, o responsável adicional é obrigatório e deve pertencer ao Time comercial.');
+        return;
+      }
+    }
+    if (observation.trim() && aguardaRespostaTri === 'unset') {
+      setErro('Indique se aguarda resposta (Não ou Sim).');
+      return;
+    }
     setSaving(true);
     try {
       const dataOriginal = selectedPedidoFull?.dataOriginalEntrega;
@@ -1244,7 +1591,8 @@ function ModalNovoPedido({
         promised_date: promisedDate,
         observation: observation.trim() || undefined,
         id_pedidos: [...selectedIdPedidos],
-        responsible_user_id: responsibleUserId === '' ? undefined : responsibleUserId,
+        responsible_user_id: isCommercialTeam ? undefined : (responsibleUserId === '' ? undefined : responsibleUserId),
+        aguarda_resposta: observation.trim() ? aguardaRespostaTri === 'sim' : undefined,
       });
       onSuccess();
     } catch (err) {
@@ -1255,9 +1603,22 @@ function ModalNovoPedido({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
-      <div className="relative bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <form onSubmit={submit} className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+      onPointerDown={(e) => {
+        pointerStartedOnBackdropNovo.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && pointerStartedOnBackdropNovo.current) onClose();
+        pointerStartedOnBackdropNovo.current = false;
+      }}
+    >
+      <div
+        className="relative bg-white dark:bg-slate-800 rounded-xl shadow-xl w-full min-w-[min(100%,280px)] max-w-[min(96vw,48rem)] min-h-[200px] max-h-[90vh] resize overflow-auto"
+        title="Arraste o canto inferior direito para redimensionar"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <form onSubmit={submit} className="p-4 space-y-4">
           <h3 className="font-semibold text-slate-800 dark:text-slate-200">Novo Card</h3>
           {erro && <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>}
           <div>
@@ -1321,44 +1682,52 @@ function ModalNovoPedido({
               <p className="mt-1.5 text-sm text-primary-600 dark:text-primary-400 font-medium">
                 {formatResponsavelLine(
                   delivery_method,
-                  responsibleUserId === ''
-                    ? null
-                    : usersResponsavel.find((u) => u.id === responsibleUserId)?.login ?? null
+                  isCommercialTeam
+                    ? (login ?? null)
+                    : responsibleUserId === ''
+                      ? null
+                      : usersResponsavel.find((u) => u.id === responsibleUserId)?.login ?? null
                 )}
               </p>
             ) : null}
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Responsável adicional por responder (opcional)
-              </label>
-              <HelpTooltipIcon text="A lista do responsável adicional mostra apenas usuários com permissão para visualizar a Comunicação PD. Não substitui a regra josenildo / PCP; será exibido junto na capa do card." />
+          {!isCommercialTeam && (
+            <div>
+              <div className="flex items-center gap-2">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Responsável adicional por responder (obrigatório)
+                </label>
+                <HelpTooltipIcon text="Selecione o segundo responsável do card. A lista traz apenas usuários do Time comercial com acesso à Comunicação PD." />
+              </div>
+              {loadingUsersResp ? (
+                <p className="text-sm text-slate-500 dark:text-slate-400 py-2">Carregando usuários...</p>
+              ) : (
+                <select
+                  value={responsibleUserId === '' ? '' : String(responsibleUserId)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setResponsibleUserId(v === '' ? '' : parseInt(v, 10));
+                  }}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-sm"
+                  required
+                >
+                  <option value="">Selecione...</option>
+                  {usersResponsavelSorted.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.login}
+                      {u.nome ? ` — ${u.nome}` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
-            {loadingUsersResp ? (
-              <p className="text-sm text-slate-500 dark:text-slate-400 py-2">Carregando usuários...</p>
-            ) : (
-              <select
-                value={responsibleUserId === '' ? '' : String(responsibleUserId)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setResponsibleUserId(v === '' ? '' : parseInt(v, 10));
-                }}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-sm"
-              >
-                <option value="">Nenhum</option>
-                {usersResponsavelSorted.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.login}
-                    {u.nome ? ` — ${u.nome}` : ''}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Comentários</label>
             <textarea value={observation} onChange={(e) => setObservation(e.target.value)} rows={2} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
+            <div className="mt-2">
+              <AguardaRespostaCommentToggle value={aguardaRespostaTri} onChange={setAguardaRespostaTri} disabled={saving} />
+            </div>
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -1501,6 +1870,86 @@ interface ItemPedido {
   qtde?: number;
 }
 
+function ModalEditarResponsavel({
+  order,
+  users,
+  loadingUsers,
+  saving,
+  onClose,
+  onSubmit,
+}: {
+  order: Order;
+  users: Array<{ id: number; login: string; nome: string | null }>;
+  loadingUsers: boolean;
+  saving: boolean;
+  onClose: () => void;
+  onSubmit: (userId: number) => Promise<void>;
+}) {
+  const [selectedUserId, setSelectedUserId] = useState<number | ''>(order.responsible_user_id ?? '');
+  const [erro, setErro] = useState<string | null>(null);
+  const pointerStartedOnBackdropResp = useRef(false);
+  const usersSorted = [...users].sort((a, b) => String(a.login ?? '').localeCompare(String(b.login ?? ''), 'pt-BR'));
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErro(null);
+    if (selectedUserId === '' || !Number.isFinite(selectedUserId)) {
+      setErro('Selecione o segundo responsável.');
+      return;
+    }
+    await onSubmit(selectedUserId);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+      onPointerDown={(e) => {
+        pointerStartedOnBackdropResp.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && pointerStartedOnBackdropResp.current) onClose();
+        pointerStartedOnBackdropResp.current = false;
+      }}
+    >
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-md w-full p-4" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-semibold text-slate-800 dark:text-slate-200">Editar segundo responsável — {order.order_number}</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          Apenas o segundo responsável pode ser alterado. O responsável primário (regra da forma de entrega) permanece inalterado.
+        </p>
+        <form onSubmit={handleSubmit} className="mt-4 space-y-3">
+          {erro && <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>}
+          {loadingUsers ? (
+            <p className="text-sm text-slate-500 dark:text-slate-400 py-2">Carregando usuários...</p>
+          ) : (
+            <select
+              value={selectedUserId === '' ? '' : String(selectedUserId)}
+              onChange={(e) => setSelectedUserId(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-sm"
+              required
+            >
+              <option value="">Selecione...</option>
+              {usersSorted.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.login}
+                  {u.nome ? ` — ${u.nome}` : ''}
+                </option>
+              ))}
+            </select>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm">
+              Cancelar
+            </button>
+            <button type="submit" disabled={saving || loadingUsers} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50">
+              {saving ? 'Salvando...' : 'Salvar'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ModalAtualizarPedido({
   order,
   tagDisponivelToSet,
@@ -1529,6 +1978,7 @@ function ModalAtualizarPedido({
   const [mentionCandidates, setMentionCandidates] = useState<Array<{ login: string; nome: string | null }>>([]);
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionLoading, setMentionLoading] = useState(false);
+  const [aguardaRespostaTri, setAguardaRespostaTri] = useState<AguardaRespostaTri>('unset');
   const [erro, setErro] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1557,6 +2007,10 @@ function ModalAtualizarPedido({
     };
   }, [mentionQuery, mentionOpen, isCommentOnlyUser]);
 
+  useEffect(() => {
+    setAguardaRespostaTri('unset');
+  }, [order.id]);
+
   const [dialogStep, setDialogStep] = useState<DialogStep>(null);
   const [carradaCheckLoading, setCarradaCheckLoading] = useState(false);
   const [carradaConfirmRota, setCarradaConfirmRota] = useState('');
@@ -1571,6 +2025,7 @@ function ModalAtualizarPedido({
   const [observacaoItens, setObservacaoItens] = useState('');
   const [observacaoSim, setObservacaoSim] = useState('');
   const [abrirGerenciarMotivos, setAbrirGerenciarMotivos] = useState(false);
+  const pointerStartedOnBackdropAtualizar = useRef(false);
 
   const novaDataPreenchida = new_date.trim() !== '';
   const dataAlterada =
@@ -1587,6 +2042,10 @@ function ModalAtualizarPedido({
   const handleSalvarClick = async (e: React.FormEvent) => {
     e.preventDefault();
     setErro(null);
+    if (observation.trim() && aguardaRespostaTri === 'unset') {
+      setErro('Indique se aguarda resposta (Não ou Sim).');
+      return;
+    }
     if (isCommentOnlyUser) {
       if (!observation.trim()) {
         setErro('Comentário é obrigatório.');
@@ -1661,12 +2120,18 @@ function ModalAtualizarPedido({
     observacao?: string;
     replicate_carrada?: boolean;
   }) => {
+    const coment = observation.trim();
+    if (coment && aguardaRespostaTri === 'unset') {
+      setErro('Indique se aguarda resposta (Não ou Sim).');
+      return;
+    }
     setSaving(true);
     try {
       await updateSycroOrderOrder(order.id, {
         ...(isCommentOnlyUser ? {} : (querInformarNovaData === 'sim' ? { new_date: new_date.trim() || undefined } : {})),
         ...(tagDisponivelToSet === undefined || tagDisponivelToSet === null ? {} : { tag_disponivel: tagDisponivelToSet }),
-        comentario: observation.trim() || undefined,
+        comentario: coment || undefined,
+        aguarda_resposta: coment ? aguardaRespostaTri === 'sim' : undefined,
         observacao: payload?.observacao?.trim() || undefined,
         motivo: payload?.motivo?.trim() || undefined,
         id_pedidos: payload?.replicate_carrada ? undefined : payload?.id_pedidos?.length ? payload.id_pedidos : undefined,
@@ -1762,10 +2227,23 @@ function ModalAtualizarPedido({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+      onPointerDown={(e) => {
+        pointerStartedOnBackdropAtualizar.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && pointerStartedOnBackdropAtualizar.current) onClose();
+        pointerStartedOnBackdropAtualizar.current = false;
+      }}
+    >
+      <div
+        className="bg-white dark:bg-slate-800 rounded-xl shadow-xl w-full min-w-[min(100%,280px)] max-w-[min(96vw,48rem)] min-h-[200px] max-h-[90vh] resize overflow-auto"
+        title="Arraste o canto inferior direito para redimensionar"
+        onClick={(e) => e.stopPropagation()}
+      >
         {dialogStep === null && (
-          <form onSubmit={handleSalvarClick} className="p-4 space-y-4 overflow-y-auto">
+          <form onSubmit={handleSalvarClick} className="p-4 space-y-4">
             <h3 className="font-semibold text-slate-800 dark:text-slate-200">Atualizar — {order.order_number}</h3>
             {erro && <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>}
             {!isCommentOnlyUser && (
@@ -1862,6 +2340,9 @@ function ModalAtualizarPedido({
                     Buscando...
                   </div>
                 )}
+              </div>
+              <div className="mt-2">
+                <AguardaRespostaCommentToggle value={aguardaRespostaTri} onChange={setAguardaRespostaTri} disabled={saving} />
               </div>
             </div>
             <div className="flex justify-end gap-2 pt-2">
