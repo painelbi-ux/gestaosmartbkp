@@ -197,6 +197,17 @@ function aguardaRespostaApontaParaUsuario(
   return false;
 }
 
+/** Card em que o usuário tem vínculo direto: aguarda resposta dele, criador (por nome) ou segundo responsável (login). */
+function cardVerMeuEnvolvimento(o: Order, login: string | null, nome: string | null): boolean {
+  if (!login) return false;
+  if (aguardaRespostaApontaParaUsuario(o, login, nome)) return true;
+  const ru = (o.responsible_user_login ?? '').trim().toLowerCase();
+  if (ru && ru === login.trim().toLowerCase()) return true;
+  const cn = (o.creator_name ?? '').trim();
+  if (nome?.trim() && cn && normalizePersonToken(cn) === normalizePersonToken(nome)) return true;
+  return false;
+}
+
 function isEntregaHojeOuAmanha(o: Pick<Order, 'previsao_atual' | 'current_promised_date'>): boolean {
   const d = getDaysUntilEffectivePrevisao(o);
   return d != null && d <= 1;
@@ -297,6 +308,13 @@ const KANBAN_LANES: { id: KanbanLaneId; label: string; headerClass: string }[] =
   { id: 'FATURADO', label: 'Faturado/Entregue', headerClass: 'bg-green-500 text-white border-green-600 dark:bg-green-600 dark:border-green-700' },
 ];
 
+/** Filtro rápido da barra MINHA FILA (um por vez; clique de novo limpa). */
+type FiltroRapidoMinhaFila = 'aguardando' | 'entrega_hoje_amanha' | 'mais_24h' | 'ver_meus';
+
+function alternarFiltroRapido(atual: FiltroRapidoMinhaFila | null, chave: FiltroRapidoMinhaFila): FiltroRapidoMinhaFila | null {
+  return atual === chave ? null : chave;
+}
+
 export default function SycroOrderPage() {
   const { login, nome, grupo, hasPermission } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
@@ -334,7 +352,7 @@ export default function SycroOrderPage() {
     formaEntrega: string;
     responsavel: string;
   }>({ pedido: '', criadoPor: '', ultimaRespostaPor: '', formaEntrega: '', responsavel: '' });
-  const [filtroMinhaFila, setFiltroMinhaFila] = useState(false);
+  const [filtroRapidoMinhaFila, setFiltroRapidoMinhaFila] = useState<FiltroRapidoMinhaFila | null>(null);
 
   const carregar = useCallback(async () => {
     setLoading(true);
@@ -411,8 +429,17 @@ export default function SycroOrderPage() {
   const filteredBySearch = orders;
 
   const filtered = filteredBySearch.filter((o) => {
-    if (filtroMinhaFila) {
-      if (!login || !aguardaRespostaApontaParaUsuario(o, login, nome)) return false;
+    if (filtroRapidoMinhaFila && login) {
+      const aguardaMim = aguardaRespostaApontaParaUsuario(o, login, nome);
+      if (filtroRapidoMinhaFila === 'aguardando') {
+        if (!aguardaMim) return false;
+      } else if (filtroRapidoMinhaFila === 'entrega_hoje_amanha') {
+        if (!aguardaMim || !isEntregaHojeOuAmanha(o)) return false;
+      } else if (filtroRapidoMinhaFila === 'mais_24h') {
+        if (!aguardaMim || horasDesdeUltimaAtividade(o) < 24) return false;
+      } else if (filtroRapidoMinhaFila === 'ver_meus') {
+        if (!cardVerMeuEnvolvimento(o, login, nome)) return false;
+      }
     }
     if (filtros.pedido.length > 0 && !filtros.pedido.includes(o.order_number)) return false;
     const criador = (o.creator_name ?? '').trim() || '—';
@@ -462,6 +489,40 @@ export default function SycroOrderPage() {
     }
   };
 
+  const abrirHistoricoPorNotificacao = async (n: SycroOrderNotification) => {
+    if (!n.order_id) {
+      setToast('Esta notificação não está vinculada a um pedido.');
+      setTimeout(() => setToast(null), 3000);
+      return;
+    }
+    let order: Order | undefined = orders.find((o) => o.id === n.order_id);
+    if (!order) {
+      try {
+        const list = await getSycroOrderOrders();
+        order = list.find((o) => o.id === n.order_id);
+      } catch {
+        order = undefined;
+      }
+    }
+    if (!order) {
+      setToast('Pedido não encontrado na lista. Verifique os filtros ou atualize a página.');
+      setTimeout(() => setToast(null), 4000);
+      return;
+    }
+    setModalNotif(false);
+    await abrirHistorico(order);
+    setSycroOrderRead(order.id, true).then(() => carregar()).catch(() => {});
+  };
+
+  const abrirAtualizarDoHistorico = () => {
+    const o = modalHistorico;
+    if (!o || o.can_respond === false) return;
+    setModalHistorico(null);
+    setModalEditarTagDisponivel(null);
+    setModalEditar(o);
+    setSycroOrderRead(o.id, true).then(() => carregar()).catch(() => {});
+  };
+
   const marcarLidas = async () => {
     try {
       await markSycroOrderNotificationsRead();
@@ -500,12 +561,11 @@ export default function SycroOrderPage() {
 
       {login && (
         <div
-          className={`rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-4 cursor-pointer select-none transition shadow-md ${
-            filtroMinhaFila
+          className={`rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-4 transition shadow-md ${
+            filtroRapidoMinhaFila
               ? 'border-primary-500/70 bg-slate-900 ring-2 ring-primary-500/50 dark:bg-slate-950'
-              : 'border-slate-700/90 bg-slate-900 hover:border-slate-600 dark:bg-slate-950/95'
+              : 'border-slate-700/90 bg-slate-900 dark:bg-slate-950/95'
           }`}
-          onClick={() => setFiltroMinhaFila((f) => !f)}
         >
           <div className="flex flex-wrap items-center gap-4 min-w-0">
             <p className="text-sm font-bold text-slate-100 tracking-wide shrink-0">
@@ -513,11 +573,29 @@ export default function SycroOrderPage() {
               <span className="font-semibold text-slate-200">{nome?.trim() || login}</span>
             </p>
             <div className="flex flex-wrap gap-3">
-              <div className="flex items-center gap-2 rounded-lg border-2 border-sky-500/80 bg-slate-800/80 px-3 py-2 min-w-[10rem]">
+              <button
+                type="button"
+                onClick={() => setFiltroRapidoMinhaFila((c) => alternarFiltroRapido(c, 'aguardando'))}
+                aria-pressed={filtroRapidoMinhaFila === 'aguardando'}
+                className={`flex items-center gap-2 rounded-lg border-2 px-3 py-2 min-w-[10rem] text-left transition bg-slate-800/80 ${
+                  filtroRapidoMinhaFila === 'aguardando'
+                    ? 'border-sky-300 ring-2 ring-sky-400/50 shadow-md'
+                    : 'border-sky-500/80 hover:bg-slate-700/80'
+                }`}
+              >
                 <span className="text-2xl font-bold text-sky-400 tabular-nums">{minhaFilaResumo.total}</span>
                 <span className="text-xs text-slate-300 leading-tight">Aguardando sua resposta</span>
-              </div>
-              <div className="flex items-center gap-2 rounded-lg border-2 border-red-500/80 bg-slate-800/80 px-3 py-2 min-w-[10rem]">
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltroRapidoMinhaFila((c) => alternarFiltroRapido(c, 'entrega_hoje_amanha'))}
+                aria-pressed={filtroRapidoMinhaFila === 'entrega_hoje_amanha'}
+                className={`flex items-center gap-2 rounded-lg border-2 px-3 py-2 min-w-[10rem] text-left transition bg-slate-800/80 ${
+                  filtroRapidoMinhaFila === 'entrega_hoje_amanha'
+                    ? 'border-red-300 ring-2 ring-red-400/50 shadow-md'
+                    : 'border-red-500/80 hover:bg-slate-700/80'
+                }`}
+              >
                 <span className="text-2xl font-bold text-red-400 tabular-nums">{minhaFilaResumo.entregaHojeAmanha}</span>
                 <span className="text-xs text-slate-300 leading-tight inline-flex items-center gap-1">
                   Entrega hoje ou amanhã
@@ -525,8 +603,17 @@ export default function SycroOrderPage() {
                     <path d="M12 3L2 20h20L12 3zm0 4.5L17.5 18h-11L12 7.5z" />
                   </svg>
                 </span>
-              </div>
-              <div className="flex items-center gap-2 rounded-lg border-2 border-amber-500/80 bg-slate-800/80 px-3 py-2 min-w-[10rem]">
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltroRapidoMinhaFila((c) => alternarFiltroRapido(c, 'mais_24h'))}
+                aria-pressed={filtroRapidoMinhaFila === 'mais_24h'}
+                className={`flex items-center gap-2 rounded-lg border-2 px-3 py-2 min-w-[10rem] text-left transition bg-slate-800/80 ${
+                  filtroRapidoMinhaFila === 'mais_24h'
+                    ? 'border-amber-300 ring-2 ring-amber-400/50 shadow-md'
+                    : 'border-amber-500/80 hover:bg-slate-700/80'
+                }`}
+              >
                 <span className="text-2xl font-bold text-amber-400 tabular-nums">{minhaFilaResumo.mais24h}</span>
                 <span className="text-xs text-slate-300 leading-tight inline-flex items-center gap-1">
                   +24h sem resposta sua
@@ -535,28 +622,37 @@ export default function SycroOrderPage() {
                     <path d="M12 7v5l3 2" />
                   </svg>
                 </span>
-              </div>
+              </button>
             </div>
           </div>
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setFiltroMinhaFila((f) => !f);
-            }}
-            className="inline-flex items-center gap-2 shrink-0 px-4 py-2.5 rounded-lg text-sm font-medium text-white bg-gradient-to-r from-sky-600 to-violet-600 hover:from-sky-500 hover:to-violet-500 shadow-lg border border-white/10"
+            onClick={() => setFiltroRapidoMinhaFila((c) => alternarFiltroRapido(c, 'ver_meus'))}
+            aria-pressed={filtroRapidoMinhaFila === 'ver_meus'}
+            className={`inline-flex items-center gap-2 shrink-0 px-4 py-2.5 rounded-lg text-sm font-medium text-white shadow-lg border transition ${
+              filtroRapidoMinhaFila === 'ver_meus'
+                ? 'bg-gradient-to-r from-violet-500 to-fuchsia-600 ring-2 ring-violet-300/60 border-white/20'
+                : 'bg-gradient-to-r from-sky-600 to-violet-600 hover:from-sky-500 hover:to-violet-500 border-white/10'
+            }`}
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <circle cx="11" cy="11" r="8" />
               <path d="m21 21-4.3-4.3" />
             </svg>
-            {filtroMinhaFila ? 'Ver todos' : 'Ver apenas os meus'}
+            Ver apenas os meus
           </button>
         </div>
       )}
-      {filtroMinhaFila && login && (
+      {filtroRapidoMinhaFila && login && (
         <p className="text-xs text-sky-700 dark:text-sky-400 -mt-2">
-          Filtro ativo: apenas cards em que a capa indica aguardar resposta de você.
+          {filtroRapidoMinhaFila === 'aguardando' &&
+            'Filtro: capa indica aguardar resposta de você.'}
+          {filtroRapidoMinhaFila === 'entrega_hoje_amanha' &&
+            'Filtro: entre os que aguardam você, entrega hoje ou amanhã.'}
+          {filtroRapidoMinhaFila === 'mais_24h' &&
+            'Filtro: aguardam você e sem sua resposta há mais de 24 h (desde a última movimentação no card).'}
+          {filtroRapidoMinhaFila === 'ver_meus' &&
+            'Filtro: você é criador (nome), segundo responsável ou a capa aguarda sua resposta.'}
         </p>
       )}
 
@@ -597,7 +693,7 @@ export default function SycroOrderPage() {
         });
         const opResponsavelFiltrado = filterBySearch(buscaFiltro.responsavel, opResponsavel);
         const temFiltro =
-          filtroMinhaFila ||
+          filtroRapidoMinhaFila != null ||
           filtros.pedido.length > 0 ||
           filtros.criadoPor.length > 0 ||
           filtros.ultimaRespostaPor.length > 0 ||
@@ -779,7 +875,7 @@ export default function SycroOrderPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    setFiltroMinhaFila(false);
+                    setFiltroRapidoMinhaFila(null);
                     setFiltros({
                       pedido: [],
                       criadoPor: [],
@@ -1063,18 +1159,31 @@ export default function SycroOrderPage() {
             className="rounded-xl shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-600 shrink-0">
-              <h2 id="modal-historico-title" className="text-lg font-semibold text-slate-800 dark:text-slate-100">
+            <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-slate-200 dark:border-slate-600 shrink-0">
+              <h2 id="modal-historico-title" className="text-lg font-semibold text-slate-800 dark:text-slate-100 truncate min-w-0 flex-1">
                 Histórico — {modalHistorico.order_number}
               </h2>
-              <button
-                type="button"
-                onClick={() => setModalHistorico(null)}
-                className="rounded-lg p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition"
-                aria-label="Fechar"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {modalHistorico.can_respond !== false ? (
+                  <button
+                    type="button"
+                    onClick={abrirAtualizarDoHistorico}
+                    className="rounded-lg px-3 py-1.5 text-sm font-medium text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/30 transition"
+                  >
+                    Atualizar
+                  </button>
+                ) : (
+                  <span className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">Apenas visualização</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setModalHistorico(null)}
+                  className="rounded-lg p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition"
+                  aria-label="Fechar"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                </button>
+              </div>
             </div>
             <div className="px-6 py-4 overflow-y-auto flex-1 min-h-0">
               {history.length === 0 ? (
@@ -1088,24 +1197,60 @@ export default function SycroOrderPage() {
                     const isCreate = h.action_type === 'CREATE';
                     const isUpdate = h.action_type === 'UPDATE';
                     const dateChanged = !!(h.previous_date && h.new_date && h.previous_date !== h.new_date);
-                    return (
-                      <li key={h.id} className="relative pl-4 pb-1 border-l-2 border-primary-500 dark:border-primary-400 last:pb-0">
-                        <span className="font-medium text-slate-800 dark:text-slate-200">
-                          {h.action_type === 'AUTO_ATENDIDO'
-                            ? 'Atendido automaticamente'
+                    const motivoStr = h.motivo != null && String(h.motivo).trim() !== '' ? String(h.motivo).trim() : '';
+                    const obsStr = h.observation != null && String(h.observation).trim() !== '' ? String(h.observation).trim() : '';
+                    const actionLabel =
+                      h.action_type === 'AUTO_ATENDIDO'
+                        ? 'Atendido automaticamente'
+                        : h.action_type === 'CREATE'
+                          ? 'CARD CRIADO'
+                          : h.action_type === 'UPDATE'
+                            ? 'NOVA INFORMAÇÃO'
                             : h.action_type === 'AJUSTE_PREVISAO'
                               ? 'Ajuste de previsão'
                               : h.action_type === 'TAG_DISPONIVEL_TRUE'
                                 ? 'Tag: DISPONÍVEL'
                                 : h.action_type === 'TAG_DISPONIVEL_FALSE'
                                   ? 'Tag: NÃO DISPONÍVEL'
-                              : h.action_type}
-                        </span>
-                        {h.user_name && <span className="text-slate-600 dark:text-slate-400"> — {h.user_name}</span>}
-                        {h.product_code && (
-                          <span className="text-slate-600 dark:text-slate-400" title={h.product_code === 'Todos os itens' ? 'Alteração aplicada a todos os itens' : 'Códigos dos produtos'}>
-                            · {h.product_code === 'Todos os itens' ? 'Todos os itens' : `Cód. ${h.product_code}`}
-                          </span>
+                                  : h.action_type;
+                    return (
+                      <li
+                        key={h.id}
+                        className={
+                          isCreate
+                            ? 'relative rounded-lg border-l-[5px] border-emerald-500 bg-emerald-50/95 pl-3.5 pr-3 py-3 shadow-sm ring-1 ring-emerald-600/20 last:pb-3 dark:border-emerald-400 dark:bg-emerald-950/50 dark:ring-emerald-400/25'
+                            : 'relative pl-4 pb-1 border-l-2 border-primary-500 dark:border-primary-400 last:pb-0'
+                        }
+                      >
+                        {isCreate ? (
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-600/35 bg-emerald-600/15 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-900 dark:border-emerald-400/40 dark:bg-emerald-500/15 dark:text-emerald-200">
+                              <span className="size-1.5 shrink-0 rounded-full bg-emerald-600 dark:bg-emerald-400" aria-hidden />
+                              CRIAÇÃO DO CARD
+                            </span>
+                            <span className="font-semibold text-slate-800 dark:text-slate-100">
+                              CARD CRIADO
+                              {h.user_name ? <span className="font-semibold text-slate-600 dark:text-slate-300"> — {h.user_name}</span> : null}
+                            </span>
+                            {h.product_code ? (
+                              <span
+                                className="text-sm text-slate-600 dark:text-slate-400"
+                                title={h.product_code === 'Todos os itens' ? 'Alteração aplicada a todos os itens' : 'Códigos dos produtos'}
+                              >
+                                · {h.product_code === 'Todos os itens' ? 'Todos os itens' : `Cód. ${h.product_code}`}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <>
+                            <span className="font-medium text-slate-800 dark:text-slate-200">{actionLabel}</span>
+                            {h.user_name && <span className="text-slate-600 dark:text-slate-400"> — {h.user_name}</span>}
+                            {h.product_code && (
+                              <span className="text-slate-600 dark:text-slate-400" title={h.product_code === 'Todos os itens' ? 'Alteração aplicada a todos os itens' : 'Códigos dos produtos'}>
+                                · {h.product_code === 'Todos os itens' ? 'Todos os itens' : `Cód. ${h.product_code}`}
+                              </span>
+                            )}
+                          </>
                         )}
                         <span className="block text-xs text-slate-500 dark:text-slate-500 mt-0.5">{formatDateTime(h.created_at)}</span>
                         {isCreate ? (
@@ -1151,7 +1296,22 @@ export default function SycroOrderPage() {
                             )
                           )
                         )}
-                        {h.observation && <p className="text-sm text-slate-600 dark:text-slate-400 mt-1.5 leading-relaxed">{h.observation}</p>}
+                        {motivoStr || obsStr ? (
+                          <div className="mt-1.5 space-y-2">
+                            {motivoStr ? (
+                              <div>
+                                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Motivo</span>
+                                <p className="text-sm text-slate-700 dark:text-slate-300 mt-0.5 leading-relaxed">{motivoStr}</p>
+                              </div>
+                            ) : null}
+                            {obsStr ? (
+                              <div>
+                                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Comentário</span>
+                                <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">{obsStr}</p>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </li>
                     );
                   })}
@@ -1253,7 +1413,19 @@ export default function SycroOrderPage() {
                         }`}
                       >
                         <div className="flex items-start justify-between gap-2">
-                          <span>{n.message}</span>
+                          <button
+                            type="button"
+                            disabled={!n.order_id}
+                            title={!n.order_id ? 'Notificação sem pedido vinculado' : 'Abrir histórico do pedido'}
+                            onClick={() => void abrirHistoricoPorNotificacao(n)}
+                            className={`text-left flex-1 min-w-0 rounded-md -m-1 p-1 transition ${
+                              n.order_id
+                                ? 'hover:bg-slate-100/80 dark:hover:bg-slate-700/50 cursor-pointer'
+                                : 'cursor-not-allowed opacity-70'
+                            }`}
+                          >
+                            {n.message}
+                          </button>
                           <button
                             type="button"
                             disabled={notifTogglingId === n.id}
@@ -1370,7 +1542,8 @@ function ModalNovoPedido({
   const [loadingUsersResp, setLoadingUsersResp] = useState(false);
   /** Um único usuário opcional com permissão de atualizar card. */
   const [responsibleUserId, setResponsibleUserId] = useState<number | ''>('');
-  const [aguardaRespostaTri, setAguardaRespostaTri] = useState<AguardaRespostaTri>('unset');
+  // Na criação, o card SEMPRE nasce como "aguarda resposta" (toggle travado em "Sim").
+  const [aguardaRespostaTri, setAguardaRespostaTri] = useState<AguardaRespostaTri>('sim');
   /** Só fecha pelo overlay se o pressionar começou no backdrop (evita fechar ao soltar após redimensionar o modal). */
   const pointerStartedOnBackdropNovo = useRef(false);
 
@@ -1577,10 +1750,6 @@ function ModalNovoPedido({
         return;
       }
     }
-    if (observation.trim() && aguardaRespostaTri === 'unset') {
-      setErro('Indique se aguarda resposta (Não ou Sim).');
-      return;
-    }
     setSaving(true);
     try {
       const dataOriginal = selectedPedidoFull?.dataOriginalEntrega;
@@ -1592,7 +1761,8 @@ function ModalNovoPedido({
         observation: observation.trim() || undefined,
         id_pedidos: [...selectedIdPedidos],
         responsible_user_id: isCommercialTeam ? undefined : (responsibleUserId === '' ? undefined : responsibleUserId),
-        aguarda_resposta: observation.trim() ? aguardaRespostaTri === 'sim' : undefined,
+        // Força o comportamento: na criação, nasce como "aguarda resposta".
+        aguarda_resposta: true,
       });
       onSuccess();
     } catch (err) {
@@ -1726,7 +1896,7 @@ function ModalNovoPedido({
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Comentários</label>
             <textarea value={observation} onChange={(e) => setObservation(e.target.value)} rows={2} className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
             <div className="mt-2">
-              <AguardaRespostaCommentToggle value={aguardaRespostaTri} onChange={setAguardaRespostaTri} disabled={saving} />
+              <AguardaRespostaCommentToggle value={aguardaRespostaTri} onChange={setAguardaRespostaTri} disabled={true} />
             </div>
           </div>
           <div>

@@ -51,6 +51,8 @@ export interface SycroOrderHistoryItem {
   previous_date: string | null;
   new_date: string | null;
   observation: string | null;
+  /** Motivo do ajuste de previsão (Gerenciador), quando aplicável. */
+  motivo?: string | null;
   created_at: string;
   /** Código do produto (Cod), preenchido quando o pedido tem mais de um item para identificar a qual item se refere o ajuste. */
   product_code?: string | null;

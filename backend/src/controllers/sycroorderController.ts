@@ -592,10 +592,8 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
     aguarda_resposta?: boolean;
   };
   const observationTrim = observation != null ? String(observation).trim() : '';
-  if (observationTrim && typeof aguarda_resposta !== 'boolean') {
-    res.status(400).json({ error: 'Com comentário inicial, informe se aguarda resposta (Não ou Sim).' });
-    return;
-  }
+  // Regra: na criação, o card SEMPRE nasce como "Aguarda resposta" (toggle travado na UI).
+  // Por isso, ignoramos o valor de `aguarda_resposta` vindo do front.
   if (!order_number || !delivery_method || !promised_date) {
     res.status(400).json({ error: 'order_number, delivery_method e promised_date são obrigatórios.' });
     return;
@@ -738,15 +736,12 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
       responsibleUserId = rid;
     }
 
-    let aguardaLabelInicial: string | null = null;
-    if (observationTrim && aguarda_resposta === true) {
-      aguardaLabelInicial = await resolveAguardaRespostaDeLabel({
-        delivery_method: String(delivery_method).trim(),
-        created_by,
-        responsible_user_id: responsibleUserId,
-        authorUserId: created_by,
-      });
-    }
+    const aguardaLabelInicial = await resolveAguardaRespostaDeLabel({
+      delivery_method: String(delivery_method).trim(),
+      created_by,
+      responsible_user_id: responsibleUserId,
+      authorUserId: created_by,
+    });
 
     const order = await prisma.$transaction(async (tx) => {
       const created = await tx.sycroOrderOrder.create({
@@ -761,8 +756,8 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
           created_by,
           creator_name,
           responsible_user_id: responsibleUserId,
-          aguarda_resposta_pendente: observationTrim ? (aguarda_resposta === true ? 1 : 0) : 0,
-          aguarda_resposta_de_label: observationTrim && aguarda_resposta === true ? aguardaLabelInicial : null,
+          aguarda_resposta_pendente: 1,
+          aguarda_resposta_de_label: aguardaLabelInicial,
         },
       });
 
@@ -1318,9 +1313,18 @@ export async function setOrderRead(req: Request, res: Response): Promise<void> {
 }
 
 /** Chave para deduplicar entradas do histórico (evita exibir o mesmo evento várias vezes). */
-function historyDedupKey(h: { action_type: string; user_name: string | null; created_at: Date; previous_date: string | null; new_date: string | null; observation: string | null; product_code?: string | null }): string {
+function historyDedupKey(h: {
+  action_type: string;
+  user_name: string | null;
+  created_at: Date;
+  previous_date: string | null;
+  new_date: string | null;
+  observation: string | null;
+  motivo?: string | null;
+  product_code?: string | null;
+}): string {
   const created = h.created_at instanceof Date ? h.created_at.getTime() : new Date(h.created_at).getTime();
-  return [h.action_type, h.user_name ?? '', created, h.previous_date ?? '', h.new_date ?? '', h.observation ?? '', h.product_code ?? ''].join('\0');
+  return [h.action_type, h.user_name ?? '', created, h.previous_date ?? '', h.new_date ?? '', h.motivo ?? '', h.observation ?? '', h.product_code ?? ''].join('\0');
 }
 
 /** GET /api/sycroorder/orders/:id/history — histórico unificado (Sycro + gestão de pedidos). */
@@ -1354,7 +1358,9 @@ export async function getOrderHistory(req: Request, res: Response): Promise<void
       action_type: string;
       previous_date: string | null;
       new_date: string | null;
+      /** Comentário livre (Sycro ou observação do Gerenciador). Motivo de ajuste vem em `motivo`. */
       observation: string | null;
+      motivo?: string | null;
       created_at: Date;
       product_code?: string | null;
     };
@@ -1368,6 +1374,7 @@ export async function getOrderHistory(req: Request, res: Response): Promise<void
       previous_date: h.previous_date,
       new_date: h.new_date,
       observation: h.observation,
+      motivo: null,
       created_at: h.created_at,
     }));
 
@@ -1407,6 +1414,8 @@ export async function getOrderHistory(req: Request, res: Response): Promise<void
               ? prevAjuste.previsao_nova.toISOString().slice(0, 10)
               : String(prevAjuste.previsao_nova ?? '').slice(0, 10)
             : null;
+          const motivoTrim = a.motivo != null && String(a.motivo).trim() !== '' ? String(a.motivo).trim() : null;
+          const observacaoTrim = a.observacao != null && String(a.observacao).trim() !== '' ? String(a.observacao).trim() : null;
           mapped.push({
             id: -a.id,
             order_id: id,
@@ -1415,7 +1424,8 @@ export async function getOrderHistory(req: Request, res: Response): Promise<void
             action_type: 'AJUSTE_PREVISAO',
             previous_date: previousDateStr || null,
             new_date: newDateStr || null,
-            observation: a.observacao ?? a.motivo ?? null,
+            motivo: motivoTrim,
+            observation: observacaoTrim,
             created_at: created,
             product_code: productCode,
           });
@@ -1442,7 +1452,7 @@ export async function getOrderHistory(req: Request, res: Response): Promise<void
     };
     const groupKey = (h: HistoryEntry) => {
       const t = toMinuteKey(h.created_at);
-      return `${t}\0${h.observation ?? ''}\0${h.new_date ?? ''}`;
+      return `${t}\0${h.motivo ?? ''}\0${h.observation ?? ''}\0${h.new_date ?? ''}`;
     };
     const groups = new Map<string, HistoryEntry[]>();
     for (const h of ajusteEntries) {
