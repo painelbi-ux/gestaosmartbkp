@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 import { AuthProvider } from './contexts/AuthContext';
 import Login from './pages/Login';
 import Layout from './components/Layout';
-import DashboardPage from './pages/DashboardPage';
 import PedidosPage from './pages/PedidosPage';
 import RelatoriosPage from './pages/RelatoriosPage';
 import UsuariosPage from './pages/UsuariosPage';
@@ -25,6 +24,8 @@ import ProgramacaoSetorialPainelPage from './pages/pedidos/ProgramacaoSetorialPa
 import ErrorBoundary from './components/ErrorBoundary';
 import { getStoredToken } from './api/client';
 import { checkAuth } from './api/auth';
+import SemAcessoPage from './pages/SemAcessoPage';
+import InicioPage from './pages/InicioPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const [auth, setAuth] = useState<boolean | null>(null);
@@ -64,7 +65,7 @@ export default function App() {
             </ProtectedRoute>
           }
         >
-          <Route index element={<DashboardPage />} />
+          <Route index element={<InicioPage />} />
           <Route path="pedidos" element={<ErrorBoundary><PedidosPage /></ErrorBoundary>} />
           <Route path="pedidos/sycroorder" element={<ErrorBoundary><SycroOrderPage /></ErrorBoundary>} />
           <Route path="pedidos/mrp" element={<ErrorBoundary><MRPPage /></ErrorBoundary>} />
@@ -83,8 +84,10 @@ export default function App() {
           <Route path="integracao/alteracao-data-entrega-compra" element={<AlteracaoDataEntregaCompraPage />} />
           <Route path="integracao/faturamento-diario" element={<FaturamentoDiarioPage />} />
           <Route path="usuarios" element={<UsuariosPage />} />
+          <Route path="usuarios/grupos" element={<UsuariosPage />} />
           <Route path="whatsapp" element={<WhatsAppConnectPage />} />
           <Route path="situacao-api" element={<StatusApiPage />} />
+          <Route path="sem-acesso" element={<SemAcessoPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

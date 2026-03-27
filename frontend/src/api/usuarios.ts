@@ -4,6 +4,8 @@ export interface Usuario {
   id: number;
   login: string;
   nome: string | null;
+  email?: string | null;
+  telefone?: string | null;
   ativo: boolean;
   isCommercialTeam?: boolean;
   permissoes: string[];
@@ -20,11 +22,12 @@ export async function listarUsuarios(): Promise<Usuario[]> {
 export async function criarUsuario(payload: {
   login: string;
   senha: string;
-  nome?: string;
-  grupoId?: number | null;
+  nome: string;
+  email?: string | null;
+  telefone?: string | null;
+  grupoId: number;
   ativo?: boolean;
   isCommercialTeam?: boolean;
-  permissoes?: string[];
   fotoUrl?: string | null;
 }): Promise<Usuario> {
   const res = await apiFetch('/api/usuarios', {
@@ -43,10 +46,11 @@ export async function atualizarUsuario(
   payload: {
     senha?: string;
     nome?: string | null;
+    email?: string | null;
+    telefone?: string | null;
     grupoId?: number | null;
     ativo?: boolean;
     isCommercialTeam?: boolean;
-    permissoes?: string[];
     fotoUrl?: string | null;
   }
 ): Promise<Usuario> {

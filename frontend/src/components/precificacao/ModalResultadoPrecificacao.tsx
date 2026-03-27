@@ -34,6 +34,22 @@ const btnIconGrade =
 const btnIconGradeDanger =
   `${btnIconGrade} text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/25 hover:border-red-300 dark:hover:border-red-800`;
 
+const formatDateBr = (v?: string | null) => {
+  const s = (v ?? '').toString().trim();
+  if (!s) return '—';
+  // Evita deslocamento por fuso quando a origem vem como YYYY-MM-DD/ISO.
+  const mYmd = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (mYmd) return `${mYmd[3]}/${mYmd[2]}/${mYmd[1]}`;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) {
+    return s;
+  }
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = String(d.getFullYear());
+  return `${dd}/${mm}/${yyyy}`;
+};
+
 const SEGMENTOS = {
   Consumíveis: [
     { key: 'sucata', label: 'Sucata' },
@@ -440,13 +456,15 @@ export default function ModalResultadoPrecificacao({
             className="flex-1 min-h-0 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50 overflow-auto"
             style={{ minHeight: '12rem' }}
           >
-              <table className="w-full text-sm text-left min-w-[860px]">
+              <table className="w-full text-sm text-left min-w-[1060px]">
                 <thead className="bg-primary-600 text-white">
                   <tr>
                     <th className="py-3 px-2 font-semibold text-center">Editar</th>
                     <th className="py-3 px-4 font-semibold">#</th>
                     <th className="py-3 px-4 font-semibold">Cód. comp.</th>
                     <th className="py-3 px-4 font-semibold">Componente</th>
+                    <th className="py-3 px-4 font-semibold">UM</th>
+                    <th className="py-3 px-4 font-semibold">Últ. Entrada</th>
                     <th className="py-3 px-4 font-semibold">Qtd</th>
                     <th className="py-3 px-4 font-semibold text-right">Valor Unitário</th>
                     <th className="py-3 px-4 font-semibold text-right">Valor Total</th>
@@ -455,7 +473,7 @@ export default function ModalResultadoPrecificacao({
                 <tbody className="text-slate-700 dark:text-slate-200">
                   {itensExibicao.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="py-12 px-4 text-center">
+                      <td colSpan={9} className="py-12 px-4 text-center">
                         <MensagemSemRegistrosInline />
                       </td>
                     </tr>
@@ -532,6 +550,8 @@ export default function ModalResultadoPrecificacao({
                       <td className="py-3 px-4 font-medium tabular-nums">{idx + 1}</td>
                       <td className="py-3 px-4">{item.codigocomponente ?? '—'}</td>
                       <td className="py-3 px-4">{item.componente ?? '—'}</td>
+                      <td className="py-3 px-4">{item.unidadeMedida?.trim() || '—'}</td>
+                      <td className="py-3 px-4 tabular-nums">{formatDateBr(item.dataEntrada)}</td>
                       <td className="py-3 px-4 tabular-nums">
                         {consumivelMarkup
                           ? '—'

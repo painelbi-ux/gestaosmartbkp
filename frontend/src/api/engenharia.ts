@@ -58,8 +58,11 @@ export interface PrecificacaoItemRow {
   idFamiliaProduto?: number | null;
   codigocomponente: string | null;
   componente: string | null;
+  unidadeMedida?: string | null;
   qtd: number;
   tipoMaterial?: string | null;
+  /** Data (YYYY-MM-DD) da última entrada usada no custo. */
+  dataEntrada?: string | null;
   valorUnitario: number | null;
   valorTotal: number | null;
 }

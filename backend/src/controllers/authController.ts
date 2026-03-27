@@ -48,7 +48,7 @@ export async function login(req: Request, res: Response): Promise<void> {
 
     const { login: loginUser, senha } = parsed.data;
     let usuario:
-      | { id: number; login: string; senhaHash: string; ativo: boolean; grupo?: { ativo: boolean } | null }
+      | { id: number; login: string; senhaHash: string; ativo: boolean; mustChangePassword: boolean; grupo?: { ativo: boolean } | null }
       | null = null;
     try {
       usuario = await prisma.usuario.findUnique({
@@ -58,6 +58,7 @@ export async function login(req: Request, res: Response): Promise<void> {
           login: true,
           senhaHash: true,
           ativo: true,
+          mustChangePassword: true,
           grupo: { select: { ativo: true } },
         },
       });
@@ -111,7 +112,7 @@ export async function login(req: Request, res: Response): Promise<void> {
     }
     const csrfToken = (req as Request & { csrfToken?: string }).csrfToken ?? '';
     if (!res.headersSent) {
-      res.status(200).json({ ok: true, login: usuario.login, csrf_token: csrfToken, token });
+      res.status(200).json({ ok: true, login: usuario.login, csrf_token: csrfToken, token, must_change_password: !!usuario.mustChangePassword });
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

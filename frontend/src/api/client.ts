@@ -48,13 +48,13 @@ export async function apiFetch(
   const headers: HeadersInit = {
     ...((rest.headers as Record<string, string>) ?? {}),
   };
+  const isAuthRoute = path.startsWith('/auth/login') || path.startsWith('/auth/logout');
   // Envia o JWT no header para garantir que a API aceite (evita problema de cookie no proxy)
   const token = getStoredToken();
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (token && !isAuthRoute) headers['Authorization'] = `Bearer ${token}`;
   if (body && method !== 'GET') {
     headers['Content-Type'] = 'application/json';
   }
-  const isAuthRoute = path.startsWith('/auth/login') || path.startsWith('/auth/logout');
   if (method !== 'GET' && !isAuthRoute) {
     const csrf = await getCsrfToken();
     if (csrf) headers['x-csrf-token'] = csrf;

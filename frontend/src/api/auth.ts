@@ -5,6 +5,7 @@ export interface LoginResponse {
   login: string;
   csrf_token: string;
   token?: string;
+  must_change_password?: boolean;
 }
 
 const TOKEN_KEY = 'gestor_token';
@@ -111,6 +112,7 @@ export interface MeResponse {
   nome: string | null;
   grupo: string | null;
   isCommercialTeam?: boolean;
+  mustChangePassword?: boolean;
   permissoes: string[];
 }
 
@@ -118,4 +120,19 @@ export async function getMe(): Promise<MeResponse> {
   const res = await apiFetch('/api/me');
   if (!res.ok) throw new Error('Não autorizado');
   return res.json();
+}
+
+export async function changeMyPassword(payload: {
+  senhaAtual: string;
+  novaSenha: string;
+  confirmarNovaSenha: string;
+}): Promise<void> {
+  const res = await apiFetch('/api/me/change-password', {
+    method: 'POST',
+    body: payload,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erro ao alterar senha.' }));
+    throw new Error((err as { error?: string }).error ?? 'Erro ao alterar senha.');
+  }
 }

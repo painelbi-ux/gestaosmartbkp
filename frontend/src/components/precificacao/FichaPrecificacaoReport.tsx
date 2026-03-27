@@ -27,12 +27,35 @@ export interface FichaPrecificacaoReportData {
 
 function fmtDate(iso?: string): string {
   if (!iso) return '—';
+  const s = String(iso).trim();
+  const mIso = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (mIso) {
+    const ddmmyyyy = `${mIso[3]}/${mIso[2]}/${mIso[1]}`;
+    const hh = mIso[4];
+    const mm = mIso[5];
+    const ss = mIso[6] ?? '00';
+    return hh && mm ? `${ddmmyyyy} ${hh}:${mm}:${ss}` : ddmmyyyy;
+  }
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso;
     return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   } catch {
     return iso;
+  }
+}
+
+function fmtDateOnly(iso?: string | null): string {
+  if (!iso) return '—';
+  const s = String(iso).trim();
+  const mYmd = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (mYmd) return `${mYmd[3]}/${mYmd[2]}/${mYmd[1]}`;
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+    return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  } catch {
+    return String(iso);
   }
 }
 
@@ -62,8 +85,24 @@ const FONT_TITLE = 14;
 const FONT_NORMAL = 10;
 const FONT_SMALL = 8;
 
+async function imageUrlToDataUrl(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result ?? ''));
+      reader.onerror = () => reject(new Error('Falha ao converter imagem'));
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** Gera e faz o download do PDF da Ficha de Precificação (sem abrir nova aba). */
-export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData): void {
+export async function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData): Promise<void> {
   const {
     idPrecificacao,
     codigoProduto,
@@ -82,7 +121,8 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   let y = MARGIN;
   const maxW = PAGE_W - 2 * MARGIN;
-  const COLOR_PRIMARY = [37, 99, 235] as const;
+  const COLOR_PRIMARY = [10, 17, 34] as const;
+  const COLOR_GRID_BG = [13, 29, 65] as const;
   const COLOR_BORDER = [203, 213, 225] as const;
   const COLOR_BG_LIGHT = [248, 250, 252] as const;
   const COLOR_TEXT = [30, 41, 59] as const;
@@ -93,11 +133,64 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
   const totalMateriais = itensAjustados.reduce((s, i) => s + (i.valorTotal ?? 0), 0);
   const now = new Date();
   const dataHoraImpressao = now.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const descLines = doc.splitTextToSize(descricaoProduto || '—', maxW - 6);
+
+  // Logo pequena no canto superior esquerdo.
+  const logoDataUrl = await imageUrlToDataUrl('/logo-soaco.png');
+  if (logoDataUrl) {
+    try {
+      // Dimensão ajustada para reduzir alargamento lateral.
+      doc.addImage(logoDataUrl, 'PNG', MARGIN, y - 1.5, 16, 11);
+    } catch {
+      // Mantém a geração do PDF mesmo se a imagem falhar.
+    }
+  }
+
+  const drawDadosFixosTopo = () => {
+    drawSectionHeader('Dados da precificação');
+    const dadosBodyH = 24.5 + descLines.length * 3.8;
+    drawSectionBody(dadosBodyH);
+    doc.setFontSize(FONT_SMALL);
+    doc.setFont('helvetica', 'normal');
+    let yy = y + 5;
+    doc.text(`Código Precificação: ${idPrecificacao}`, MARGIN + 3, yy);
+    doc.text(`Data Precificação: ${fmtDate(dataPrecificacao)}`, MARGIN + 68, yy);
+    yy += 4.5;
+    doc.text(`Código Produto: ${codigoProduto}`, MARGIN + 3, yy);
+    doc.text(`Usuário: ${usuario || '—'}`, MARGIN + 68, yy);
+    yy += 4.5;
+    doc.text(`NCM: ${ncmCodigo?.trim() ? ncmCodigo.trim() : '—'}`, MARGIN + 3, yy);
+    yy += 4.5;
+    doc.setFont('helvetica', 'bold');
+    doc.text('Produto:', MARGIN + 3, yy);
+    doc.setFont('helvetica', 'normal');
+    yy += 3.8;
+    doc.text(descLines, MARGIN + 3, yy);
+    y += dadosBodyH + 4;
+
+    drawSectionHeader('Dados CRM');
+    const crmBodyH = 19;
+    drawSectionBody(crmBodyH);
+    yy = y + 5;
+    doc.setFontSize(FONT_SMALL);
+    doc.text(`Código CRM: ${codigoCrm}`, MARGIN + 3, yy);
+    doc.text(`Cliente: ${(t?.cliente ?? '—').toString().slice(0, 42)}`, MARGIN + 68, yy);
+    yy += 4.5;
+    doc.text(`Município: ${(t?.municipio ?? '—').toString()}`, MARGIN + 3, yy);
+    doc.text(`UF: ${(t?.UF ?? '—').toString()}`, MARGIN + 68, yy);
+    yy += 4.5;
+    doc.text(`Vendedor/Representante: ${(t?.vendedorrep ?? '—').toString().slice(0, 34)}`, MARGIN + 3, yy);
+    doc.text(`Data Criação CRM: ${t?.datacriacao ? fmtDate(t.datacriacao) : '—'}`, MARGIN + 95, yy);
+    yy += 4.5;
+    doc.text(`Tipo Pessoa: ${(t?.tipopessoa ?? '—').toString()}`, MARGIN + 3, yy);
+    y += crmBodyH + 4;
+  };
 
   const newPageIfNeeded = (need: number) => {
     if (y + need > PAGE_H - MARGIN) {
       doc.addPage();
       y = MARGIN;
+      drawDadosFixosTopo();
     }
   };
 
@@ -131,44 +224,7 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
   doc.setTextColor(...COLOR_TEXT);
   y += LINE_H + 3;
 
-  drawSectionHeader('Dados da precificação');
-  const descLines = doc.splitTextToSize(descricaoProduto || '—', maxW - 6);
-  const dadosBodyH = 24.5 + descLines.length * 3.8;
-  drawSectionBody(dadosBodyH);
-  doc.setFontSize(FONT_SMALL);
-  doc.setFont('helvetica', 'normal');
-  let yy = y + 5;
-  doc.text(`Código Precificação: ${idPrecificacao}`, MARGIN + 3, yy);
-  doc.text(`Data Precificação: ${fmtDate(dataPrecificacao)}`, MARGIN + 68, yy);
-  yy += 4.5;
-  doc.text(`Código Produto: ${codigoProduto}`, MARGIN + 3, yy);
-  doc.text(`Usuário: ${usuario || '—'}`, MARGIN + 68, yy);
-  yy += 4.5;
-  doc.text(`NCM: ${ncmCodigo?.trim() ? ncmCodigo.trim() : '—'}`, MARGIN + 3, yy);
-  yy += 4.5;
-  doc.setFont('helvetica', 'bold');
-  doc.text('Produto:', MARGIN + 3, yy);
-  doc.setFont('helvetica', 'normal');
-  yy += 3.8;
-  doc.text(descLines, MARGIN + 3, yy);
-  y += dadosBodyH + 4;
-
-  drawSectionHeader('Dados CRM');
-  const crmBodyH = 19;
-  drawSectionBody(crmBodyH);
-  yy = y + 5;
-  doc.setFontSize(FONT_SMALL);
-  doc.text(`Código CRM: ${codigoCrm}`, MARGIN + 3, yy);
-  doc.text(`Cliente: ${(t?.cliente ?? '—').toString().slice(0, 42)}`, MARGIN + 68, yy);
-  yy += 4.5;
-  doc.text(`Município: ${(t?.municipio ?? '—').toString()}`, MARGIN + 3, yy);
-  doc.text(`UF: ${(t?.UF ?? '—').toString()}`, MARGIN + 68, yy);
-  yy += 4.5;
-  doc.text(`Vendedor/Representante: ${(t?.vendedorrep ?? '—').toString().slice(0, 34)}`, MARGIN + 3, yy);
-  doc.text(`Data Criação CRM: ${t?.datacriacao ? fmtDate(t.datacriacao) : '—'}`, MARGIN + 95, yy);
-  yy += 4.5;
-  doc.text(`Tipo Pessoa: ${(t?.tipopessoa ?? '—').toString()}`, MARGIN + 3, yy);
-  y += crmBodyH + 4;
+  drawDadosFixosTopo();
 
   drawSectionHeader('Materiais');
   const grupos: Array<{ titulo: 'Matéria Prima' | 'Material Secundário' | 'Embalagem'; itens: PrecificacaoItemRow[] }> = [
@@ -180,27 +236,37 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
     const tipo = normalizarTipoMaterial(item.tipoMaterial);
     grupos.find((g) => g.titulo === tipo)?.itens.push(item);
   }
+  for (const grupo of grupos) {
+    grupo.itens.sort((a, b) => {
+      const aa = (a.componente ?? a.codigocomponente ?? '').toString();
+      const bb = (b.componente ?? b.codigocomponente ?? '').toString();
+      return aa.localeCompare(bb, 'pt-BR', { sensitivity: 'base' });
+    });
+  }
 
-  const colW = [26, 78, 20, 28, 28];
-  const headers = ['Código', 'Componente', 'Qtde', 'Valor Unitário', 'Valor Total'];
+  const colW = [20, 54, 12, 20, 16, 24, 24];
+  const headers = ['Código', 'Componente', 'UM', 'Últ. Ent.', 'Qtde', 'Valor Unitário', 'Valor Total'];
 
   const renderTabelaGrupo = (tituloGrupo: string, itensGrupo: PrecificacaoItemRow[]) => {
     newPageIfNeeded(18);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(FONT_NORMAL);
     doc.text(tituloGrupo, MARGIN, y + 4);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(FONT_SMALL);
+    doc.text(`Itens: ${itensGrupo.length}`, MARGIN + maxW, y + 4, { align: 'right' });
     y += 6;
 
     let x = MARGIN;
     const tableStartY = y;
-    doc.setFillColor(...COLOR_PRIMARY);
+    doc.setFillColor(...COLOR_GRID_BG);
     doc.setDrawColor(...COLOR_BORDER);
     doc.rect(MARGIN, tableStartY, maxW, 8, 'FD');
     doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(FONT_SMALL);
     headers.forEach((h, i) => {
-      const alignRight = i >= 2;
+      const alignRight = i >= 4;
       const tx = alignRight ? x + colW[i] - 2 : x + 2;
       doc.text(h, tx, tableStartY + 5.2, alignRight ? { align: 'right' } : {});
       x += colW[i];
@@ -221,6 +287,11 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(FONT_SMALL);
     const totalGrupo = itensGrupo.reduce((acc, item) => acc + (item.valorTotal ?? 0), 0);
+    const totalQtdGrupo = itensGrupo.reduce((acc, item) => {
+      // Soma da Qtd deve refletir a coluna exibida no PDF (consumíveis especiais aparecem como "—")
+      if (isComponenteConsumivelCalculadoMarkup(item)) return acc;
+      return typeof item.qtd === 'number' && Number.isFinite(item.qtd) ? acc + item.qtd : acc;
+    }, 0);
 
     for (const item of itensGrupo) {
       const compLines = doc.splitTextToSize(item.componente ?? '—', colW[1] - 4);
@@ -236,11 +307,15 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
       x += colW[0];
       doc.text(compLines, x + 2, y + 4.2);
       x += colW[1];
-      doc.text(consumivelMarkup ? '—' : fmtNum(item.qtd), x + colW[2] - 2, y + 4.5, { align: 'right' });
+      doc.text((item.unidadeMedida ?? '').trim() || '—', x + 2, y + 4.5);
       x += colW[2];
-      doc.text(consumivelMarkup ? '—' : fmtCurrency(item.valorUnitario), x + colW[3] - 2, y + 4.5, { align: 'right' });
+      doc.text(fmtDateOnly(item.dataEntrada), x + colW[3] - 2, y + 4.5, { align: 'right' });
       x += colW[3];
-      doc.text(fmtCurrency(item.valorTotal), x + colW[4] - 2, y + 4.5, { align: 'right' });
+      doc.text(consumivelMarkup ? '—' : fmtNum(item.qtd), x + colW[4] - 2, y + 4.5, { align: 'right' });
+      x += colW[4];
+      doc.text(consumivelMarkup ? '—' : fmtCurrency(item.valorUnitario), x + colW[5] - 2, y + 4.5, { align: 'right' });
+      x += colW[5];
+      doc.text(fmtCurrency(item.valorTotal), x + colW[6] - 2, y + 4.5, { align: 'right' });
 
       let vx = MARGIN;
       for (const w of colW.slice(0, -1)) {
@@ -254,7 +329,15 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
     doc.setFillColor(226, 232, 240);
     doc.rect(MARGIN, y, maxW, 7, 'FD');
     doc.setFont('helvetica', 'bold');
-    doc.text(`Total ${tituloGrupo}:`, MARGIN + maxW - colW[4] - 4, y + 4.8, { align: 'right' });
+    if (tituloGrupo === 'Matéria Prima') {
+      const qtdLabelRight = MARGIN + colW[0] + colW[1] + colW[2] + colW[3] - 2;
+      const qtdColRight = MARGIN + colW[0] + colW[1] + colW[2] + colW[3] + colW[4] - 2;
+      doc.text('Total Matéria Prima:', qtdLabelRight, y + 4.8, { align: 'right' });
+      doc.text(fmtNum(totalQtdGrupo), qtdColRight, y + 4.8, { align: 'right' });
+    }
+    if (tituloGrupo !== 'Matéria Prima') {
+      doc.text(`Total ${tituloGrupo}:`, MARGIN + maxW - colW[6] - 4, y + 4.8, { align: 'right' });
+    }
     doc.text(fmtCurrency(totalGrupo), MARGIN + maxW - 2, y + 4.8, { align: 'right' });
     y += 9;
     return totalGrupo;
@@ -270,7 +353,7 @@ export function downloadFichaPrecificacaoPdf(data: FichaPrecificacaoReportData):
   doc.rect(MARGIN, y, maxW, 8, 'FD');
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(FONT_NORMAL);
-  doc.text('Total geral materiais:', MARGIN + maxW - colW[4] - 6, y + 5.5, { align: 'right' });
+  doc.text('Total geral materiais:', MARGIN + maxW - colW[6] - 6, y + 5.5, { align: 'right' });
   doc.text(fmtCurrency(totalMateriais), MARGIN + maxW - 2, y + 5.5, { align: 'right' });
   y += 11;
 

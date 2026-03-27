@@ -8,6 +8,7 @@ interface AuthContextValue {
   nome: string | null;
   grupo: string | null;
   isCommercialTeam: boolean;
+  mustChangePassword: boolean;
   permissoes: string[];
   isMaster: boolean;
   hasPermission: (codigo: CodigoPermissao) => boolean;
@@ -25,22 +26,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [nome, setNome] = useState<string | null>(null);
   const [grupo, setGrupo] = useState<string | null>(null);
   const [isCommercialTeam, setIsCommercialTeam] = useState(false);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
   const [permissoes, setPermissoes] = useState<string[]>([]);
 
   const refreshUser = useCallback(async () => {
-    if (!getStoredToken()) return;
+    if (!getStoredToken()) {
+      // Sem token válido, zera o usuário para evitar "usuario preso" na UI.
+      setLogin(null);
+      setNome(null);
+      setGrupo(null);
+      setIsCommercialTeam(false);
+      setMustChangePassword(false);
+      setPermissoes([]);
+      return;
+    }
     try {
       const me = await getMe();
       setLogin(me.login ?? null);
       setNome(me.nome ?? null);
       setGrupo(me.grupo ?? null);
       setIsCommercialTeam(!!me.isCommercialTeam);
+      setMustChangePassword(!!me.mustChangePassword);
       setPermissoes(me.permissoes ?? []);
     } catch {
       setLogin(null);
       setNome(null);
       setGrupo(null);
       setIsCommercialTeam(false);
+      setMustChangePassword(false);
       setPermissoes([]);
     }
   }, []);
@@ -78,13 +91,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       nome,
       grupo,
       isCommercialTeam,
+      mustChangePassword,
       permissoes,
       isMaster: login === 'master',
       hasPermission,
       setUser,
       refreshUser,
     }),
-    [login, nome, grupo, isCommercialTeam, permissoes, hasPermission, setUser, refreshUser]
+    [login, nome, grupo, isCommercialTeam, mustChangePassword, permissoes, hasPermission, setUser, refreshUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

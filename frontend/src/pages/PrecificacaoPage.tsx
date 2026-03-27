@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { MensagemSemRegistrosInline } from '../components/MensagemSemRegistros';
 import ModalPrecificar from '../components/precificacao/ModalPrecificar';
 import ModalResultadoPrecificacao from '../components/precificacao/ModalResultadoPrecificacao';
@@ -28,6 +28,18 @@ function formatarData(iso: string): string {
 
 export default function PrecificacaoPage() {
   const [precificacoes, setPrecificacoes] = useState<PrecificacaoRow[]>([]);
+  const [filtroDraft, setFiltroDraft] = useState({
+    codigoProduto: '',
+    descricaoProduto: '',
+    usuario: '',
+    data: '',
+  });
+  const [filtroAplicado, setFiltroAplicado] = useState({
+    codigoProduto: '',
+    descricaoProduto: '',
+    usuario: '',
+    data: '',
+  });
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
   const [modalPrecificarAberto, setModalPrecificarAberto] = useState(false);
@@ -61,6 +73,35 @@ export default function PrecificacaoPage() {
   useEffect(() => {
     carregarLista();
   }, [carregarLista]);
+
+  const precificacoesFiltradas = useMemo(() => {
+    const cod = filtroAplicado.codigoProduto.trim().toLowerCase();
+    const desc = filtroAplicado.descricaoProduto.trim().toLowerCase();
+    const user = filtroAplicado.usuario.trim().toLowerCase();
+    const data = filtroAplicado.data.trim().toLowerCase();
+    if (!cod && !desc && !user && !data) return precificacoes;
+    return precificacoes.filter((p) => {
+      const pcod = (p.codigoProduto ?? '').toLowerCase();
+      const pdesc = (p.descricaoProduto ?? '').toLowerCase();
+      const puser = (p.usuario ?? '').toLowerCase();
+      const pdate = (p.data ?? '').toLowerCase();
+      if (cod && !pcod.includes(cod)) return false;
+      if (desc && !pdesc.includes(desc)) return false;
+      if (user && !puser.includes(user)) return false;
+      if (data && !pdate.includes(data)) return false;
+      return true;
+    });
+  }, [precificacoes, filtroAplicado]);
+
+  const aplicarFiltros = () => {
+    setFiltroAplicado({ ...filtroDraft });
+  };
+
+  const limparFiltros = () => {
+    const empty = { codigoProduto: '', descricaoProduto: '', usuario: '', data: '' };
+    setFiltroDraft(empty);
+    setFiltroAplicado(empty);
+  };
 
   const handleIniciado = useCallback((data: PrecificacaoIniciarResponse) => {
     setPrecificacoes((prev) => [
@@ -138,6 +179,72 @@ export default function PrecificacaoPage() {
         </div>
       )}
 
+      <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 p-4">
+        <div className="flex flex-wrap items-end gap-4">
+          <label className="flex flex-col gap-1 min-w-[180px]">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Código do Produto</span>
+            <input
+              type="text"
+              placeholder="Filtrar..."
+              value={filtroDraft.codigoProduto}
+              onChange={(e) => setFiltroDraft((p) => ({ ...p, codigoProduto: e.target.value }))}
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </label>
+          <label className="flex flex-col gap-1 min-w-[260px] flex-1">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Descrição do Produto</span>
+            <input
+              type="text"
+              placeholder="Filtrar..."
+              value={filtroDraft.descricaoProduto}
+              onChange={(e) => setFiltroDraft((p) => ({ ...p, descricaoProduto: e.target.value }))}
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </label>
+          <label className="flex flex-col gap-1 min-w-[160px]">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Usuário</span>
+            <input
+              type="text"
+              placeholder="Filtrar..."
+              value={filtroDraft.usuario}
+              onChange={(e) => setFiltroDraft((p) => ({ ...p, usuario: e.target.value }))}
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </label>
+          <label className="flex flex-col gap-1 min-w-[180px]">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Data</span>
+            <input
+              type="text"
+              placeholder="YYYY-MM-DD..."
+              value={filtroDraft.data}
+              onChange={(e) => setFiltroDraft((p) => ({ ...p, data: e.target.value }))}
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={aplicarFiltros}
+            className="text-sm px-3 py-2 rounded-lg bg-primary-600 text-white hover:bg-primary-700"
+            title="Filtrar na lista carregada"
+          >
+            Filtrar
+          </button>
+          {(filtroAplicado.codigoProduto || filtroAplicado.descricaoProduto || filtroAplicado.usuario || filtroAplicado.data) && (
+            <button
+              type="button"
+              onClick={limparFiltros}
+              className="text-sm px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
+              title="Limpar filtros"
+            >
+              Limpar filtros
+            </button>
+          )}
+        </div>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          Mostrando {precificacoesFiltradas.length} de {precificacoes.length} registro(s)
+        </p>
+      </div>
+
       <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm text-left">
@@ -159,7 +266,7 @@ export default function PrecificacaoPage() {
                   </td>
                 </tr>
               )}
-              {!loading && precificacoes.length === 0 && (
+              {!loading && precificacoesFiltradas.length === 0 && (
                 <tr>
                   <td colSpan={6} className="py-12 px-4 text-center">
                     <MensagemSemRegistrosInline />
@@ -167,7 +274,7 @@ export default function PrecificacaoPage() {
                 </tr>
               )}
               {!loading &&
-                precificacoes.map((p) => (
+                precificacoesFiltradas.map((p) => (
                   <tr
                     key={p.id}
                     className="border-t border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/30"

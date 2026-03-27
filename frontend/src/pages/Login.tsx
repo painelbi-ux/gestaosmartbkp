@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { login, checkAuth, pingServer } from '../api/auth';
+import { login, checkAuth, pingServer, getMe } from '../api/auth';
 import { getStoredToken } from '../api/client';
 import { z } from 'zod';
+import { useAuth } from '../contexts/AuthContext';
 
 const loginSchema = z.object({
   login: z.string().min(1, 'Login é obrigatório'),
@@ -25,6 +26,7 @@ const BRAND = {
 
 export default function Login() {
   const navigate = useNavigate();
+  const { refreshUser } = useAuth();
   const [loginUser, setLogin] = useState('');
   const [senha, setSenha] = useState('');
   const [error, setError] = useState('');
@@ -87,7 +89,13 @@ export default function Login() {
     try {
       const data = await login(parsed.data.login, parsed.data.senha);
       if (data.token) {
-        window.location.href = '/';
+        try {
+          await getMe();
+        } catch {
+          // segue para a tela inicial neutra mesmo quando /api/me falhar momentaneamente
+        }
+        await refreshUser();
+        navigate('/', { replace: true });
       } else {
         setError('Login ok, mas token não retornado. Tente novamente.');
       }

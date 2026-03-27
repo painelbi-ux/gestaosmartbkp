@@ -1,46 +1,40 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { listarUsuarios, criarUsuario, atualizarUsuario, excluirUsuario, type Usuario } from '../api/usuarios';
-import {
-  listarGrupos,
-  listarPermissoes,
-  criarGrupo,
-  atualizarGrupo,
-  excluirGrupo,
-  type Grupo,
-  type PermissaoItem,
-} from '../api/grupos';
+import { listarGrupos, listarPermissoes, criarGrupo, atualizarGrupo, excluirGrupo, type Grupo, type PermissaoItem } from '../api/grupos';
 import { z } from 'zod';
 
-const MAX_FOTO_BASE64 = 700000; // ~500KB em base64
+const MAX_FOTO_BASE64 = 700000;
+const PHONE_DIGITS_MAX = 11;
+
 const criarUsuarioSchema = z.object({
   login: z.string().min(1, 'Login é obrigatório').max(50),
   senha: z.string().min(4, 'Senha deve ter no mínimo 4 caracteres').max(100),
-  nome: z.string().max(100).optional(),
-  grupoId: z.number().int().positive().optional().nullable(),
+  nome: z.string().min(1, 'Nome é obrigatório').max(100),
+  email: z.string().email('E-mail inválido').optional().nullable(),
+  telefone: z.string().max(20).optional().nullable(),
+  grupoId: z.number().int().positive('Grupo é obrigatório'),
   ativo: z.boolean().optional(),
   isCommercialTeam: z.boolean().optional(),
-  permissoes: z.array(z.string()).optional(),
   fotoUrl: z.string().max(MAX_FOTO_BASE64).optional().nullable(),
 });
 
 const atualizarUsuarioSchema = z.object({
   senha: z.string().min(4, 'Senha deve ter no mínimo 4 caracteres').max(100).optional(),
   nome: z.string().max(100).optional().nullable(),
+  email: z.string().email('E-mail inválido').optional().nullable(),
+  telefone: z.string().max(20).optional().nullable(),
   grupoId: z.number().int().positive().optional().nullable(),
   ativo: z.boolean().optional(),
   isCommercialTeam: z.boolean().optional(),
-  permissoes: z.array(z.string()).optional(),
   fotoUrl: z.string().max(MAX_FOTO_BASE64).optional().nullable(),
 });
-
-type Tab = 'usuarios' | 'grupos';
 
 const SECOES_PERMISSOES: Record<string, string> = {
   pcp: 'PCP',
   usuarios: 'Usuários',
   grupos: 'Grupos de usuários',
   comunicacao: 'COMUNICAÇÃO INTERNA (Comunicação PD)',
-
   dashboard: 'Dashboard',
   heatmap: 'Heatmap',
   compras: 'Compras',
@@ -65,62 +59,59 @@ const ORDEM_SECOES_PERMISSOES = [
 ];
 
 function agruparPermissoes(permissoes: PermissaoItem[]): { secao: string; itens: PermissaoItem[] }[] {
-  const allowedUsuarios = new Set<string>([
-    'usuarios.tela.ver',
-    'usuarios.criar',
-    'usuarios.editar',
-    'usuarios.senha.alterar',
-    'usuarios.inativar',
-    'usuarios.excluir',
-    'usuarios.total',
-  ]);
-  const allowedGrupos = new Set<string>([
-    'grupos.tela.ver',
-    'grupos.criar',
-    'grupos.editar',
-    'grupos.inativar',
-    'grupos.excluir',
-    'grupos.total',
-  ]);
-  const allowedComunicacao = new Set<string>([
-    'comunicacao.tela.ver',
-    'comunicacao.novo_pedido',
-    'comunicacao.historico.ver',
-    'comunicacao.atualizar_card',
-    'comunicacao.editar_responsavel_card',
-    'comunicacao.tag.controlar',
-    'comunicacao.tag.visualizar',
-    'comunicacao.comentarios.permitir_mencao',
-    'comunicacao.total',
-  ]);
-
   const map = new Map<string, PermissaoItem[]>();
   for (const p of permissoes) {
     const prefix = p.codigo.split('.')[0] ?? '';
     const secao = SECOES_PERMISSOES[prefix];
-    // No editor "module-based", exibimos apenas os módulos solicitados.
     if (!secao) continue;
-    // Filtra permissões legadas para manter exatamente as opções que você pediu.
-    if (prefix === 'usuarios' && !allowedUsuarios.has(p.codigo)) continue;
-    if (prefix === 'grupos' && !allowedGrupos.has(p.codigo)) continue;
-    if (prefix === 'comunicacao' && !allowedComunicacao.has(p.codigo)) continue;
     if (!map.has(secao)) map.set(secao, []);
     map.get(secao)!.push(p);
   }
-
-  // Ordena itens por label para ficar previsível na UI.
   for (const [secao, itens] of map.entries()) {
     itens.sort((a, b) => a.label.localeCompare(b.label));
     map.set(secao, itens);
   }
-
   return Array.from(map.entries())
     .sort(([a], [b]) => (ORDEM_SECOES_PERMISSOES.indexOf(a) - ORDEM_SECOES_PERMISSOES.indexOf(b)) || a.localeCompare(b))
     .map(([secao, itens]) => ({ secao, itens }));
 }
 
+function somenteDigitos(v: string): string {
+  return v.replace(/\D/g, '').slice(0, PHONE_DIGITS_MAX);
+}
+
+function formatarTelefoneInput(v: string): string {
+  const d = somenteDigitos(v);
+  if (d.length <= 2) return d.length ? `(${d}` : '';
+  if (d.length <= 7) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+  return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7, 11)}`;
+}
+
+function normalizarTelefoneParaSalvar(v: string): string {
+  const d = somenteDigitos(v);
+  if (!d) return '';
+  return formatarTelefoneInput(d);
+}
+
+function ModalContainer({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={onClose}>
+      <div className="w-full max-w-2xl max-h-[88vh] overflow-hidden rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-600 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">{title}</h3>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700">✕</button>
+        </div>
+        <div className="p-5 overflow-y-auto max-h-[calc(88vh-64px)]">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 export default function UsuariosPage() {
-  const [tab, setTab] = useState<Tab>('usuarios');
+  const location = useLocation();
+  const navigate = useNavigate();
+  const inGrupos = location.pathname.startsWith('/usuarios/grupos');
+
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [grupos, setGrupos] = useState<Grupo[]>([]);
   const [permissoesLista, setPermissoesLista] = useState<PermissaoItem[]>([]);
@@ -129,10 +120,19 @@ export default function UsuariosPage() {
   const [forbidden, setForbidden] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
-  // Form usuário
+  const [filtroUsuario, setFiltroUsuario] = useState('');
+  const [filtroGrupo, setFiltroGrupo] = useState<number | ''>('');
+  const [filtroTime, setFiltroTime] = useState<'todos' | 'comercial' | 'nao-comercial'>('todos');
+
+  const [modalCriarUsuarioOpen, setModalCriarUsuarioOpen] = useState(false);
+  const [modalEditarUsuarioOpen, setModalEditarUsuarioOpen] = useState(false);
+  const [modalGrupoOpen, setModalGrupoOpen] = useState(false);
+
   const [login, setLogin] = useState('');
   const [senha, setSenha] = useState('');
   const [nome, setNome] = useState('');
+  const [email, setEmail] = useState('');
+  const [telefone, setTelefone] = useState('');
   const [grupoId, setGrupoId] = useState<number | ''>('');
   const [ativoNovo, setAtivoNovo] = useState(true);
   const [isCommercialTeamNovo, setIsCommercialTeamNovo] = useState(false);
@@ -141,22 +141,20 @@ export default function UsuariosPage() {
   const [salvandoUsuario, setSalvandoUsuario] = useState(false);
   const [formErrorUsuario, setFormErrorUsuario] = useState('');
 
-  // ---------- Editar usuário ----------
   const [editandoUsuarioId, setEditandoUsuarioId] = useState<number | null>(null);
   const [editLogin, setEditLogin] = useState<string>('');
   const [editSenha, setEditSenha] = useState<string>('');
   const [editNome, setEditNome] = useState<string>('');
+  const [editEmail, setEditEmail] = useState<string>('');
+  const [editTelefone, setEditTelefone] = useState<string>('');
   const [editGrupoId, setEditGrupoId] = useState<number | ''>('');
   const [editFotoPreview, setEditFotoPreview] = useState<string | null>(null);
   const [editAtivo, setEditAtivo] = useState(true);
   const [editIsCommercialTeam, setEditIsCommercialTeam] = useState(false);
-  const [editPermissoes, setEditPermissoes] = useState<string[]>([]);
-  // undefined = não mexeu; null = remover; string = novo valor
   const [editFotoBase64, setEditFotoBase64] = useState<string | null | undefined>(undefined);
   const [salvandoEditarUsuario, setSalvandoEditarUsuario] = useState(false);
   const [formErrorEditarUsuario, setFormErrorEditarUsuario] = useState('');
 
-  // Form grupo (criar / editar)
   const [grupoNome, setGrupoNome] = useState('');
   const [grupoDescricao, setGrupoDescricao] = useState('');
   const [grupoPermissoes, setGrupoPermissoes] = useState<string[]>([]);
@@ -170,11 +168,7 @@ export default function UsuariosPage() {
     setError(null);
     setForbidden(false);
     try {
-      const [u, g, p] = await Promise.all([
-        listarUsuarios(),
-        listarGrupos(),
-        listarPermissoes(),
-      ]);
+      const [u, g, p] = await Promise.all([listarUsuarios(), listarGrupos(), listarPermissoes()]);
       setUsuarios(u);
       setGrupos(g);
       setPermissoesLista(p);
@@ -194,6 +188,34 @@ export default function UsuariosPage() {
   const showToast = (message: string) => {
     setToast(message);
     setTimeout(() => setToast(null), 3000);
+  };
+
+  const usuariosFiltrados = useMemo(() => {
+    return usuarios.filter((u) => {
+      const q = filtroUsuario.trim().toLowerCase();
+      if (q) {
+        const alvo = `${u.login} ${u.nome ?? ''}`.toLowerCase();
+        if (!alvo.includes(q)) return false;
+      }
+      if (filtroGrupo !== '' && u.grupoId !== filtroGrupo) return false;
+      if (filtroTime === 'comercial' && !u.isCommercialTeam) return false;
+      if (filtroTime === 'nao-comercial' && !!u.isCommercialTeam) return false;
+      return true;
+    });
+  }, [usuarios, filtroUsuario, filtroGrupo, filtroTime]);
+
+  const limparFormCriarUsuario = () => {
+    setLogin('');
+    setSenha('');
+    setNome('');
+    setEmail('');
+    setTelefone('');
+    setGrupoId('');
+    setAtivoNovo(true);
+    setIsCommercialTeamNovo(false);
+    setFotoPreview(null);
+    setFotoBase64(null);
+    setFormErrorUsuario('');
   };
 
   const handleFotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -217,11 +239,6 @@ export default function UsuariosPage() {
     reader.readAsDataURL(file);
   };
 
-  const removerFoto = () => {
-    setFotoPreview(null);
-    setFotoBase64(null);
-  };
-
   const handleEditFotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -243,40 +260,30 @@ export default function UsuariosPage() {
     reader.readAsDataURL(file);
   };
 
-  const removerEditFoto = () => {
-    setEditFotoPreview(null);
-    setEditFotoBase64(null);
-  };
-
-  // ---------- Usuários ----------
   const handleSubmitUsuario = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormErrorUsuario('');
     const parsed = criarUsuarioSchema.safeParse({
-      login,
+      login: login.trim(),
       senha,
-      nome: nome || undefined,
+      nome: nome.trim(),
+      email: email.trim() ? email.trim() : null,
+      telefone: telefone.trim() ? normalizarTelefoneParaSalvar(telefone) : null,
       grupoId: grupoId === '' ? undefined : grupoId,
       ativo: ativoNovo,
       isCommercialTeam: isCommercialTeamNovo,
       fotoUrl: fotoBase64 || undefined,
     });
     if (!parsed.success) {
-      setFormErrorUsuario(parsed.error.flatten().formErrors.join(' ') || 'Preencha os campos.');
+      setFormErrorUsuario(parsed.error.flatten().formErrors.join(' ') || 'Preencha os campos obrigatórios.');
       return;
     }
     setSalvandoUsuario(true);
     try {
       const novo = await criarUsuario(parsed.data);
       setUsuarios((prev) => [...prev, novo].sort((a, b) => a.login.localeCompare(b.login)));
-      setLogin('');
-      setSenha('');
-      setNome('');
-      setGrupoId('');
-      setAtivoNovo(true);
-      setIsCommercialTeamNovo(false);
-      setFotoPreview(null);
-      setFotoBase64(null);
+      limparFormCriarUsuario();
+      setModalCriarUsuarioOpen(false);
       showToast('Usuário criado com sucesso.');
     } catch (err) {
       setFormErrorUsuario(err instanceof Error ? err.message : 'Erro ao criar usuário.');
@@ -290,13 +297,15 @@ export default function UsuariosPage() {
     setEditLogin(u.login);
     setEditSenha('');
     setEditNome(u.nome ?? '');
+    setEditEmail(u.email ?? '');
+    setEditTelefone(u.telefone ?? '');
     setEditGrupoId(u.grupoId ?? '');
     setEditAtivo(u.ativo);
     setEditIsCommercialTeam(!!u.isCommercialTeam);
-    setEditPermissoes(u.permissoes ?? []);
     setEditFotoPreview(u.fotoUrl ?? null);
     setEditFotoBase64(undefined);
     setFormErrorEditarUsuario('');
+    setModalEditarUsuarioOpen(true);
   };
 
   const fecharFormEditarUsuario = () => {
@@ -304,6 +313,8 @@ export default function UsuariosPage() {
     setEditLogin('');
     setEditSenha('');
     setEditNome('');
+    setEditEmail('');
+    setEditTelefone('');
     setEditGrupoId('');
     setEditFotoPreview(null);
     setEditFotoBase64(undefined);
@@ -311,28 +322,24 @@ export default function UsuariosPage() {
     setSalvandoEditarUsuario(false);
     setEditAtivo(true);
     setEditIsCommercialTeam(false);
-    setEditPermissoes([]);
+    setModalEditarUsuarioOpen(false);
   };
 
   const handleSubmitEditarUsuario = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editandoUsuarioId) return;
-
     setFormErrorEditarUsuario('');
 
     const payloadBase: Record<string, unknown> = {
       nome: editNome.trim() === '' ? null : editNome.trim(),
+      email: editEmail.trim() === '' ? null : editEmail.trim(),
+      telefone: editTelefone.trim() === '' ? null : normalizarTelefoneParaSalvar(editTelefone),
       grupoId: editGrupoId === '' ? null : Number(editGrupoId),
       ativo: editAtivo,
       isCommercialTeam: editIsCommercialTeam,
-      permissoes: editPermissoes,
     };
-
     if (editSenha.trim()) payloadBase.senha = editSenha.trim();
-
-    if (editFotoBase64 !== undefined) {
-      payloadBase.fotoUrl = editFotoBase64;
-    }
+    if (editFotoBase64 !== undefined) payloadBase.fotoUrl = editFotoBase64;
 
     const parsed = atualizarUsuarioSchema.safeParse(payloadBase);
     if (!parsed.success) {
@@ -353,16 +360,14 @@ export default function UsuariosPage() {
     }
   };
 
-  const togglePermissao = (codigo: string) => {
-    setGrupoPermissoes((prev) =>
-      prev.includes(codigo) ? prev.filter((p) => p !== codigo) : [...prev, codigo]
-    );
-  };
-
-  const togglePermissaoUsuario = (codigo: string) => {
-    setEditPermissoes((prev) =>
-      prev.includes(codigo) ? prev.filter((p) => p !== codigo) : [...prev, codigo]
-    );
+  const abrirNovoGrupo = () => {
+    setEditandoGrupoId(null);
+    setGrupoNome('');
+    setGrupoDescricao('');
+    setGrupoPermissoes([]);
+    setGrupoAtivo(true);
+    setFormErrorGrupo('');
+    setModalGrupoOpen(true);
   };
 
   const abrirEditarGrupo = (g: Grupo) => {
@@ -372,6 +377,7 @@ export default function UsuariosPage() {
     setGrupoPermissoes(g.permissoes ?? []);
     setGrupoAtivo(g.ativo);
     setFormErrorGrupo('');
+    setModalGrupoOpen(true);
   };
 
   const fecharFormGrupo = () => {
@@ -381,6 +387,11 @@ export default function UsuariosPage() {
     setGrupoPermissoes([]);
     setGrupoAtivo(true);
     setFormErrorGrupo('');
+    setModalGrupoOpen(false);
+  };
+
+  const togglePermissao = (codigo: string) => {
+    setGrupoPermissoes((prev) => (prev.includes(codigo) ? prev.filter((p) => p !== codigo) : [...prev, codigo]));
   };
 
   const handleSubmitGrupo = async (e: React.FormEvent) => {
@@ -419,16 +430,11 @@ export default function UsuariosPage() {
   };
 
   const handleExcluirUsuario = async (u: Usuario) => {
-    if (
-      !window.confirm(
-        `Excluir o usuário "${u.login}"? A exclusão física só será permitida se ele não possuir vínculos com registros do sistema.`
-      )
-    )
-      return;
+    if (!window.confirm(`Excluir o usuário "${u.login}"?`)) return;
     try {
       await excluirUsuario(u.id);
-      showToast('Usuário excluído.');
       await carregar();
+      showToast('Usuário excluído.');
       if (editandoUsuarioId === u.id) fecharFormEditarUsuario();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Erro ao excluir usuário.');
@@ -436,534 +442,223 @@ export default function UsuariosPage() {
   };
 
   const handleExcluirGrupo = async (g: Grupo) => {
-    if (
-      !window.confirm(
-        `Excluir o grupo "${g.nome}"? A exclusão física só é permitida se não houver usuários vinculados. Se houver, use inativação (ativo=false).`
-      )
-    )
-      return;
+    if (!window.confirm(`Excluir o grupo "${g.nome}"?`)) return;
     try {
       await excluirGrupo(g.id);
-      showToast('Grupo excluído.');
       await carregar();
+      showToast('Grupo excluído.');
       if (editandoGrupoId === g.id) fecharFormGrupo();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Erro ao excluir.');
+      showToast(err instanceof Error ? err.message : 'Erro ao excluir grupo.');
     }
   };
 
   if (forbidden) {
     return (
       <div className="space-y-6">
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">Cadastro de usuários e grupos</h2>
+        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">Gestão de usuários</h2>
         <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-6 text-center">
-          <p className="text-amber-800 dark:text-amber-200 font-medium">
-            Apenas usuários com permissão de gerenciar usuários podem acessar esta página.
-          </p>
+          <p className="text-amber-800 dark:text-amber-200 font-medium">Apenas usuários com permissão podem acessar esta página.</p>
         </div>
       </div>
     );
   }
 
   if (loading && usuarios.length === 0) {
-    return (
-      <div className="space-y-6">
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">Cadastro de usuários e grupos</h2>
-        <p className="text-slate-500 dark:text-slate-400">Carregando...</p>
-      </div>
-    );
+    return <p className="text-slate-500 dark:text-slate-400">Carregando...</p>;
   }
-
   if (error && !forbidden) {
-    return (
-      <div className="space-y-6">
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">Cadastro de usuários e grupos</h2>
-        <p className="text-amber-600 dark:text-amber-400">{error}</p>
-      </div>
-    );
+    return <p className="text-amber-600 dark:text-amber-400">{error}</p>;
   }
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">Cadastro de usuários e grupos</h2>
-
-      <div className="flex gap-2 border-b border-slate-200 dark:border-slate-700">
-        <button
-          type="button"
-          onClick={() => setTab('usuarios')}
-          className={`px-4 py-2 text-sm font-medium rounded-t-lg transition ${
-            tab === 'usuarios'
-              ? 'bg-primary-600 text-white'
-              : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
-          }`}
-        >
-          Usuários
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('grupos')}
-          className={`px-4 py-2 text-sm font-medium rounded-t-lg transition ${
-            tab === 'grupos'
-              ? 'bg-primary-600 text-white'
-              : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
-          }`}
-        >
-          Grupos e permissões
-        </button>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">{inGrupos ? 'Grupos de usuários' : 'Usuários cadastrados'}</h2>
+        {inGrupos ? (
+          <button type="button" onClick={abrirNovoGrupo} className="rounded-lg bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 text-sm font-medium">
+            Cadastrar novo grupo
+          </button>
+        ) : (
+          <button type="button" onClick={() => { limparFormCriarUsuario(); setModalCriarUsuarioOpen(true); }} className="rounded-lg bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 text-sm font-medium">
+            Cadastrar novo usuário
+          </button>
+        )}
       </div>
 
-      {tab === 'usuarios' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 p-6 shadow-sm">
-            <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200 mb-4 flex items-center gap-2">
-              <span className="w-8 h-8 rounded-lg bg-primary-100 dark:bg-primary-900/40 flex items-center justify-center text-primary-600 dark:text-primary-400 text-sm">+</span>
-              Novo usuário
-            </h3>
-            <form onSubmit={handleSubmitUsuario} className="space-y-4">
-              <div className="flex gap-4 items-start">
-                <div className="flex-shrink-0">
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Foto</label>
-                  <div className="relative">
-                    {fotoPreview ? (
-                      <div className="relative group">
-                        <img
-                          src={fotoPreview}
-                          alt="Preview"
-                          className="w-20 h-20 rounded-full object-cover border-2 border-slate-200 dark:border-slate-600"
-                        />
-                        <button
-                          type="button"
-                          onClick={removerFoto}
-                          className="absolute inset-0 rounded-full bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs transition"
-                        >
-                          Remover
-                        </button>
-                      </div>
-                    ) : (
-                      <label className="w-20 h-20 rounded-full border-2 border-dashed border-slate-300 dark:border-slate-600 flex items-center justify-center cursor-pointer hover:border-primary-500 dark:hover:border-primary-400 bg-slate-50 dark:bg-slate-700/50 text-slate-400 dark:text-slate-500 text-2xl">
-                        <span>👤</span>
-                        <input
-                          type="file"
-                          accept="image/jpeg,image/png,image/gif,image/webp"
-                          onChange={handleFotoChange}
-                          className="sr-only"
-                        />
-                      </label>
-                    )}
+      {!inGrupos && (
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+          <input value={filtroUsuario} onChange={(e) => setFiltroUsuario(e.target.value)} placeholder="Filtrar por usuário" className="rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-sm px-3 py-2" />
+          <select value={filtroGrupo === '' ? '' : filtroGrupo} onChange={(e) => setFiltroGrupo(e.target.value === '' ? '' : Number(e.target.value))} className="rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-sm px-3 py-2">
+            <option value="">Todos os grupos</option>
+            {grupos.map((g) => <option key={g.id} value={g.id}>{g.nome}</option>)}
+          </select>
+          <select value={filtroTime} onChange={(e) => setFiltroTime(e.target.value as typeof filtroTime)} className="rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-sm px-3 py-2">
+            <option value="todos">Todos os times</option>
+            <option value="comercial">Time comercial</option>
+            <option value="nao-comercial">Não comercial</option>
+          </select>
+          <button type="button" onClick={() => { setFiltroUsuario(''); setFiltroGrupo(''); setFiltroTime('todos'); }} className="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700">
+            Limpar filtros
+          </button>
+        </div>
+      )}
+
+      {!inGrupos ? (
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 p-6 shadow-sm">
+          <ul className="space-y-1">
+            {usuariosFiltrados.map((u) => (
+              <li key={u.id} className="flex items-center gap-3 py-3 px-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700/50 last:border-0">
+                {u.fotoUrl ? (
+                  <img src={u.fotoUrl} alt="" className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-600" />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-primary-100 dark:bg-primary-900/40 flex items-center justify-center text-primary-600 dark:text-primary-400 font-semibold text-sm">
+                    {(u.nome || u.login).charAt(0).toUpperCase()}
                   </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <span className="font-medium text-slate-800 dark:text-slate-200 block truncate">{u.login}</span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400 block truncate">
+                    {u.nome || '—'} · {u.grupo || 'Sem grupo'} · {u.ativo ? 'Ativo' : 'Inativo'} · {u.isCommercialTeam ? 'Time comercial' : 'Não comercial'}
+                  </span>
                 </div>
-                <div className="flex-1 min-w-0 space-y-4">
-                  <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Login</label>
-                    <input
-                      type="text"
-                      value={login}
-                      onChange={(e) => setLogin(e.target.value)}
-                      className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
-                      placeholder="Ex.: joao"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nome (opcional)</label>
-                    <input
-                      type="text"
-                      value={nome}
-                      onChange={(e) => setNome(e.target.value)}
-                      className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
-                      placeholder="Ex.: João Silva"
-                    />
-                  </div>
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Senha</label>
-                <input
-                  type="password"
-                  value={senha}
-                  onChange={(e) => setSenha(e.target.value)}
-                  className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
-                  placeholder="Mínimo 4 caracteres"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Grupo (define permissões)</label>
-                <select
-                  value={grupoId === '' ? '' : grupoId}
-                  onChange={(e) => setGrupoId(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
-                >
-                  <option value="">Nenhum</option>
-                  {grupos.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.nome}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center gap-3">
-                <input
-                  id="novo-ativo"
-                  type="checkbox"
-                  checked={ativoNovo}
-                  onChange={(e) => setAtivoNovo(e.target.checked)}
-                  className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
-                />
-                <label htmlFor="novo-ativo" className="text-sm text-slate-700 dark:text-slate-300">
-                  Usuário ativo
-                </label>
-              </div>
-              <div className="flex items-center gap-3">
-                <input
-                  id="novo-time-comercial"
-                  type="checkbox"
-                  checked={isCommercialTeamNovo}
-                  onChange={(e) => setIsCommercialTeamNovo(e.target.checked)}
-                  className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
-                />
-                <label htmlFor="novo-time-comercial" className="text-sm text-slate-700 dark:text-slate-300">
-                  Time comercial
-                </label>
-              </div>
-              {formErrorUsuario && <p className="text-amber-600 dark:text-amber-400 text-sm">{formErrorUsuario}</p>}
-              <button
-                type="submit"
-                disabled={salvandoUsuario}
-                className="rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white px-4 py-2 text-sm font-medium w-full"
-              >
-                {salvandoUsuario ? 'Criando...' : 'Criar usuário'}
-              </button>
-            </form>
-          </div>
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 p-6 shadow-sm">
-            <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200 mb-4">Usuários cadastrados</h3>
-            <ul className="space-y-1">
-              {usuarios.map((u) => (
-                <li
-                  key={u.id}
-                  className="flex items-center gap-3 py-3 px-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700/50 last:border-0"
-                >
-                  {u.fotoUrl ? (
-                    <img src={u.fotoUrl} alt="" className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-600" />
-                  ) : (
-                    <div className="w-10 h-10 rounded-full bg-primary-100 dark:bg-primary-900/40 flex items-center justify-center text-primary-600 dark:text-primary-400 font-semibold text-sm">
-                      {(u.nome || u.login).charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <span className="font-medium text-slate-800 dark:text-slate-200 block truncate">{u.login}</span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400 block truncate">
-                      {u.nome || '—'} · {u.grupo || 'Sem grupo'} · {u.ativo ? 'Ativo' : 'Inativo'} · {u.isCommercialTeam ? 'Time comercial' : 'Não comercial'}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => abrirEditarUsuario(u)}
-                    className="shrink-0 text-primary-600 dark:text-primary-400 hover:underline text-sm"
-                  >
-                    Editar
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleExcluirUsuario(u)}
-                    className="shrink-0 text-amber-600 dark:text-amber-400 hover:underline text-sm"
-                  >
-                    Excluir
-                  </button>
-                </li>
-              ))}
-            </ul>
-
-            {editandoUsuarioId && (
-              <div className="mt-6 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 p-6 shadow-sm">
-                <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200 mb-4">
-                  Editar usuário <span className="text-slate-500 dark:text-slate-400 text-sm font-normal">{editLogin}</span>
-                </h3>
-                <form onSubmit={handleSubmitEditarUsuario} className="space-y-4">
-                  <div className="flex gap-4 items-start">
-                    <div className="flex-shrink-0">
-                      <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Foto</label>
-                      <div className="relative">
-                        {editFotoPreview ? (
-                          <div className="relative group">
-                            <img
-                              src={editFotoPreview}
-                              alt="Preview"
-                              className="w-20 h-20 rounded-full object-cover border-2 border-slate-200 dark:border-slate-600"
-                            />
-                            <button
-                              type="button"
-                              onClick={removerEditFoto}
-                              className="absolute inset-0 rounded-full bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs transition"
-                            >
-                              Remover
-                            </button>
-                          </div>
-                        ) : (
-                          <label className="w-20 h-20 rounded-full border-2 border-dashed border-slate-300 dark:border-slate-600 flex items-center justify-center cursor-pointer hover:border-primary-500 dark:hover:border-primary-400 bg-slate-50 dark:bg-slate-700/50 text-slate-400 dark:text-slate-500 text-2xl">
-                            <span>👤</span>
-                            <input
-                              type="file"
-                              accept="image/jpeg,image/png,image/gif,image/webp"
-                              onChange={handleEditFotoChange}
-                              className="sr-only"
-                            />
-                          </label>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex-1 min-w-0 space-y-4">
-                      <div>
-                        <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nome</label>
-                        <input
-                          type="text"
-                          value={editNome}
-                          onChange={(e) => setEditNome(e.target.value)}
-                          className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
-                          placeholder="Opcional"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Grupo (define permissões)</label>
-                        <select
-                          value={editGrupoId === '' ? '' : editGrupoId}
-                          onChange={(e) => setEditGrupoId(e.target.value === '' ? '' : Number(e.target.value))}
-                          className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
-                        >
-                          <option value="">Nenhum</option>
-                          {grupos.map((g) => (
-                            <option key={g.id} value={g.id}>
-                              {g.nome}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <input
-                          id="edit-ativo"
-                          type="checkbox"
-                          checked={editAtivo}
-                          onChange={(e) => setEditAtivo(e.target.checked)}
-                          className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
-                        />
-                        <label htmlFor="edit-ativo" className="text-sm text-slate-700 dark:text-slate-300">
-                          Usuário ativo
-                        </label>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <input
-                          id="edit-time-comercial"
-                          type="checkbox"
-                          checked={editIsCommercialTeam}
-                          onChange={(e) => setEditIsCommercialTeam(e.target.checked)}
-                          className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
-                        />
-                        <label htmlFor="edit-time-comercial" className="text-sm text-slate-700 dark:text-slate-300">
-                          Time comercial
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Senha (opcional)</label>
-                    <input
-                      type="password"
-                      value={editSenha}
-                      onChange={(e) => setEditSenha(e.target.value)}
-                      className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
-                      placeholder="Deixe em branco para não alterar"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2">Permissões de acesso às telas (por usuário)</label>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
-                      Marque apenas o que este usuário pode acessar além do grupo.
-                    </p>
-                    <div className="space-y-4">
-                      {agruparPermissoes(permissoesLista).map(({ secao, itens }) => (
-                        <div key={secao} className="rounded-lg border border-slate-200 dark:border-slate-600/50 p-3 bg-slate-50/50 dark:bg-slate-800/30">
-                          <div className="text-xs font-semibold text-slate-600 dark:text-slate-400 mb-2 uppercase tracking-wide">{secao}</div>
-                          <div className="flex flex-wrap gap-x-4 gap-y-2">
-                            {itens.map((p) => (
-                              <label key={p.codigo} className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={editPermissoes.includes(p.codigo)}
-                                  onChange={() => togglePermissaoUsuario(p.codigo)}
-                                  className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
-                                />
-                                <span className="text-sm text-slate-700 dark:text-slate-300">{p.label}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {formErrorEditarUsuario && (
-                    <p className="text-amber-600 dark:text-amber-400 text-sm">{formErrorEditarUsuario}</p>
-                  )}
-
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      type="submit"
-                      disabled={salvandoEditarUsuario}
-                      className="flex-1 rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white px-4 py-2 text-sm font-medium"
-                    >
-                      {salvandoEditarUsuario ? 'Salvando...' : 'Salvar alterações'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={fecharFormEditarUsuario}
-                      disabled={salvandoEditarUsuario}
-                      className="rounded-lg border border-slate-300 dark:border-slate-600 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50"
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                </form>
-              </div>
-            )}
+                <button type="button" onClick={() => abrirEditarUsuario(u)} className="shrink-0 text-primary-600 dark:text-primary-400 hover:underline text-sm">Editar</button>
+                <button type="button" onClick={() => handleExcluirUsuario(u)} className="shrink-0 text-amber-600 dark:text-amber-400 hover:underline text-sm">Excluir</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 p-6">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-700">
+                  <th className="text-left py-2 text-slate-500 dark:text-slate-400 font-medium">Nome</th>
+                  <th className="text-left py-2 text-slate-500 dark:text-slate-400 font-medium">Descrição</th>
+                  <th className="text-left py-2 text-slate-500 dark:text-slate-400 font-medium">Usuários</th>
+                  <th className="text-left py-2 text-slate-500 dark:text-slate-400 font-medium">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grupos.map((g) => (
+                  <tr key={g.id} className="border-b border-slate-200 dark:border-slate-700 last:border-0">
+                    <td className="py-2 text-slate-800 dark:text-slate-200 font-medium">{g.nome}</td>
+                    <td className="py-2 text-slate-600 dark:text-slate-400">{g.descricao || '—'} · {g.ativo ? 'Ativo' : 'Inativo'}</td>
+                    <td className="py-2 text-slate-600 dark:text-slate-400">{g.totalUsuarios ?? 0}</td>
+                    <td className="py-2 flex gap-2">
+                      <button type="button" onClick={() => abrirEditarGrupo(g)} className="text-primary-600 dark:text-primary-400 hover:underline text-sm">Editar</button>
+                      <button type="button" onClick={() => handleExcluirGrupo(g)} className="text-amber-600 dark:text-amber-400 hover:underline text-sm">Excluir</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
 
-      {tab === 'grupos' && (
-        <div className="space-y-6">
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 p-6">
-            <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-4">
-              {editandoGrupoId ? 'Editar grupo' : 'Novo grupo'}
-            </h3>
-            <form onSubmit={handleSubmitGrupo} className="space-y-4">
-              <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nome do grupo</label>
-                <input
-                  type="text"
-                  value={grupoNome}
-                  onChange={(e) => setGrupoNome(e.target.value)}
-                  className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
-                  placeholder="Ex.: Operador"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Descrição (opcional)</label>
-                <input
-                  type="text"
-                  value={grupoDescricao}
-                  onChange={(e) => setGrupoDescricao(e.target.value)}
-                  className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
-                  placeholder="Ex.: Acesso a pedidos e relatórios"
-                />
-              </div>
-              <div className="flex items-center gap-3">
-                <input
-                  id="grupo-ativo"
-                  type="checkbox"
-                  checked={grupoAtivo}
-                  onChange={(e) => setGrupoAtivo(e.target.checked)}
-                  className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
-                />
-                <label htmlFor="grupo-ativo" className="text-sm text-slate-700 dark:text-slate-300">
-                  Grupo ativo
+      {modalCriarUsuarioOpen && (
+        <ModalContainer title="Cadastrar novo usuário" onClose={() => setModalCriarUsuarioOpen(false)}>
+          <form onSubmit={handleSubmitUsuario} className="space-y-4">
+            <div className="flex gap-4 items-start">
+              <div className="flex-shrink-0">
+                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Foto</label>
+                <label className="w-20 h-20 rounded-full border-2 border-dashed border-slate-300 dark:border-slate-600 flex items-center justify-center cursor-pointer hover:border-primary-500 dark:hover:border-primary-400 bg-slate-50 dark:bg-slate-700/50 text-slate-400 dark:text-slate-500 text-2xl">
+                  {fotoPreview ? <img src={fotoPreview} alt="" className="w-20 h-20 rounded-full object-cover" /> : <span>👤</span>}
+                  <input type="file" accept="image/jpeg,image/png,image/gif,image/webp" onChange={handleFotoChange} className="sr-only" />
                 </label>
               </div>
-              <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2">Permissões de acesso às telas</label>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
-                  Marque apenas o que este grupo pode acessar. Usuários sem permissão para uma tela não verão o menu nem a rota.
-                </p>
-                <div className="space-y-4">
-                  {agruparPermissoes(permissoesLista).map(({ secao, itens }) => (
-                    <div key={secao} className="rounded-lg border border-slate-200 dark:border-slate-600/50 p-3 bg-slate-50/50 dark:bg-slate-800/30">
-                      <div className="text-xs font-semibold text-slate-600 dark:text-slate-400 mb-2 uppercase tracking-wide">{secao}</div>
-                      <div className="flex flex-wrap gap-x-4 gap-y-2">
-                        {itens.map((p) => (
-                          <label key={p.codigo} className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={grupoPermissoes.includes(p.codigo)}
-                              onChange={() => togglePermissao(p.codigo)}
-                              className="rounded border-slate-300 dark:border-slate-600 text-primary-600 focus:ring-primary-500"
-                            />
-                            <span className="text-sm text-slate-700 dark:text-slate-300">{p.label}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
+              <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div><label className="block text-xs mb-1">Login</label><input value={login} onChange={(e) => setLogin(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+                <div><label className="block text-xs mb-1">Nome *</label><input value={nome} onChange={(e) => setNome(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+                <div><label className="block text-xs mb-1">E-mail</label><input value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+                <div><label className="block text-xs mb-1">Telefone</label><input value={telefone} onChange={(e) => setTelefone(formatarTelefoneInput(e.target.value))} placeholder="(XX) XXXXX-XXXX" className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+                <div><label className="block text-xs mb-1">Senha *</label><input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+                <div>
+                  <label className="block text-xs mb-1">Grupo *</label>
+                  <select value={grupoId === '' ? '' : grupoId} onChange={(e) => setGrupoId(e.target.value === '' ? '' : Number(e.target.value))} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm">
+                    <option value="">Selecione</option>
+                    {grupos.map((g) => <option key={g.id} value={g.id}>{g.nome}</option>)}
+                  </select>
                 </div>
+                <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={ativoNovo} onChange={(e) => setAtivoNovo(e.target.checked)} /> Usuário ativo</label>
+                <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={isCommercialTeamNovo} onChange={(e) => setIsCommercialTeamNovo(e.target.checked)} /> Time comercial</label>
               </div>
-              {formErrorGrupo && <p className="text-amber-600 dark:text-amber-400 text-sm">{formErrorGrupo}</p>}
-              <div className="flex gap-2">
-                <button
-                  type="submit"
-                  disabled={salvandoGrupo}
-                  className="rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white px-4 py-2 text-sm font-medium"
-                >
-                  {salvandoGrupo ? 'Salvando...' : editandoGrupoId ? 'Salvar alterações' : 'Criar grupo'}
-                </button>
-                {editandoGrupoId && (
-                  <button
-                    type="button"
-                    onClick={fecharFormGrupo}
-                    className="rounded-lg border border-slate-300 dark:border-slate-600 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
-                  >
-                    Cancelar
-                  </button>
-                )}
-              </div>
-            </form>
-          </div>
-
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 p-6">
-            <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-4">Grupos cadastrados</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 dark:border-slate-700">
-                    <th className="text-left py-2 text-slate-500 dark:text-slate-400 font-medium">Nome</th>
-                    <th className="text-left py-2 text-slate-500 dark:text-slate-400 font-medium">Descrição</th>
-                    <th className="text-left py-2 text-slate-500 dark:text-slate-400 font-medium">Usuários</th>
-                    <th className="text-left py-2 text-slate-500 dark:text-slate-400 font-medium">Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {grupos.map((g) => (
-                    <tr key={g.id} className="border-b border-slate-200 dark:border-slate-700 last:border-0">
-                      <td className="py-2 text-slate-800 dark:text-slate-200 font-medium">{g.nome}</td>
-                      <td className="py-2 text-slate-600 dark:text-slate-400">
-                        {g.descricao || '—'} · {g.ativo ? 'Ativo' : 'Inativo'}
-                      </td>
-                      <td className="py-2 text-slate-600 dark:text-slate-400">{g.totalUsuarios ?? 0}</td>
-                      <td className="py-2 flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => abrirEditarGrupo(g)}
-                          className="text-primary-600 dark:text-primary-400 hover:underline text-sm"
-                        >
-                          Editar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleExcluirGrupo(g)}
-                          className="text-amber-600 dark:text-amber-400 hover:underline text-sm"
-                        >
-                          Excluir
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
-            {grupos.length === 0 && (
-              <p className="text-slate-500 dark:text-slate-400 text-sm py-4">Nenhum grupo cadastrado.</p>
-            )}
-          </div>
-        </div>
+            {formErrorUsuario && <p className="text-amber-600 dark:text-amber-400 text-sm">{formErrorUsuario}</p>}
+            <div className="flex gap-2">
+              <button type="submit" disabled={salvandoUsuario} className="rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white px-4 py-2 text-sm font-medium">{salvandoUsuario ? 'Criando...' : 'Criar usuário'}</button>
+              <button type="button" onClick={() => setModalCriarUsuarioOpen(false)} className="rounded-lg border border-slate-300 dark:border-slate-600 px-4 py-2 text-sm">Cancelar</button>
+            </div>
+          </form>
+        </ModalContainer>
+      )}
+
+      {modalEditarUsuarioOpen && (
+        <ModalContainer title={`Editar usuário ${editLogin}`} onClose={fecharFormEditarUsuario}>
+          <form onSubmit={handleSubmitEditarUsuario} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div><label className="block text-xs mb-1">Nome</label><input value={editNome} onChange={(e) => setEditNome(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+              <div><label className="block text-xs mb-1">E-mail</label><input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+              <div><label className="block text-xs mb-1">Telefone</label><input value={editTelefone} onChange={(e) => setEditTelefone(formatarTelefoneInput(e.target.value))} placeholder="(XX) XXXXX-XXXX" className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+              <div><label className="block text-xs mb-1">Senha (opcional)</label><input type="password" value={editSenha} onChange={(e) => setEditSenha(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+              <div>
+                <label className="block text-xs mb-1">Grupo</label>
+                <select value={editGrupoId === '' ? '' : editGrupoId} onChange={(e) => setEditGrupoId(e.target.value === '' ? '' : Number(e.target.value))} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm">
+                  <option value="">Sem grupo</option>
+                  {grupos.map((g) => <option key={g.id} value={g.id}>{g.nome}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-5">
+                <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={editAtivo} onChange={(e) => setEditAtivo(e.target.checked)} /> Usuário ativo</label>
+                <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={editIsCommercialTeam} onChange={(e) => setEditIsCommercialTeam(e.target.checked)} /> Time comercial</label>
+              </div>
+              <div>
+                <label className="block text-xs mb-1">Foto</label>
+                <input type="file" accept="image/jpeg,image/png,image/gif,image/webp" onChange={handleEditFotoChange} className="w-full text-sm" />
+                {editFotoPreview && <img src={editFotoPreview} alt="" className="w-14 h-14 mt-2 rounded-full object-cover" />}
+              </div>
+            </div>
+            {formErrorEditarUsuario && <p className="text-amber-600 dark:text-amber-400 text-sm">{formErrorEditarUsuario}</p>}
+            <div className="flex gap-2">
+              <button type="submit" disabled={salvandoEditarUsuario} className="rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white px-4 py-2 text-sm font-medium">{salvandoEditarUsuario ? 'Salvando...' : 'Salvar alterações'}</button>
+              <button type="button" onClick={fecharFormEditarUsuario} className="rounded-lg border border-slate-300 dark:border-slate-600 px-4 py-2 text-sm">Cancelar</button>
+            </div>
+          </form>
+        </ModalContainer>
+      )}
+
+      {modalGrupoOpen && (
+        <ModalContainer title={editandoGrupoId ? 'Editar grupo' : 'Cadastrar novo grupo'} onClose={fecharFormGrupo}>
+          <form onSubmit={handleSubmitGrupo} className="space-y-4">
+            <div><label className="block text-xs mb-1">Nome do grupo</label><input value={grupoNome} onChange={(e) => setGrupoNome(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+            <div><label className="block text-xs mb-1">Descrição</label><input value={grupoDescricao} onChange={(e) => setGrupoDescricao(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={grupoAtivo} onChange={(e) => setGrupoAtivo(e.target.checked)} /> Grupo ativo</label>
+            <div className="space-y-3">
+              {agruparPermissoes(permissoesLista).map(({ secao, itens }) => (
+                <div key={secao} className="rounded-lg border border-slate-200 dark:border-slate-600/50 p-3 bg-slate-50/50 dark:bg-slate-800/30">
+                  <div className="text-xs font-semibold text-slate-600 dark:text-slate-400 mb-2 uppercase tracking-wide">{secao}</div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-2">
+                    {itens.map((p) => (
+                      <label key={p.codigo} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="checkbox" checked={grupoPermissoes.includes(p.codigo)} onChange={() => togglePermissao(p.codigo)} />
+                        {p.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {formErrorGrupo && <p className="text-amber-600 dark:text-amber-400 text-sm">{formErrorGrupo}</p>}
+            <div className="flex gap-2">
+              <button type="submit" disabled={salvandoGrupo} className="rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white px-4 py-2 text-sm font-medium">
+                {salvandoGrupo ? 'Salvando...' : editandoGrupoId ? 'Salvar alterações' : 'Criar grupo'}
+              </button>
+              <button type="button" onClick={fecharFormGrupo} className="rounded-lg border border-slate-300 dark:border-slate-600 px-4 py-2 text-sm">Cancelar</button>
+            </div>
+          </form>
+        </ModalContainer>
       )}
 
       {toast && (

@@ -6,3 +6,14 @@ export const loginSchema = z.object({
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;
+
+export const changePasswordSchema = z
+  .object({
+    senhaAtual: z.string().min(1, 'Senha atual é obrigatória').transform((s) => s.trim()),
+    novaSenha: z.string().min(4, 'Nova senha deve ter no mínimo 4 caracteres').max(100).transform((s) => s.trim()),
+    confirmarNovaSenha: z.string().min(1, 'Confirmação da nova senha é obrigatória').transform((s) => s.trim()),
+  })
+  .refine((data) => data.novaSenha === data.confirmarNovaSenha, {
+    message: 'Confirmação da nova senha não confere.',
+    path: ['confirmarNovaSenha'],
+  });

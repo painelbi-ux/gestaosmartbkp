@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Outlet, NavLink, useNavigate, useLocation, Link } from 'react-router-dom';
-import { logout } from '../api/auth';
+import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { logout, changeMyPassword } from '../api/auth';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { PERMISSOES } from '../config/permissoes';
@@ -53,9 +53,14 @@ const INTEGRACAO_SUBMENUS: { to: string; label: string }[] = [
   { to: '/integracao/faturamento-diario', label: 'Faturamento Diário' },
 ];
 
+const GESTAO_USUARIOS_SUBMENUS: { to: string; label: string }[] = [
+  { to: '/usuarios', label: 'Usuários' },
+  { to: '/usuarios/grupos', label: 'Grupos de usuários' },
+];
+
 /** Rotas que podem ser abertas em abas (path → label). Usado na barra de abas. */
 const PATH_LABELS: Record<string, string> = {
-  '/': 'Dashboard PD',
+  '/': 'Início',
   '/pedidos': 'Gerenciador de Pedidos',
   '/pedidos/sycroorder': 'Comunicação PD',
   '/pedidos/mrp': 'MRP',
@@ -74,8 +79,10 @@ const PATH_LABELS: Record<string, string> = {
   '/integracao/alteracao-data-entrega-compra': 'Alteração Data Entrega',
   '/integracao/faturamento-diario': 'Faturamento Diário',
   '/usuarios': 'Usuários',
+  '/usuarios/grupos': 'Grupos de usuários',
   '/whatsapp': 'WhatsApp',
   '/situacao-api': 'Situação da API',
+  '/sem-acesso': 'Sem acesso',
 };
 
 function getLabelForPath(path: string): string {
@@ -86,7 +93,7 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
-  const { hasPermission, isMaster, grupo, nome, login } = useAuth();
+  const { hasPermission, isMaster, grupo, nome, login, mustChangePassword, refreshUser } = useAuth();
   const [pcpOpen, setPcpOpen] = useState(false);
   const pcpRef = useRef<HTMLDivElement>(null);
   const [comunicacaoOpen, setComunicacaoOpen] = useState(false);
@@ -99,6 +106,8 @@ export default function Layout() {
   const engenhariaRef = useRef<HTMLDivElement>(null);
   const [financeiroOpen, setFinanceiroOpen] = useState(false);
   const financeiroRef = useRef<HTMLDivElement>(null);
+  const [gestaoUsuariosOpen, setGestaoUsuariosOpen] = useState(false);
+  const gestaoUsuariosRef = useRef<HTMLDivElement>(null);
 
   const isPcpActive = location.pathname.startsWith('/pedidos');
   const isComunicacaoActive = location.pathname === '/pedidos/sycroorder';
@@ -106,6 +115,13 @@ export default function Layout() {
   const isIntegracaoActive = location.pathname.startsWith('/integracao');
   const isEngenhariaActive = location.pathname.startsWith('/engenharia');
   const isFinanceiroActive = location.pathname.startsWith('/financeiro');
+  const isGestaoUsuariosActive = location.pathname.startsWith('/usuarios');
+
+  const [senhaAtual, setSenhaAtual] = useState('');
+  const [novaSenha, setNovaSenha] = useState('');
+  const [confirmarNovaSenha, setConfirmarNovaSenha] = useState('');
+  const [savingSenha, setSavingSenha] = useState(false);
+  const [erroSenha, setErroSenha] = useState<string | null>(null);
 
   const [sycroUnreadCount, setSycroUnreadCount] = useState<number>(0);
 
@@ -143,13 +159,14 @@ export default function Layout() {
   const syncPanelRef = useRef<HTMLDivElement>(null);
 
   /** Fecha todos os dropdowns do menu e abre apenas o informado (evita sobreposição ao passar o mouse). */
-  const openOnly = useCallback((menu: 'pcp' | 'comunicacao' | 'compras' | 'integracao' | 'engenharia' | 'financeiro') => {
+  const openOnly = useCallback((menu: 'pcp' | 'comunicacao' | 'compras' | 'integracao' | 'engenharia' | 'financeiro' | 'gestaoUsuarios') => {
     setPcpOpen(menu === 'pcp');
     setComunicacaoOpen(menu === 'comunicacao');
     setComprasOpen(menu === 'compras');
     setIntegracaoOpen(menu === 'integracao');
     setEngenhariaOpen(menu === 'engenharia');
     setFinanceiroOpen(menu === 'financeiro');
+    setGestaoUsuariosOpen(menu === 'gestaoUsuarios');
   }, []);
 
   /** Abas abertas no topo da área de conteúdo (cada submenu/rota em uma aba). */
@@ -158,17 +175,6 @@ export default function Layout() {
     return [{ id: path, path, label: getLabelForPath(path) }];
   });
 
-  /** Perfil compras (não-master com Compras): ao entrar em `/` ou `/compras`, vai para o Dashboard com uma única aba. */
-  const soCompras = !isMaster && hasPermission(PERMISSOES.COMPRAS_VER);
-  useEffect(() => {
-    if (!soCompras) return;
-    const path = location.pathname || '/';
-    if (path === '/' || path === '/compras') {
-      setAbas([{ id: '/compras/dashboard', path: '/compras/dashboard', label: 'Dashboard Compras' }]);
-      navigate('/compras/dashboard', { replace: true });
-    }
-  }, [location.pathname, soCompras, navigate]);
-
   useEffect(() => {
     const path = location.pathname || '/';
     setAbas((prev) => {
@@ -176,11 +182,32 @@ export default function Layout() {
       if (exists) return prev;
       return [...prev, { id: path, path, label: getLabelForPath(path) }];
     });
-  }, [location.pathname, soCompras]);
+  }, [location.pathname]);
 
   const navigateAposFecharRef = useRef<string | null>(null);
   const dragTabIndexRef = useRef<number | null>(null);
   const justDraggedRef = useRef(false);
+  const closeMenuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleCloseMenu = useCallback((menu: 'pcp' | 'comunicacao' | 'compras' | 'integracao' | 'engenharia' | 'financeiro' | 'gestaoUsuarios') => {
+    if (closeMenuTimerRef.current) clearTimeout(closeMenuTimerRef.current);
+    closeMenuTimerRef.current = setTimeout(() => {
+      if (menu === 'pcp') setPcpOpen(false);
+      if (menu === 'comunicacao') setComunicacaoOpen(false);
+      if (menu === 'compras') setComprasOpen(false);
+      if (menu === 'integracao') setIntegracaoOpen(false);
+      if (menu === 'engenharia') setEngenhariaOpen(false);
+      if (menu === 'financeiro') setFinanceiroOpen(false);
+      if (menu === 'gestaoUsuarios') setGestaoUsuariosOpen(false);
+    }, 140);
+  }, []);
+
+  const cancelScheduledCloseMenu = useCallback(() => {
+    if (closeMenuTimerRef.current) {
+      clearTimeout(closeMenuTimerRef.current);
+      closeMenuTimerRef.current = null;
+    }
+  }, []);
 
   const reordenarAbas = useCallback((dragIndex: number, dropIndex: number) => {
     if (dragIndex === dropIndex) return;
@@ -195,11 +222,17 @@ export default function Layout() {
   const fecharAba = useCallback((pathToClose: string) => {
     const pathname = location.pathname;
     setAbas((prev) => {
+      const idx = prev.findIndex((a) => a.path === pathToClose);
+      if (idx < 0) return prev;
       const next = prev.filter((a) => a.path !== pathToClose);
-      if (next.length === 0) return prev;
+      if (next.length === 0) {
+        const fallbackPath = '/';
+        navigateAposFecharRef.current = fallbackPath;
+        return [{ id: fallbackPath, path: fallbackPath, label: getLabelForPath(fallbackPath) }];
+      }
       if (pathname === pathToClose) {
-        const idx = prev.findIndex((a) => a.path === pathToClose);
-        navigateAposFecharRef.current = next[Math.min(idx, next.length - 1)].path;
+        const target = next[Math.min(idx, next.length - 1)];
+        navigateAposFecharRef.current = target?.path ?? '/';
       }
       return next;
     });
@@ -247,6 +280,9 @@ export default function Layout() {
       if (financeiroRef.current && !financeiroRef.current.contains(e.target as Node)) {
         setFinanceiroOpen(false);
       }
+      if (gestaoUsuariosRef.current && !gestaoUsuariosRef.current.contains(e.target as Node)) {
+        setGestaoUsuariosOpen(false);
+      }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -255,9 +291,36 @@ export default function Layout() {
   const handleLogout = async () => {
     try {
       await logout();
+      await refreshUser();
       navigate('/entrar', { replace: true });
     } catch {
+      await refreshUser();
       navigate('/entrar', { replace: true });
+    }
+  };
+
+  const handleForcarTrocaSenha = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErroSenha(null);
+    if (!senhaAtual || !novaSenha || !confirmarNovaSenha) {
+      setErroSenha('Preencha senha atual, nova senha e confirmação da nova senha.');
+      return;
+    }
+    if (novaSenha !== confirmarNovaSenha) {
+      setErroSenha('Confirmação da nova senha não confere.');
+      return;
+    }
+    setSavingSenha(true);
+    try {
+      await changeMyPassword({ senhaAtual, novaSenha, confirmarNovaSenha });
+      setSenhaAtual('');
+      setNovaSenha('');
+      setConfirmarNovaSenha('');
+      await refreshUser();
+    } catch (err) {
+      setErroSenha(err instanceof Error ? err.message : 'Erro ao alterar senha.');
+    } finally {
+      setSavingSenha(false);
     }
   };
 
@@ -303,8 +366,9 @@ export default function Layout() {
                 </button>
                 {pcpOpen && (
                   <div
-                    className="absolute left-0 top-full mt-1 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
-                    onMouseLeave={() => setPcpOpen(false)}
+                    className="absolute left-0 top-full mt-0 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseEnter={cancelScheduledCloseMenu}
+                    onMouseLeave={() => scheduleCloseMenu('pcp')}
                   >
                     {PCP_SUBMENUS.map((item) => (
                       <NavLink
@@ -347,8 +411,9 @@ export default function Layout() {
                 </button>
                 {comunicacaoOpen && (
                   <div
-                    className="absolute left-0 top-full mt-1 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
-                    onMouseLeave={() => setComunicacaoOpen(false)}
+                    className="absolute left-0 top-full mt-0 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseEnter={cancelScheduledCloseMenu}
+                    onMouseLeave={() => scheduleCloseMenu('comunicacao')}
                   >
                     {COMUNICACAO_INTERNA_SUBMENUS.map((item) => (
                       <NavLink
@@ -405,8 +470,9 @@ export default function Layout() {
                 </button>
                 {comprasOpen && (
                   <div
-                    className="absolute left-0 top-full mt-1 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
-                    onMouseLeave={() => setComprasOpen(false)}
+                    className="absolute left-0 top-full mt-0 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseEnter={cancelScheduledCloseMenu}
+                    onMouseLeave={() => scheduleCloseMenu('compras')}
                   >
                     {COMPRAS_SUBMENUS.map((item) => (
                       <NavLink
@@ -449,8 +515,9 @@ export default function Layout() {
                 </button>
                 {engenhariaOpen && (
                   <div
-                    className="absolute left-0 top-full mt-1 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
-                    onMouseLeave={() => setEngenhariaOpen(false)}
+                    className="absolute left-0 top-full mt-0 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseEnter={cancelScheduledCloseMenu}
+                    onMouseLeave={() => scheduleCloseMenu('engenharia')}
                   >
                     {ENGENHARIA_SUBMENUS.map((item) => (
                       <NavLink
@@ -493,8 +560,9 @@ export default function Layout() {
                 </button>
                 {financeiroOpen && (
                   <div
-                    className="absolute left-0 top-full mt-1 py-1 w-64 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
-                    onMouseLeave={() => setFinanceiroOpen(false)}
+                    className="absolute left-0 top-full mt-0 py-1 w-64 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseEnter={cancelScheduledCloseMenu}
+                    onMouseLeave={() => scheduleCloseMenu('financeiro')}
                   >
                     {FINANCEIRO_SUBMENUS.map((item) => (
                       <NavLink
@@ -537,8 +605,9 @@ export default function Layout() {
                 </button>
                 {integracaoOpen && (
                   <div
-                    className="absolute left-0 top-full mt-1 py-1 w-72 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
-                    onMouseLeave={() => setIntegracaoOpen(false)}
+                    className="absolute left-0 top-full mt-0 py-1 w-72 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseEnter={cancelScheduledCloseMenu}
+                    onMouseLeave={() => scheduleCloseMenu('integracao')}
                   >
                     {INTEGRACAO_SUBMENUS_FOR_USER.map((item) => (
                       <NavLink
@@ -614,17 +683,49 @@ export default function Layout() {
               {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
             </button>
             {hasPermission(PERMISSOES.USUARIOS_GERENCIAR) && (
-              <Link
-                to="/usuarios"
-                className="rounded-lg p-2 text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-700 transition"
-                title="Cadastro de usuários"
-                aria-label="Cadastro de usuários"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                  <circle cx="12" cy="7" r="4" />
-                </svg>
-              </Link>
+              <div className="relative" ref={gestaoUsuariosRef}>
+                <button
+                  type="button"
+                  onClick={() => setGestaoUsuariosOpen((v) => !v)}
+                  onMouseEnter={() => openOnly('gestaoUsuarios')}
+                  className={`inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                    isGestaoUsuariosActive
+                      ? 'bg-primary-600 text-white'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700/50'
+                  }`}
+                  aria-expanded={gestaoUsuariosOpen}
+                  aria-haspopup="true"
+                >
+                  Gestão de usuários
+                  <svg className="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {gestaoUsuariosOpen && (
+                  <div
+                    className="absolute right-0 top-full mt-0 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseEnter={cancelScheduledCloseMenu}
+                    onMouseLeave={() => scheduleCloseMenu('gestaoUsuarios')}
+                  >
+                    {GESTAO_USUARIOS_SUBMENUS.map((item) => (
+                      <NavLink
+                        key={item.to}
+                        to={item.to}
+                        onClick={() => setGestaoUsuariosOpen(false)}
+                        className={({ isActive }) =>
+                          `block px-4 py-2 text-sm transition ${
+                            isActive
+                              ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200 font-medium'
+                              : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                          }`
+                        }
+                      >
+                        {item.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
             {(hasPermission(PERMISSOES.COMUNICACAO_TELA_VER) || hasPermission(PERMISSOES.COMUNICACAO_TOTAL)) && (
               <button
@@ -672,11 +773,16 @@ export default function Layout() {
           <div className="flex items-center gap-1 border-b border-slate-200 dark:border-slate-700 overflow-x-auto mb-4 shrink-0">
             {abas.map((aba, index) => {
               const ativa = location.pathname === aba.path;
+              const isPinnedHome = aba.path === '/';
               return (
                 <div
                   key={aba.id}
-                  draggable
+                  draggable={!isPinnedHome}
                   onDragStart={(e) => {
+                    if (isPinnedHome) {
+                      e.preventDefault();
+                      return;
+                    }
                     const target = e.target as HTMLElement;
                     if (target.closest('button[aria-label="Fechar aba"]')) {
                       e.preventDefault();
@@ -714,25 +820,38 @@ export default function Layout() {
                       if (justDraggedRef.current) return;
                       navigate(aba.path);
                     }}
-                    className="truncate max-w-[200px] text-left"
+                    className="truncate max-w-[200px] text-left inline-flex items-center"
+                    title={aba.path === '/' ? 'Abas' : aba.label}
+                    aria-label={aba.path === '/' ? 'Abas' : aba.label}
                   >
-                    {aba.label}
+                    {aba.path === '/' ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                        <rect x="3" y="5" width="18" height="14" rx="2" ry="2" />
+                        <line x1="3" y1="9" x2="21" y2="9" />
+                        <line x1="8" y1="5" x2="8" y2="9" />
+                        <line x1="13" y1="5" x2="13" y2="9" />
+                      </svg>
+                    ) : (
+                      aba.label
+                    )}
                   </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      fecharAba(aba.path);
-                    }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    className="rounded p-0.5 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-500 shrink-0"
-                    aria-label="Fechar aba"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  </button>
+                  {!isPinnedHome && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fecharAba(aba.path);
+                      }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      className="rounded p-0.5 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-500 shrink-0"
+                      aria-label="Fechar aba"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -742,6 +861,54 @@ export default function Layout() {
           <Outlet />
         </PermissionGuard>
       </main>
+
+      {mustChangePassword && (
+        <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-xl p-6">
+            <h3 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Troca obrigatória de senha</h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1">
+              Para continuar, confirme sua senha atual e defina uma nova senha.
+            </p>
+            <form onSubmit={handleForcarTrocaSenha} className="space-y-3 mt-4">
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Senha atual</label>
+                <input
+                  type="password"
+                  value={senhaAtual}
+                  onChange={(e) => setSenhaAtual(e.target.value)}
+                  className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nova senha</label>
+                <input
+                  type="password"
+                  value={novaSenha}
+                  onChange={(e) => setNovaSenha(e.target.value)}
+                  className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Confirmação da nova senha</label>
+                <input
+                  type="password"
+                  value={confirmarNovaSenha}
+                  onChange={(e) => setConfirmarNovaSenha(e.target.value)}
+                  className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm"
+                />
+              </div>
+              {erroSenha && <p className="text-sm text-amber-600 dark:text-amber-400">{erroSenha}</p>}
+              <button
+                type="submit"
+                disabled={savingSenha}
+                className="w-full rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white px-4 py-2 text-sm font-medium"
+              >
+                {savingSenha ? 'Salvando...' : 'Alterar senha'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Botão fixo no rodapé: Conexão API / ERP — disponível em todas as abas */}
       <div ref={syncPanelRef} className="fixed bottom-4 right-4 z-50 flex flex-col items-end">

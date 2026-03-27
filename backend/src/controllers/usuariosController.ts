@@ -42,6 +42,8 @@ export async function listarUsuarios(_req: Request, res: Response): Promise<void
         id: true,
         login: true,
         nome: true,
+        email: true,
+        telefone: true,
         ativo: true,
         permissoes: true,
         grupoId: true,
@@ -58,6 +60,8 @@ export async function listarUsuarios(_req: Request, res: Response): Promise<void
           id: u.id,
           login: u.login,
           nome: u.nome,
+          email: u.email ?? null,
+          telefone: u.telefone ?? null,
           ativo: u.ativo,
           permissoes: perms.filter((p) => p !== COMMERCIAL_TEAM_FLAG),
           isCommercialTeam: isCommercialTeamFromPerms(perms),
@@ -83,23 +87,28 @@ export async function criarUsuario(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Dados inválidos', details: parsed.error.flatten() });
     return;
   }
-  const { login: loginUser, senha, nome, grupoId, fotoUrl, ativo, permissoes, isCommercialTeam } = parsed.data;
+  const { login: loginUser, senha, nome, email, telefone, grupoId, fotoUrl, ativo, permissoes, isCommercialTeam } = parsed.data;
   try {
     const senhaHash = await bcrypt.hash(senha, 10);
     const usuario = await prisma.usuario.create({
       data: {
         login: loginUser,
         senhaHash,
-        nome: nome || null,
+        nome,
+        email: email || null,
+        telefone: telefone || null,
         grupoId: grupoId ?? null,
         fotoUrl: fotoUrl ?? null,
         ativo: ativo ?? true,
         permissoes: serializePermissoes(withCommercialFlag(permissoes ?? [], isCommercialTeam)),
+        mustChangePassword: true,
       },
       select: {
         id: true,
         login: true,
         nome: true,
+        email: true,
+        telefone: true,
         ativo: true,
         permissoes: true,
         grupoId: true,
@@ -112,6 +121,8 @@ export async function criarUsuario(req: Request, res: Response): Promise<void> {
       id: usuario.id,
       login: usuario.login,
       nome: usuario.nome,
+      email: usuario.email ?? null,
+      telefone: usuario.telefone ?? null,
       ativo: usuario.ativo,
       permissoes: parsePermissoes(usuario.permissoes).filter((p) => p !== COMMERCIAL_TEAM_FLAG),
       isCommercialTeam: isCommercialTeamFromPerms(parsePermissoes(usuario.permissoes)),
@@ -147,14 +158,15 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const { senha, nome, grupoId, fotoUrl, ativo, permissoes, isCommercialTeam } = parsed.data;
+  const { senha, nome, email, telefone, grupoId, fotoUrl, ativo, isCommercialTeam } = parsed.data;
   const temAlgumaAlteracao =
     senha !== undefined ||
     nome !== undefined ||
+    email !== undefined ||
+    telefone !== undefined ||
     grupoId !== undefined ||
     fotoUrl !== undefined ||
     ativo !== undefined ||
-    permissoes !== undefined ||
     isCommercialTeam !== undefined;
   if (!temAlgumaAlteracao) {
     res.status(400).json({ error: 'Informe ao menos um campo para atualizar.' });
@@ -182,7 +194,7 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
     return;
   }
   const teveOutrosCampos =
-    nome !== undefined || grupoId !== undefined || fotoUrl !== undefined || permissoes !== undefined || isCommercialTeam !== undefined;
+    nome !== undefined || email !== undefined || telefone !== undefined || grupoId !== undefined || fotoUrl !== undefined || isCommercialTeam !== undefined;
   if (teveOutrosCampos && !podeEditar) {
     res.status(403).json({ error: 'Sem permissão para editar usuário.' });
     return;
@@ -210,17 +222,27 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
     const dataUpdate: {
       senhaHash?: string;
       nome?: string | null;
+      email?: string | null;
+      telefone?: string | null;
       grupoId?: number | null;
       fotoUrl?: string | null;
       ativo?: boolean;
       permissoes?: string;
+      mustChangePassword?: boolean;
     } = {};
 
     if (senha !== undefined) {
       dataUpdate.senhaHash = await bcrypt.hash(senha, 10);
+      dataUpdate.mustChangePassword = true;
     }
     if (nome !== undefined) {
       dataUpdate.nome = nome ?? null;
+    }
+    if (email !== undefined) {
+      dataUpdate.email = email ?? null;
+    }
+    if (telefone !== undefined) {
+      dataUpdate.telefone = telefone ?? null;
     }
     if (grupoId !== undefined) {
       dataUpdate.grupoId = grupoId ?? null;
@@ -231,9 +253,9 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
     if (ativo !== undefined) {
       dataUpdate.ativo = ativo;
     }
-    if (permissoes !== undefined || isCommercialTeam !== undefined) {
+    if (isCommercialTeam !== undefined) {
       const currentPerms = existente ? parsePermissoes(existente.permissoes) : [];
-      const nextPerms = withCommercialFlag(permissoes ?? currentPerms, isCommercialTeam);
+      const nextPerms = withCommercialFlag(currentPerms, isCommercialTeam);
       dataUpdate.permissoes = serializePermissoes(nextPerms);
     }
 
@@ -244,6 +266,8 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
         id: true,
         login: true,
         nome: true,
+        email: true,
+        telefone: true,
         ativo: true,
         permissoes: true,
         grupoId: true,
@@ -257,6 +281,8 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
       id: usuario.id,
       login: usuario.login,
       nome: usuario.nome,
+      email: usuario.email ?? null,
+      telefone: usuario.telefone ?? null,
       ativo: usuario.ativo,
       permissoes: parsePermissoes(usuario.permissoes).filter((p) => p !== COMMERCIAL_TEAM_FLAG),
       isCommercialTeam: isCommercialTeamFromPerms(parsePermissoes(usuario.permissoes)),

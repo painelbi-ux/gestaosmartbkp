@@ -61,10 +61,13 @@ model Usuario {
   login     String       @unique
   senhaHash String
   nome      String?
+  email     String?
+  telefone  String?
   grupoId   Int?
   fotoUrl   String? // Foto do usuário (data URL base64 ou URL). Opcional.
   permissoes String?  // JSON array: permissões específicas do usuário (códigos), caso deseje sobrepor/adição em relação ao grupo.
   ativo     Boolean    @default(true)
+  mustChangePassword Boolean @default(false)
   createdAt DateTime     @default(now())
 
   grupo GrupoUsuario? @relation(fields: [grupoId], references: [id], onDelete: SetNull)
@@ -250,7 +253,10 @@ model PrecificacaoItem {
   idFamiliaProduto  Int?
   codigocomponente  String?
   componente        String?
+  unidadeMedida     String?
   qtd               Float   // quantidade (round 5 decimais)
+  /// Data da última entrada usada no cálculo de custo (SQL Nomus).
+  dataEntrada       String?
   valorUnitario     Float?  // da segunda consulta Nomus (por idcomponente)
   valorTotal        Float?  // qtd * valorUnitario
 

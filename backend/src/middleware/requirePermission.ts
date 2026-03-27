@@ -42,8 +42,7 @@ export async function getPermissoesUsuario(login: string): Promise<CodigoPermiss
   if (usuario.grupo && usuario.grupo.ativo === false) return [];
 
   const groupPerms = parsePermissoesJSON(usuario.grupo?.permissoes);
-  const userPerms = parsePermissoesJSON(usuario.permissoes);
-  const union = [...new Set([...groupPerms, ...userPerms])];
+  const union = [...new Set([...groupPerms])];
 
   const grupoNome = usuario.grupo?.nome ?? '';
   const allowIntegracaoForGroup = ['Compras', 'Operador Compras'].includes(String(grupoNome));

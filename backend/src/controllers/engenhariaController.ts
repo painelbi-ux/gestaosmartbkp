@@ -734,6 +734,33 @@ WHERE p.id IN (${inPlaceholder})
   return mapa;
 }
 
+async function carregarUnidadeMedidaPorComponente(
+  pool: NonNullable<ReturnType<typeof getNomusPool>>,
+  idsComponentes: number[]
+): Promise<Map<number, string>> {
+  const mapa = new Map<number, string>();
+  if (idsComponentes.length === 0) return mapa;
+
+  const inPlaceholder = idsComponentes.map(() => '?').join(',');
+  const sqlUm = `
+SELECT
+  p.id AS idProduto,
+  COALESCE(um.abreviatura, um.nome, '') AS unidadeMedida
+FROM produto p
+LEFT JOIN unidademedida um ON um.id = p.idUnidadeMedida
+WHERE p.id IN (${inPlaceholder})
+`.trim();
+  const [rows] = await pool.query(sqlUm, idsComponentes);
+  const list = (Array.isArray(rows) ? rows : []) as Record<string, unknown>[];
+  for (const r of list) {
+    const idProd = toNum(r.idProduto ?? r.idproduto);
+    const um = toStr(r.unidadeMedida ?? r.unidademedida)?.trim() || '';
+    if (idProd == null) continue;
+    if (!mapa.has(idProd) || mapa.get(idProd) === '') mapa.set(idProd, um);
+  }
+  return mapa;
+}
+
 /**
  * POST /api/engenharia/precificacao/iniciar
  * Body: { idProduto: number }
@@ -783,6 +810,7 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
 
     // Segunda consulta: valor unitário por idProduto (idcomponente)
     const mapaValorUnitario = new Map<number, number>();
+    const mapaDataEntrada = new Map<number, string>();
     const mapaTipoMaterial = new Map<number, string>();
     if (idsComponentes.length > 0) {
       try {
@@ -795,10 +823,20 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
           const idProd = toNum(r.idProduto ?? r.idproduto);
           const valor = toFloat(r.valorUnitario ?? r.valorunitario);
           const opcao = toStr(r.opcao)?.trim() || '';
+          const dataEntradaRaw = r.dataEntrada ?? r.dataentrada ?? r.DataEntrada ?? r.data_entrada;
+          const dataEntrada =
+            dataEntradaRaw instanceof Date
+              ? dataEntradaRaw.toISOString().slice(0, 10)
+              : dataEntradaRaw != null
+                ? String(dataEntradaRaw).trim().slice(0, 10)
+                : '';
           if (idProd != null) {
             mapaValorUnitario.set(idProd, valor);
             if (!mapaTipoMaterial.has(idProd) || mapaTipoMaterial.get(idProd) === '') {
               mapaTipoMaterial.set(idProd, opcao);
+            }
+            if (dataEntrada && (!mapaDataEntrada.has(idProd) || mapaDataEntrada.get(idProd) === '')) {
+              mapaDataEntrada.set(idProd, dataEntrada);
             }
           }
         }
@@ -807,6 +845,9 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
         // segue sem valor unitário
       }
     }
+
+    const mapaUnidadeMedida =
+      idsComponentes.length > 0 ? await carregarUnidadeMedidaPorComponente(pool, idsComponentes) : new Map<number, string>();
 
     const ncmCodigo = await buscarCodigoNcmProduto(pool, idProduto);
 
@@ -857,6 +898,7 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
     const itensData = Array.from(agrupado.entries()).map(([idcomp, { sumQtd, first }]) => {
       const valorUnitario = mapaValorUnitario.get(idcomp) ?? null;
       const valorTotal = valorUnitario != null ? Math.round(sumQtd * valorUnitario * 100) / 100 : null;
+      const dataEntrada = mapaDataEntrada.get(idcomp) ?? null;
       return {
         precificacaoId: precificacao.id,
         idprodutopai: toNum(first.idprodutopai ?? first.idprodutoPai),
@@ -866,7 +908,9 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
         idFamiliaProduto: mapaFamilia.get(idcomp) ?? null,
         codigocomponente: toStr(first.codigocomponente ?? first.codigoComponente),
         componente: toStr(first.componente),
+        unidadeMedida: mapaUnidadeMedida.get(idcomp) ?? null,
         qtd: Math.round(sumQtd * 100000) / 100000,
+        dataEntrada,
         valorUnitario: valorUnitario ?? null,
         valorTotal: valorTotal ?? null,
       };
@@ -900,7 +944,9 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
         idFamiliaProduto: i.idFamiliaProduto ?? null,
         codigocomponente: i.codigocomponente,
         componente: i.componente,
+        unidadeMedida: i.unidadeMedida ?? null,
         qtd: i.qtd,
+        dataEntrada: i.dataEntrada ?? null,
         tipoMaterial: (typeof i.idcomponente === 'number' ? mapaTipoMaterial.get(i.idcomponente) : null) ?? null,
         valorUnitario: i.valorUnitario ?? null,
         valorTotal: i.valorTotal ?? null,
@@ -978,9 +1024,18 @@ export async function getPrecificacaoResultado(req: Request, res: Response): Pro
       .map((i) => (typeof i.idcomponente === 'number' ? i.idcomponente : null))
       .filter((n): n is number => n != null);
 
-    let mapaTipoMaterial = new Map<number, string>();
-    let ncmCodigoResult = precificacao.ncmCodigo ?? null;
     const pool = getNomusPool();
+    let mapaTipoMaterial = new Map<number, string>();
+    let mapaUnidadeMedida = new Map<number, string>();
+    if (pool && idsComponentes.length > 0 && isNomusEnabled()) {
+      try {
+        mapaUnidadeMedida = await carregarUnidadeMedidaPorComponente(pool, idsComponentes);
+      } catch (e) {
+        console.error('[engenhariaController] getPrecificacaoResultado unidade medida:', e instanceof Error ? e.message : e);
+      }
+    }
+
+    let ncmCodigoResult = precificacao.ncmCodigo ?? null;
     if (isNomusEnabled() && idsComponentes.length > 0 && pool) {
       try {
         mapaTipoMaterial = await carregarTipoMaterialPorComponente(pool, [...new Set(idsComponentes)]);
@@ -1080,7 +1135,11 @@ export async function getPrecificacaoResultado(req: Request, res: Response): Pro
           (typeof i.idcomponente === 'number' ? mapaFamiliaExtra.get(i.idcomponente) ?? null : null),
         codigocomponente: i.codigocomponente,
         componente: i.componente,
+        unidadeMedida:
+          i.unidadeMedida ??
+          (typeof i.idcomponente === 'number' ? mapaUnidadeMedida.get(i.idcomponente) ?? null : null),
         qtd: i.qtd,
+        dataEntrada: i.dataEntrada ?? null,
         tipoMaterial: (typeof i.idcomponente === 'number' ? mapaTipoMaterial.get(i.idcomponente) : null) ?? null,
         valorUnitario: i.valorUnitario ?? null,
         valorTotal: i.valorTotal ?? null,

@@ -40,8 +40,18 @@ router.get(
   getHistoricoAlteracaoDataEntregaItem
 );
 
-router.get('/tickets', requirePermission(PERMISSOES.INTEGRACAO_VER), getTickets);
-router.get('/tickets/:id', requirePermission(PERMISSOES.INTEGRACAO_VER), getTicketById);
+// Tickets são usados dentro da Precificação (Engenharia). Liberamos leitura para quem pode ver/gerar precificação,
+// sem precisar habilitar o módulo Integração no menu.
+router.get(
+  '/tickets',
+  requirePermission(PERMISSOES.INTEGRACAO_VER, PERMISSOES.PRECIFICACAO_VER, PERMISSOES.PRECIFICACAO_GERAR),
+  getTickets
+);
+router.get(
+  '/tickets/:id',
+  requirePermission(PERMISSOES.INTEGRACAO_VER, PERMISSOES.PRECIFICACAO_VER, PERMISSOES.PRECIFICACAO_GERAR),
+  getTicketById
+);
 
 router.get('/faturamento-diario/mensagem', requirePermission(PERMISSOES.INTEGRACAO_VER), getMensagemFaturamentoDiario);
 router.post('/faturamento-diario/enviar', requirePermission(PERMISSOES.INTEGRACAO_VER), postEnviarFaturamentoDiario);
