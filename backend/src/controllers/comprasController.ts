@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import bcrypt from 'bcryptjs';
 import { listarProdutosColeta, buscarRegistroColetaNomus, listarFornecedoresAtivos, listarCondicoesPagamentoNomus, listarFormasPagamentoNomus } from '../data/comprasRepository.js';
 import { prisma } from '../config/prisma.js';
+import { getNomusPool, isNomusEnabled } from '../config/nomusDb.js';
 
 const MAX_FORNECEDORES_POR_COTACAO = 5;
 /** Horas sem movimentação após as quais o usuário fica bloqueado para criar nova coleta até dar ciência. */
@@ -313,6 +314,9 @@ export async function getColetasPrecos(_req: Request, res: Response): Promise<vo
           dataFinalizacao: true,
           observacoes: true,
           jaEnviadaAprovacao: true,
+          requerVinculoFinalizacao: true,
+          finalizacaoTipoRegistro: true,
+          finalizacaoIdRegistro: true,
           _count: { select: { itens: true, registros: true } },
           registros: { select: { dados: true } },
           ciencias: { select: { id: true }, take: 1 },
@@ -320,7 +324,7 @@ export async function getColetasPrecos(_req: Request, res: Response): Promise<vo
       }) as ColetaRow[];
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (/dataUltimaMovimentacao|coleta_precos_ciencia|ciencias|no such table|no such column/i.test(msg)) {
+      if (/dataUltimaMovimentacao|coleta_precos_ciencia|ciencias|requerVinculoFinalizacao|finalizacaoTipoRegistro|finalizacaoIdRegistro|no such table|no such column/i.test(msg)) {
         coletas = (await prisma.coletaPrecos.findMany({
           orderBy: { createdAt: 'desc' },
           select: {
@@ -403,6 +407,9 @@ export async function getColetasPrecos(_req: Request, res: Response): Promise<vo
         dataFinalizacao: c.dataFinalizacao?.toISOString() ?? null,
         observacoes: c.observacoes ?? null,
         jaEnviadaAprovacao: c.jaEnviadaAprovacao ?? false,
+        requerVinculoFinalizacao: (c as { requerVinculoFinalizacao?: boolean }).requerVinculoFinalizacao ?? false,
+        finalizacaoTipoRegistro: (c as { finalizacaoTipoRegistro?: string | null }).finalizacaoTipoRegistro ?? null,
+        finalizacaoIdRegistro: (c as { finalizacaoIdRegistro?: number | null }).finalizacaoIdRegistro ?? null,
         codigosProduto,
         descricoesProduto,
         nomesColeta: Array.from(nomesColetaSet),
@@ -642,8 +649,113 @@ export async function patchReabrirColeta(req: Request, res: Response): Promise<v
 }
 
 /**
+ * GET /api/compras/coletas/opcoes-vinculo-finalizacao?q=
+ * Lista pedidos de compra e cotações no Nomus para vincular à finalização da coleta (busca no nome e fornecedor).
+ */
+export async function getOpcoesVinculoFinalizacao(req: Request, res: Response): Promise<void> {
+  if (!isNomusEnabled()) {
+    res.status(503).json({ data: [], error: 'NOMUS_DB_URL não configurado' });
+    return;
+  }
+  const pool = getNomusPool();
+  if (!pool) {
+    res.status(503).json({ data: [], error: 'Conexão Nomus indisponível' });
+    return;
+  }
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  const sqlBase = `
+SELECT * FROM (
+SELECT
+    pc.id,
+    pc.nome,
+    p.nome AS nomeFornecedor,
+    pc.dataEmissao,
+    'PEDIDO' AS tipoRegistro
+FROM itempedidocompra ipc
+LEFT JOIN pedidocompra pc ON pc.id = ipc.idPedidoCompra
+LEFT JOIN pessoa p ON p.id = pc.idFornecedor
+WHERE ipc.status IN (2,3,4)
+GROUP BY pc.id, pc.nome, p.nome, pc.dataEmissao
+UNION ALL
+SELECT
+    c.id,
+    c.nome,
+    p.nome AS nomeFornecedor,
+    c.dataEmissao,
+    'COTACAO' AS tipoRegistro
+FROM cotacaocompra c
+LEFT JOIN coletaprecoscotacao cc ON cc.idCotacaoCompra = c.id
+LEFT JOIN pessoa p ON p.id = cc.idFornecedor
+WHERE c.status IN (1,2,4)
+) t
+`.trim();
+  try {
+    let sql = sqlBase;
+    const params: unknown[] = [];
+    if (q) {
+      const like = `%${q}%`;
+      sql += ` WHERE (t.nome LIKE ? OR IFNULL(t.nomeFornecedor,'') LIKE ? OR CONCAT(IFNULL(t.nome,''), ' ', IFNULL(t.nomeFornecedor,'')) LIKE ?)`;
+      params.push(like, like, like);
+    }
+    sql += ` ORDER BY t.dataEmissao DESC LIMIT 200`;
+    const [rows] = await pool.query(sql, params);
+    const list = (Array.isArray(rows) ? rows : []) as Record<string, unknown>[];
+    const seen = new Set<string>();
+    const data: {
+      id: number;
+      nome: string;
+      nomeFornecedor: string | null;
+      dataEmissao: string | null;
+      tipoRegistro: string;
+    }[] = [];
+    for (const r of list) {
+      const idRaw = r.id ?? r.ID;
+      const idNum = typeof idRaw === 'number' ? idRaw : Number(idRaw);
+      if (!Number.isFinite(idNum) || idNum < 1) continue;
+      const tipo = String(r.tipoRegistro ?? r.tiporegistro ?? '').trim();
+      if (tipo !== 'PEDIDO' && tipo !== 'COTACAO') continue;
+      const key = `${tipo}-${idNum}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const nome = r.nome != null ? String(r.nome) : '';
+      const nomeFornecedor = r.nomeFornecedor != null ? String(r.nomeFornecedor) : null;
+      let dataEmissao: string | null = null;
+      const de = r.dataEmissao ?? r.dataemissao;
+      if (de instanceof Date) {
+        dataEmissao = de.toISOString().slice(0, 10);
+      } else if (de != null) {
+        dataEmissao = String(de).slice(0, 32);
+      }
+      data.push({ id: idNum, nome, nomeFornecedor, dataEmissao, tipoRegistro: tipo });
+    }
+    res.json({ data });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[comprasController] getOpcoesVinculoFinalizacao:', msg);
+    res.status(503).json({ data: [], error: msg });
+  }
+}
+
+async function existeVinculoFinalizacaoNomus(
+  pool: NonNullable<ReturnType<typeof getNomusPool>>,
+  tipoRegistro: string,
+  idRegistro: number
+): Promise<boolean> {
+  if (tipoRegistro === 'PEDIDO') {
+    const [rows] = await pool.query('SELECT id FROM pedidocompra WHERE id = ? LIMIT 1', [idRegistro]);
+    return Array.isArray(rows) && rows.length > 0;
+  }
+  if (tipoRegistro === 'COTACAO') {
+    const [rows] = await pool.query('SELECT id FROM cotacaocompra WHERE id = ? LIMIT 1', [idRegistro]);
+    return Array.isArray(rows) && rows.length > 0;
+  }
+  return false;
+}
+
+/**
  * PATCH /api/compras/coletas/:id/finalizar-cotacao
  * Altera status para "Finalizada". Só permite se status atual for "Em Aprovação".
+ * Vínculo obrigatório: coletas novas (requerVinculoFinalizacao) ou qualquer coleta ainda em "Em cotação" / "Em Aprovação" (inclui as anteriores à migration). Body: { tipoRegistro: 'PEDIDO'|'COTACAO', idRegistro: number }.
  */
 export async function patchFinalizarCotacao(req: Request, res: Response): Promise<void> {
   const id = parseInt(String(req.params.id), 10);
@@ -651,8 +763,19 @@ export async function patchFinalizarCotacao(req: Request, res: Response): Promis
     res.status(400).json({ error: 'ID da coleta inválido.' });
     return;
   }
+  let bodyRaw = req.body as { tipoRegistro?: unknown; idRegistro?: unknown };
+  if (typeof bodyRaw === 'string') {
+    try {
+      bodyRaw = JSON.parse(bodyRaw) as { tipoRegistro?: unknown; idRegistro?: unknown };
+    } catch {
+      bodyRaw = {};
+    }
+  }
   try {
-    const coleta = await prisma.coletaPrecos.findUnique({ where: { id }, select: { status: true } });
+    const coleta = await prisma.coletaPrecos.findUnique({
+      where: { id },
+      select: { status: true, requerVinculoFinalizacao: true },
+    });
     if (!coleta) {
       res.status(404).json({ error: 'Coleta não encontrada.' });
       return;
@@ -679,9 +802,60 @@ export async function patchFinalizarCotacao(req: Request, res: Response): Promis
       });
       return;
     }
+
+    const statusAtual = coleta.status ?? '';
+    const requerVinculo =
+      coleta.requerVinculoFinalizacao === true ||
+      statusAtual === 'Em cotação' ||
+      statusAtual === 'Em Aprovação';
+    let tipoRegistro: string | null = null;
+    let idRegistro: number | null = null;
+    if (requerVinculo) {
+      const tr = typeof bodyRaw.tipoRegistro === 'string' ? bodyRaw.tipoRegistro.trim().toUpperCase() : '';
+      const idR =
+        typeof bodyRaw.idRegistro === 'number'
+          ? bodyRaw.idRegistro
+          : typeof bodyRaw.idRegistro === 'string'
+            ? parseInt(bodyRaw.idRegistro, 10)
+            : NaN;
+      if (tr !== 'PEDIDO' && tr !== 'COTACAO') {
+        res.status(400).json({
+          error: 'Selecione um pedido de compra ou uma cotação de preços para finalizar esta coleta.',
+        });
+        return;
+      }
+      if (!Number.isFinite(idR) || idR < 1) {
+        res.status(400).json({ error: 'Identificador do pedido/cotação inválido.' });
+        return;
+      }
+      if (!isNomusEnabled()) {
+        res.status(503).json({ error: 'Nomus não configurado; não é possível validar o vínculo.' });
+        return;
+      }
+      const pool = getNomusPool();
+      if (!pool) {
+        res.status(503).json({ error: 'Conexão Nomus indisponível.' });
+        return;
+      }
+      const ok = await existeVinculoFinalizacaoNomus(pool, tr, idR);
+      if (!ok) {
+        res.status(400).json({ error: 'Pedido de compra ou cotação não encontrado no Nomus.' });
+        return;
+      }
+      tipoRegistro = tr;
+      idRegistro = idR;
+    }
+
     await prisma.coletaPrecos.update({
       where: { id },
-      data: { status: 'Finalizada', dataFinalizacao: new Date(), dataUltimaMovimentacao: dataUltimaMovimentacao() },
+      data: {
+        status: 'Finalizada',
+        dataFinalizacao: new Date(),
+        dataUltimaMovimentacao: dataUltimaMovimentacao(),
+        ...(tipoRegistro != null && idRegistro != null
+          ? { finalizacaoTipoRegistro: tipoRegistro, finalizacaoIdRegistro: idRegistro }
+          : {}),
+      },
     });
     res.json({ ok: true, status: 'Finalizada' });
   } catch (err) {
@@ -1100,6 +1274,7 @@ export async function postConfirmarColeta(req: Request, res: Response): Promise<
       data: {
         usuarioCriacao,
         dataUltimaMovimentacao: agora,
+        requerVinculoFinalizacao: true,
       },
     });
 

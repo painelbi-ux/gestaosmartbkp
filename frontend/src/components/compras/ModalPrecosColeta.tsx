@@ -1,8 +1,21 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { listarPrecosColeta, excluirItemColeta, enviarParaAprovacao, reabrirColeta, cancelarCotacao, finalizarCotacao, enviarParaFinanceiro, cancelarTodosItensColeta, atualizarObservacoesColeta } from '../../api/compras';
+import {
+  listarPrecosColeta,
+  excluirItemColeta,
+  enviarParaAprovacao,
+  reabrirColeta,
+  cancelarCotacao,
+  finalizarCotacao,
+  enviarParaFinanceiro,
+  cancelarTodosItensColeta,
+  atualizarObservacoesColeta,
+  listarOpcoesVinculoFinalizacao,
+  type OpcaoVinculoFinalizacaoItem,
+} from '../../api/compras';
 import type { FornecedorColetaItem } from '../../api/compras';
 import ModalCadastrarPrecos from './ModalCadastrarPrecos';
 import ModalCriarColetaPrecos from './ModalCriarColetaPrecos';
+import SingleSelectWithSearch, { type OptionItem } from '../SingleSelectWithSearch';
 
 export interface ModalPrecosColetaProps {
   coletaId: number;
@@ -22,6 +35,8 @@ export interface ModalPrecosColetaProps {
   inline?: boolean;
   /** Observações da coleta (texto longo); exibido no mapa de cotação. */
   observacoes?: string | null;
+  /** Coletas novas: ao finalizar, exige vínculo com pedido de compra ou cotação Nomus. */
+  requerVinculoFinalizacao?: boolean;
 }
 
 /** Colunas da grade de preços: possíveis chaves no row (SQL/MySQL) e rótulo no cabeçalho. */
@@ -117,7 +132,32 @@ function formatarTempoDecorrido(isoInicio: string): string {
   return `${seg}s`;
 }
 
-export default function ModalPrecosColeta({ coletaId, coletaLabel, fornecedores, dataCriacao, usuarioCriacao, status = 'Em cotação', dataEnvioAprovacao, podeEditarCompras = true, onClose, onItemExcluido, onColetaAlterada, inline = false, observacoes: observacoesProp }: ModalPrecosColetaProps) {
+function mapOpcoesVinculoParaSelect(rows: OpcaoVinculoFinalizacaoItem[]): OptionItem[] {
+  return rows.map((row) => ({
+    id: row.id,
+    uniqueKey: `${row.tipoRegistro}-${row.id}`,
+    nome: `${row.nome} (${row.tipoRegistro === 'PEDIDO' ? 'Pedido' : 'Cotação'})`,
+    descricao: [row.nomeFornecedor, row.dataEmissao].filter(Boolean).join(' · '),
+    meta: { tipoRegistro: row.tipoRegistro, idRegistro: row.id },
+  }));
+}
+
+export default function ModalPrecosColeta({
+  coletaId,
+  coletaLabel,
+  fornecedores,
+  dataCriacao,
+  usuarioCriacao,
+  status = 'Em cotação',
+  dataEnvioAprovacao,
+  podeEditarCompras = true,
+  onClose,
+  onItemExcluido,
+  onColetaAlterada,
+  inline = false,
+  observacoes: observacoesProp,
+  requerVinculoFinalizacao = false,
+}: ModalPrecosColetaProps) {
   const [data, setData] = useState<Record<string, unknown>[]>([]);
   const [cadastrarPrecosRow, setCadastrarPrecosRow] = useState<Record<string, unknown> | null>(null);
   const [observacoesLocal, setObservacoesLocal] = useState(observacoesProp ?? '');
@@ -170,6 +210,11 @@ export default function ModalPrecosColeta({ coletaId, coletaLabel, fornecedores,
   const [modalReabrir, setModalReabrir] = useState(false);
   const [senhaReabrir, setSenhaReabrir] = useState('');
   const [reabrindo, setReabrindo] = useState(false);
+  const [modalVinculoFinalizar, setModalVinculoFinalizar] = useState(false);
+  const [opcaoVinculoSelecionada, setOpcaoVinculoSelecionada] = useState<OptionItem | null>(null);
+  const [opcoesVinculoLista, setOpcoesVinculoLista] = useState<OptionItem[]>([]);
+  const [loadingOpcoesVinculo, setLoadingOpcoesVinculo] = useState(false);
+  const [finalizandoComVinculo, setFinalizandoComVinculo] = useState(false);
   const dataRefAprovacao = dataEnvioAprovacao ?? dataEnvioAprovacaoLocal;
   const [tempoAprovacaoDisplay, setTempoAprovacaoDisplay] = useState('');
   useEffect(() => {
@@ -188,6 +233,25 @@ export default function ModalPrecosColeta({ coletaId, coletaLabel, fornecedores,
   useEffect(() => {
     if (!modalCancelarItem) setJustificativaCancelarItem('');
   }, [modalCancelarItem]);
+  const labelClassFiltro = 'block text-xs text-slate-500 dark:text-slate-400 mb-1';
+  const inputClassFiltro =
+    'w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-600 focus:border-transparent';
+
+  const carregarOpcoesVinculo = useCallback(async (term: string) => {
+    setLoadingOpcoesVinculo(true);
+    setErro(null);
+    const r = await listarOpcoesVinculoFinalizacao(term);
+    setLoadingOpcoesVinculo(false);
+    setOpcoesVinculoLista(mapOpcoesVinculoParaSelect(r.data));
+    if (r.error) setErro(r.error);
+  }, []);
+
+  const abrirModalFinalizarComVinculo = useCallback(async () => {
+    setOpcaoVinculoSelecionada(null);
+    setModalVinculoFinalizar(true);
+    await carregarOpcoesVinculo('');
+  }, [carregarOpcoesVinculo]);
+
   const [erro, setErro] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [debug, setDebug] = useState<{
@@ -350,21 +414,25 @@ export default function ModalPrecosColeta({ coletaId, coletaLabel, fornecedores,
                   type="button"
                   onClick={async () => {
                     setErro(null);
+                    if (requerVinculoFinalizacao) {
+                      await abrirModalFinalizarComVinculo();
+                      return;
+                    }
                     setEnviandoFinalizar(true);
                     const res = await finalizarCotacao(coletaId);
-                  setEnviandoFinalizar(false);
-                  if (res.ok) {
-                    setStatusLocal('Finalizada');
-                    onColetaAlterada?.();
-                  } else {
-                    setErro(res.error ?? 'Não foi possível finalizar a cotação.');
-                  }
-                }}
-                disabled={enviandoFinalizar || enviandoFinanceiro}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50 transition"
-              >
-                {enviandoFinalizar ? 'Finalizando…' : 'Finalizar Cotação'}
-              </button>
+                    setEnviandoFinalizar(false);
+                    if (res.ok) {
+                      setStatusLocal('Finalizada');
+                      onColetaAlterada?.();
+                    } else {
+                      setErro(res.error ?? 'Não foi possível finalizar a cotação.');
+                    }
+                  }}
+                  disabled={enviandoFinalizar || enviandoFinanceiro}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50 transition"
+                >
+                  {enviandoFinalizar ? 'Finalizando…' : 'Finalizar Cotação'}
+                </button>
               <button
                 type="button"
                 onClick={async () => {
@@ -725,6 +793,89 @@ export default function ModalPrecosColeta({ coletaId, coletaLabel, fornecedores,
                 className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium disabled:opacity-50 transition"
               >
                 {cancelandoCancelarItem ? 'Aguarde…' : 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modalVinculoFinalizar && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60"
+          onClick={() => !finalizandoComVinculo && setModalVinculoFinalizar(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-vinculo-finalizar-title"
+        >
+          <div
+            className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-xl w-full max-w-lg p-4 flex flex-col gap-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="modal-vinculo-finalizar-title" className="text-lg font-semibold text-slate-800 dark:text-slate-100">
+              Vincular à finalização
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Selecione o <strong className="font-medium">pedido de compra</strong> ou a <strong className="font-medium">cotação de preços</strong> no Nomus que corresponde a esta coleta.
+            </p>
+            {erro && (
+              <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+                {erro}
+              </div>
+            )}
+            <SingleSelectWithSearch
+              label="Pedido ou cotação (nome / fornecedor)"
+              placeholder="Pesquisar e selecionar..."
+              options={opcoesVinculoLista}
+              value={opcaoVinculoSelecionada}
+              onChange={setOpcaoVinculoSelecionada}
+              labelClass={labelClassFiltro}
+              inputClass={inputClassFiltro}
+              minWidth="100%"
+              onSearchChange={carregarOpcoesVinculo}
+              searchLoading={loadingOpcoesVinculo}
+              listMaxHeight="220px"
+              clearable
+            />
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setModalVinculoFinalizar(false);
+                  setOpcaoVinculoSelecionada(null);
+                }}
+                disabled={finalizandoComVinculo}
+                className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const m = opcaoVinculoSelecionada?.meta as { tipoRegistro?: string; idRegistro?: number } | undefined;
+                  if (!m?.tipoRegistro || !m?.idRegistro) {
+                    setErro('Selecione um pedido de compra ou uma cotação para concluir.');
+                    return;
+                  }
+                  setFinalizandoComVinculo(true);
+                  setErro(null);
+                  const res = await finalizarCotacao(coletaId, {
+                    tipoRegistro: m.tipoRegistro === 'COTACAO' ? 'COTACAO' : 'PEDIDO',
+                    idRegistro: m.idRegistro,
+                  });
+                  setFinalizandoComVinculo(false);
+                  if (res.ok) {
+                    setModalVinculoFinalizar(false);
+                    setOpcaoVinculoSelecionada(null);
+                    setStatusLocal('Finalizada');
+                    onColetaAlterada?.();
+                  } else {
+                    setErro(res.error ?? 'Não foi possível finalizar a cotação.');
+                  }
+                }}
+                disabled={finalizandoComVinculo || !opcaoVinculoSelecionada}
+                className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50 transition"
+              >
+                {finalizandoComVinculo ? 'Finalizando…' : 'Confirmar e finalizar'}
               </button>
             </div>
           </div>

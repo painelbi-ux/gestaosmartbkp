@@ -947,7 +947,9 @@ export async function iniciarPrecificacao(req: Request, res: Response): Promise<
         unidadeMedida: i.unidadeMedida ?? null,
         qtd: i.qtd,
         dataEntrada: i.dataEntrada ?? null,
-        tipoMaterial: (typeof i.idcomponente === 'number' ? mapaTipoMaterial.get(i.idcomponente) : null) ?? null,
+        tipoMaterial:
+          (typeof i.idcomponente === 'number' ? mapaTipoMaterial.get(i.idcomponente) : null) ??
+          'Material Secundário',
         valorUnitario: i.valorUnitario ?? null,
         valorTotal: i.valorTotal ?? null,
       })),
@@ -1140,7 +1142,9 @@ export async function getPrecificacaoResultado(req: Request, res: Response): Pro
           (typeof i.idcomponente === 'number' ? mapaUnidadeMedida.get(i.idcomponente) ?? null : null),
         qtd: i.qtd,
         dataEntrada: i.dataEntrada ?? null,
-        tipoMaterial: (typeof i.idcomponente === 'number' ? mapaTipoMaterial.get(i.idcomponente) : null) ?? null,
+        tipoMaterial:
+          (typeof i.idcomponente === 'number' ? mapaTipoMaterial.get(i.idcomponente) : null) ??
+          'Material Secundário',
         valorUnitario: i.valorUnitario ?? null,
         valorTotal: i.valorTotal ?? null,
       })),

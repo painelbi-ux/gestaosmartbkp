@@ -74,7 +74,7 @@ function normalizarTipoMaterial(v: string | null | undefined): 'Matéria Prima' 
   if (s.includes('embalag')) return 'Embalagem';
   if (s.includes('secund')) return 'Material Secundário';
   if (s.includes('materia prima') || s.includes('prima')) return 'Matéria Prima';
-  return 'Matéria Prima';
+  return 'Material Secundário';
 }
 
 const MARGIN = 12;

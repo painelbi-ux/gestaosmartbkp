@@ -648,6 +648,11 @@ export default function ColetasPrecosPage() {
           status={coletaPrecos.status ?? 'Em cotação'}
           dataEnvioAprovacao={coletaPrecos.dataEnvioAprovacao ?? null}
           observacoes={coletaPrecos.observacoes ?? null}
+          requerVinculoFinalizacao={
+            coletaPrecos.requerVinculoFinalizacao === true ||
+            coletaPrecos.status === 'Em cotação' ||
+            coletaPrecos.status === 'Em Aprovação'
+          }
           podeEditarCompras={podeEditarCompras}
           onClose={() => setColetaPrecos(null)}
           onItemExcluido={carregarColetas}

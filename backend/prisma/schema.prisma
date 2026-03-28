@@ -132,6 +132,12 @@ model ColetaPrecos {
   dataFinalizacao            DateTime?  // quando foi finalizada ou enviada ao financeiro (para cálculo de tempo em cotação)
   observacoes                 String?   // observações da coleta (texto longo); exibido no mapa de cotação
   dataUltimaMovimentacao     DateTime?  // última alteração (status, cotação, itens etc.); usado na regra de 72h para bloquear nova coleta
+  /// Coletas antigas (false): finalizar sem vínculo; novas (true): obrigatório pedido de compra ou cotação Nomus.
+  requerVinculoFinalizacao   Boolean    @default(true)
+  /// Preenchido ao finalizar: PEDIDO ou COTACAO (Nomus).
+  finalizacaoTipoRegistro    String?
+  /// id pedidocompra.id ou cotacaocompra.id no Nomus.
+  finalizacaoIdRegistro      Int?
 
   itens       ColetaPrecosItem[]
   registros   ColetaPrecosRegistro[]

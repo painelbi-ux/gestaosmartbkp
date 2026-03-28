@@ -160,6 +160,10 @@ export interface ColetaPrecosListItem {
   observacoes?: string | null;
   /** True se a coleta já foi enviada para aprovação em algum momento (nunca volta a false); impede exclusão. */
   jaEnviadaAprovacao?: boolean;
+  /** Coletas antigas (false): finalizar sem vínculo Nomus; novas (true): obrigatório pedido ou cotação. */
+  requerVinculoFinalizacao?: boolean;
+  finalizacaoTipoRegistro?: string | null;
+  finalizacaoIdRegistro?: number | null;
 }
 
 /** Coleta que bloqueia criar nova coleta (>72h sem movimentação, sem ciência). */
@@ -635,9 +639,50 @@ export async function atualizarRegistroColeta(
   return { ok: true };
 }
 
-/** Finaliza a cotação (status "Finalizada"). Só quando status é "Em Aprovação". Exige quantidades aprovadas preenchidas. */
-export async function finalizarCotacao(coletaId: number): Promise<{ ok: boolean; error?: string }> {
-  const res = await apiFetch(`/api/compras/coletas/${coletaId}/finalizar-cotacao`, { method: 'PATCH' });
+export interface OpcaoVinculoFinalizacaoItem {
+  id: number;
+  nome: string;
+  nomeFornecedor: string | null;
+  dataEmissao: string | null;
+  tipoRegistro: string;
+}
+
+/**
+ * Pedidos de compra e cotações no Nomus para vincular à finalização (busca no nome e fornecedor).
+ */
+export async function listarOpcoesVinculoFinalizacao(
+  q: string
+): Promise<{ data: OpcaoVinculoFinalizacaoItem[]; error?: string }> {
+  const qs = new URLSearchParams();
+  if (q.trim()) qs.set('q', q.trim());
+  const res = await apiFetch(`/api/compras/coletas/opcoes-vinculo-finalizacao?${qs.toString()}`);
+  const text = await res.text();
+  let body: { data?: OpcaoVinculoFinalizacaoItem[]; error?: string } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as { data?: OpcaoVinculoFinalizacaoItem[]; error?: string };
+    } catch {
+      body = { error: text || res.statusText };
+    }
+  }
+  if (!res.ok) return { data: [], error: body.error ?? res.statusText };
+  return { data: Array.isArray(body.data) ? body.data : [] };
+}
+
+/** Finaliza a cotação (status "Finalizada"). Só quando status é "Em Aprovação". Exige quantidades aprovadas preenchidas.
+ *  Coletas novas (`requerVinculoFinalizacao`): envie `vinculo` com pedido de compra ou cotação Nomus. */
+export async function finalizarCotacao(
+  coletaId: number,
+  vinculo?: { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number } | null
+): Promise<{ ok: boolean; error?: string }> {
+  const payload =
+    vinculo != null && vinculo.tipoRegistro && Number.isFinite(vinculo.idRegistro) && vinculo.idRegistro > 0
+      ? { tipoRegistro: vinculo.tipoRegistro, idRegistro: vinculo.idRegistro }
+      : undefined;
+  const res = await apiFetch(`/api/compras/coletas/${coletaId}/finalizar-cotacao`, {
+    method: 'PATCH',
+    ...(payload != null ? { body: payload } : { body: {} }),
+  });
   const text = await res.text();
   let body: { error?: string } = {};
   if (text) {

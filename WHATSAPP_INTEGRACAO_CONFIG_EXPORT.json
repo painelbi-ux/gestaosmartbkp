@@ -1,0 +1,91 @@
+{
+  "exportedAt": "2026-03-26T18:45:00Z",
+  "project": "gestorpedidosSoAco",
+  "integration": "Evolution API (WhatsApp)",
+  "environment": {
+    "backendEnvFile": "backend/.env",
+    "variables": {
+      "EVOLUTION_API_URL": "https://api.jpgsolucoesinformatica.com.br",
+      "EVOLUTION_API_KEY": "429683C4C977415CAAFCCE10F7D57E11",
+      "EVOLUTION_API_INSTANCE": "",
+      "EVOLUTION_WHATSAPP_NUMBER": ""
+    }
+  },
+  "databasePersistentConfig": {
+    "table": "config",
+    "keys": {
+      "evolution_instance": "gestor-pedidos",
+      "evolution_whatsapp_number": "5586995887672"
+    },
+    "priorityOrder": [
+      "db config (config.key evolution_instance/evolution_whatsapp_number)",
+      "fallback para .env (EVOLUTION_API_INSTANCE/EVOLUTION_WHATSAPP_NUMBER)"
+    ]
+  },
+  "backendRoutes": {
+    "basePath": "/api/evolution",
+    "auth": "requireAuth",
+    "permission": "PERMISSOES.USUARIOS_GERENCIAR",
+    "csrfRequired": [
+      "POST /api/evolution/save-config",
+      "POST /api/evolution/logout"
+    ],
+    "endpoints": [
+      "GET /api/evolution/connect",
+      "GET /api/evolution/config",
+      "POST /api/evolution/save-config",
+      "POST /api/evolution/logout"
+    ]
+  },
+  "evolutionApiCalls": {
+    "listInstances": [
+      "GET /instances",
+      "GET /instance/fetchInstances"
+    ],
+    "createInstance": "POST /instance/create",
+    "connectionState": "GET /instance/connectionState/{instanceName}",
+    "connectQr": "GET /instance/connect/{instanceName}",
+    "logoutInstance": "DELETE /instance/logout/{instanceName}",
+    "sendText": "POST /message/sendText/{instanceName}",
+    "headers": {
+      "GET": ["apikey"],
+      "POST": ["Content-Type: application/json", "apikey"]
+    },
+    "fetchTimeoutMs": 15000
+  },
+  "hardcodedNumbersUsedInCode": {
+    "extraNotificationNumber": "558699766623",
+    "sycroOrderNumber": "5586998660873",
+    "faturamentoDiarioDiretoria": [
+      "5586995887672",
+      "5586999766623",
+      "5586999350016",
+      "5586999145111"
+    ]
+  },
+  "scheduler": {
+    "name": "faturamentoDiarioCron",
+    "cronExpression": "0 18 * * *",
+    "description": "envio diário às 18h do faturamento para diretoria"
+  },
+  "frontendFiles": {
+    "page": "frontend/src/pages/WhatsAppConnectPage.tsx",
+    "apiClient": "frontend/src/api/evolution.ts"
+  },
+  "backendFiles": {
+    "service": "backend/src/services/evolutionApi.ts",
+    "controller": "backend/src/controllers/evolutionController.ts",
+    "route": "backend/src/routes/evolutionRoutes.ts",
+    "configRepository": "backend/src/data/configRepository.ts",
+    "appRegistration": "backend/src/app.ts -> app.use('/api/evolution', evolutionRoutes)"
+  },
+  "importChecklistForOtherProject": [
+    "Copiar variáveis EVOLUTION_API_URL e EVOLUTION_API_KEY para o .env do backend",
+    "Criar tabela config (key/value) e persistir evolution_instance/evolution_whatsapp_number",
+    "Implementar rotas /api/evolution com requireAuth + permissão de administrador",
+    "Implementar chamadas da Evolution API com header apikey e timeout",
+    "Implementar tela de conexão (QR code, salvar número, desconectar)",
+    "Garantir envio de mensagens via /message/sendText/{instance}",
+    "Se usar cron, configurar job diário (0 18 * * *) para faturamento"
+  ]
+}

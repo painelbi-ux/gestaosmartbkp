@@ -5,6 +5,10 @@ export interface OptionItem {
   id: number;
   nome: string;
   descricao?: string | null;
+  /** Chave única na lista quando `id` pode repetir entre tipos diferentes. */
+  uniqueKey?: string;
+  /** Dados extras (ex.: tipo de vínculo na finalização da coleta). */
+  meta?: Record<string, unknown>;
 }
 
 export interface SingleSelectWithSearchProps {
@@ -121,8 +125,14 @@ export default function SingleSelectWithSearch({
     }
   }, [open]);
 
+  const isSameOption = (a: OptionItem | null, b: OptionItem) => {
+    if (!a) return false;
+    if (a.uniqueKey != null && b.uniqueKey != null) return a.uniqueKey === b.uniqueKey;
+    return a.id === b.id;
+  };
+
   const handleSelect = (opt: OptionItem) => {
-    if (clearable && value?.id === opt.id) {
+    if (clearable && value && isSameOption(value, opt)) {
       onChange(null);
     } else {
       onChange(opt);
@@ -170,11 +180,11 @@ export default function SingleSelectWithSearch({
         ) : (
           filteredOptions.map((opt) => (
             <button
-              key={opt.id}
+              key={opt.uniqueKey ?? String(opt.id)}
               type="button"
               onClick={() => handleSelect(opt)}
               className={`w-full text-left px-3 py-1.5 text-sm transition ${
-                value?.id === opt.id
+                value && isSameOption(value, opt)
                   ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200 font-medium'
                   : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600'
               }`}
