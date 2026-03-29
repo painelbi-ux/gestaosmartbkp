@@ -869,6 +869,7 @@ Left Join
 ))
 SELECT
 pe.`idChave`,
+	pe.`ID_item_pedido`,
 	pe.`Codigo_pedido`,
 	pe.id,
 	pe.`Codigo_produto`,

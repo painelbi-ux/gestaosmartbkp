@@ -1,6 +1,7 @@
 select
 pd.idEmpresa,
 	concat(coalesce(de.id,'0000000'),'-',pd.id,'-',p.id) as idChave,
+	ip.id as id_item_pedido,
 	pd.id,
 	CASE 
 	WHEN (de.observacoes IS NULL AND me.opcao = 'Retirada na Só Móveis') THEN '2-Retirada na So Moveis'

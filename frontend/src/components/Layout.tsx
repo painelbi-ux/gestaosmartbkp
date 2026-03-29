@@ -26,7 +26,9 @@ function MoonIcon() {
 
 const PCP_SUBMENUS: { to: string; label: string }[] = [
   { to: '/pedidos', label: 'Gerenciador de Pedidos' },
+  { to: '/pedidos/mrp-dashboard', label: 'Dashboard MRP' },
   { to: '/pedidos/mrp', label: 'MRP' },
+  { to: '/pedidos/pc', label: 'PC' },
   { to: '/pedidos/mpp', label: 'MPP' },
   { to: '/pedidos/programacao-setorial', label: 'Programação Setorial' },
 ];
@@ -63,7 +65,9 @@ const PATH_LABELS: Record<string, string> = {
   '/': 'Início',
   '/pedidos': 'Gerenciador de Pedidos',
   '/pedidos/sycroorder': 'Comunicação PD',
+  '/pedidos/mrp-dashboard': 'Dashboard MRP',
   '/pedidos/mrp': 'MRP',
+  '/pedidos/pc': 'PC',
   '/pedidos/mpp': 'MPP',
   '/pedidos/programacao-setorial': 'Programação Setorial',
   '/heatmap': 'Heatmap',
@@ -330,21 +334,6 @@ export default function Layout() {
         <div className="max-w-screen-2xl mx-auto px-4 py-3 flex items-center justify-between">
           <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100 mr-6">Gestão Smart 2.0</h1>
           <nav className="flex items-center gap-1">
-            {hasPermission(PERMISSOES.DASHBOARD_VER) && (
-              <NavLink
-                to="/"
-                end
-                className={({ isActive }) =>
-                  `px-4 py-2 rounded-lg text-sm font-medium transition ${
-                    isActive
-                      ? 'bg-primary-600 text-white'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700/50'
-                  }`
-                }
-              >
-                Dashboard
-              </NavLink>
-            )}
             {hasPermission(PERMISSOES.PCP_VER_TELA) && (
               <div className="relative" ref={pcpRef}>
                 <button

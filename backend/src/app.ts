@@ -20,6 +20,7 @@ import engenhariaRoutes from './routes/engenhariaRoutes.js';
 import sycroorderRoutes from './routes/sycroorderRoutes.js';
 import mrpRoutes from './routes/mrpRoutes.js';
 import mppRoutes from './routes/mppRoutes.js';
+import pcRoutes from './routes/pcRoutes.js';
 import programacaoSetorialRoutes from './routes/programacaoSetorialRoutes.js';
 import { csrfProtect } from './middleware/csrf.js';
 
@@ -114,6 +115,7 @@ app.use('/api/engenharia', engenhariaRoutes);
 app.use('/api/sycroorder', sycroorderRoutes);
 app.use('/api/mrp', mrpRoutes);
 app.use('/api/mpp', mppRoutes);
+app.use('/api/pc', pcRoutes);
 app.use('/api/programacao-setorial', programacaoSetorialRoutes);
 
 // Header em todas as respostas para conferir na outra máquina se está rodando o build novo

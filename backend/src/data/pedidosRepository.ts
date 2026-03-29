@@ -289,6 +289,49 @@ function getField(row: PedidoRow, keys: string[]): string {
   return '';
 }
 
+/** Mesma normalização de chave que o MPP usa (PD + Cod do Gerenciador). */
+function chaveNegocioPedidoGestor(row: PedidoRow): string {
+  const p = String(getField(row, ['PD', 'pd']) ?? '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toUpperCase();
+  const c = String(getField(row, ['Cod', 'cod']) ?? '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toUpperCase();
+  if (!p || !c) return '';
+  return `${p}\x1e${c}`;
+}
+
+/**
+ * TipoF (Categoria no Gerenciador): Requisição ou Inserir em Romaneio → no MPP a previsão vai para o fim da fila (2199-12-31).
+ */
+export function pedidoTipoFMppEmpurraPrevisaoParaFim(row: PedidoRow): boolean {
+  const raw = getField(row, ['TipoF', 'tipoF']);
+  const t = String(raw ?? '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!t) return false;
+  if (t.includes('requisição') || t.includes('requisicao')) return true;
+  if (t.includes('inserir em romaneio') || t.includes('inserir em romaneiro')) return true;
+  return false;
+}
+
+/** Conjunto de chaves PD+Cod com linha do Gerenciador em uma dessas categorias (para o MPP). */
+export function buildSetChavesPedidoCodMppPrevisaoFim(pedidos: PedidoRow[]): Set<string> {
+  const s = new Set<string>();
+  for (const row of pedidos) {
+    if (!pedidoTipoFMppEmpurraPrevisaoParaFim(row)) continue;
+    const k = chaveNegocioPedidoGestor(row);
+    if (k) s.add(k);
+  }
+  return s;
+}
+
 /** Obtém data do row (suporta várias chaves; MySQL pode retornar camelCase ou como no SQL). */
 function getDateFromRow(row: PedidoRow, keys: string[]): Date | null {
   for (const k of keys) {

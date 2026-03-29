@@ -1,19 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
-import { getMpp, type MppRow } from '../../api/mpp';
+import { getMpp, getMppExport, type MppRow } from '../../api/mpp';
+import { useAuth } from '../../contexts/AuthContext';
+import { PERMISSOES } from '../../config/permissoes';
+import { downloadMppGradeXlsx, type MppExportColumn } from '../../utils/exportMppXlsx';
 
-const COLUNAS: { key: string; label: string; integer?: boolean; decimal?: number; lastColumn?: boolean }[] = [
-  { key: 'Codigo_pedido', label: 'Código pedido' },
-  { key: 'Codigo_produto', label: 'Código produto' },
-  { key: 'codigoComponente', label: 'Cód. componente' },
+const COLUNAS: (MppExportColumn & { lastColumn?: boolean })[] = [
+  { key: 'dataPrevisao', label: 'Data de previsão' },
+  { key: 'codigoComponente', label: 'Código componente' },
   { key: 'componente', label: 'Componente' },
-  { key: 'unidademedida', label: 'UM' },
-  { key: 'Quantidade', label: 'Qtde Pedido', decimal: 3 },
-  { key: 'qtd', label: 'Qtd Unitária do Componente', decimal: 3 },
-  { key: 'qtdTotalComponente', label: 'Qtd Total do Componente', decimal: 3 },
-  { key: 'qtdAcumulado', label: 'Quantidade Acumulada', decimal: 3 },
-  { key: 'Estoque_PA', label: 'Estoque PA', decimal: 3 },
-  { key: 'Estoque_MP_PA', label: 'Estoque MP PA', decimal: 3 },
-  { key: 'dataPrevisao', label: 'Data de Previsão', lastColumn: true },
+  { key: 'qtdeTotalComponente', label: 'Qtde total componente (no dia)', decimal: 3 },
+  { key: 'estoqueMPPA', label: 'Estoque total (disp. início do dia)', decimal: 3 },
+  { key: 'saldo', label: 'Saldo', decimal: 3, lastColumn: true },
 ];
 
 function formatCell(val: unknown, opts?: { integer?: boolean; decimal?: number }): string {
@@ -41,9 +38,15 @@ function formatCell(val: unknown, opts?: { integer?: boolean; decimal?: number }
 const PAGE_SIZE = 200;
 
 /** Cache da última carga: ao voltar na aba, restaura sem nova requisição. Só recarrega ao clicar em Atualizar. */
-let mppCache: { data: MppRow[]; page: number; total?: number; hasMore: boolean } | null = null;
+let mppCache: { data: MppRow[]; page: number; total?: number; hasMore: boolean; limitHit?: boolean } | null = null;
 
 export default function MPPPage() {
+  const { hasPermission } = useAuth();
+  const podeExportarXlsx =
+    hasPermission(PERMISSOES.PCP_EXPORTAR_XLSX) ||
+    hasPermission(PERMISSOES.PCP_TOTAL) ||
+    hasPermission(PERMISSOES.PEDIDOS_EDITAR);
+
   const [data, setData] = useState<MppRow[]>(() => mppCache?.data ?? []);
   const [page, setPage] = useState(() => mppCache?.page ?? 1);
   const [total, setTotal] = useState<number | undefined>(() => mppCache?.total);
@@ -57,6 +60,8 @@ export default function MPPPage() {
   const [filterCodigoComponente, setFilterCodigoComponente] = useState('');
   const [filterComponente, setFilterComponente] = useState('');
   const [apenasComPrevisao, setApenasComPrevisao] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [limitHit, setLimitHit] = useState(() => mppCache?.limitHit ?? false);
 
   const getFiltros = () => ({
     codigo_pedido: filterCodigoPedido.trim() || undefined,
@@ -83,9 +88,17 @@ export default function MPPPage() {
       setHasMore(res.hasMore ?? false);
       setTotal(res.total);
       setPage(res.page ?? pagina);
-      mppCache = { data: newData, page: res.page ?? pagina, total: res.total, hasMore: res.hasMore ?? false };
+      setLimitHit(res.limitHit ?? false);
+      mppCache = {
+        data: newData,
+        page: res.page ?? pagina,
+        total: res.total,
+        hasMore: res.hasMore ?? false,
+        limitHit: res.limitHit ?? false,
+      };
     } catch (e) {
       setData([]);
+      setLimitHit(false);
       setErro(e instanceof Error ? e.message : 'Erro ao carregar MPP.');
     } finally {
       setLoading(false);
@@ -100,6 +113,7 @@ export default function MPPPage() {
       setPage(mppCache.page);
       setTotal(mppCache.total);
       setHasMore(mppCache.hasMore);
+      setLimitHit(mppCache.limitHit ?? false);
       setLoading(false);
     } else {
       carregar(1, getFiltros());
@@ -136,6 +150,38 @@ export default function MPPPage() {
     setApenasComPrevisao(false);
     setPage(1);
     carregar(1, {});
+  };
+
+  const exportarExcel = async () => {
+    setExportLoading(true);
+    try {
+      const f = getFiltros();
+      const res = await getMppExport({
+        codigo_pedido: f.codigo_pedido,
+        codigo_produto: f.codigo_produto,
+        cliente: f.cliente,
+        segmentacao: f.segmentacao,
+        codigo_componente: f.codigo_componente,
+        componente: f.componente,
+        apenas_com_previsao: f.apenas_com_previsao,
+      });
+      const rows = Array.isArray(res.data) ? res.data : [];
+      if (rows.length === 0) {
+        window.alert('Nenhum registro para exportar com os filtros atuais.');
+        return;
+      }
+      const cols = COLUNAS.map(({ key, label, integer, decimal }) => ({ key, label, integer, decimal }));
+      downloadMppGradeXlsx(rows, cols, `mpp_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      if (res.limitHit) {
+        window.alert(
+          `A exportação contém ${res.total} linhas (limite máximo do relatório). Se faltar dado, refine os filtros e exporte em partes.`
+        );
+      }
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Erro ao exportar MPP.');
+    } finally {
+      setExportLoading(false);
+    }
   };
 
   if (loading) {
@@ -213,6 +259,17 @@ export default function MPPPage() {
           >
             Atualizar
           </button>
+          {podeExportarXlsx && (
+            <button
+              type="button"
+              onClick={() => void exportarExcel()}
+              disabled={exportLoading || loading}
+              className="text-sm px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Exporta todas as linhas que correspondem aos filtros atuais (não só a página visível)"
+            >
+              {exportLoading ? 'Exportando…' : 'Exportar Excel'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -307,17 +364,25 @@ export default function MPPPage() {
           )}
         </div>
         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          Resumo por dia e por código de componente. Estoque inicial = soma MP PA (par PA+componente, sem duplicar linhas) + saldo ERP setores 2/19/20 (código = componente). A coluna “Estoque total” é o remanescente no início de cada dia após os dias anteriores.
+          Pedidos com categoria Requisição ou Inserir em Romaneio (Gerenciador) entram com data 31/12/2199 para ficarem por último na fila de consumo de estoque.
+          Saldo: 0 quando cobre; positivo = falta.{' '}
           {typeof total === 'number'
-            ? `${data.length} de ${total} registro(s) nesta página${hasMore ? ' — use Anterior/Próxima para mais' : ''}`
+            ? `${data.length} de ${total} linha(s) nesta página${hasMore ? ' — use Anterior/Próxima para mais' : ''}`
             : temFiltros
               ? 'Filtros aplicados. Use Anterior/Próxima para navegar.'
-              : `${data.length} registro(s) nesta página${hasMore ? ' — use Anterior/Próxima para mais' : ''}`}
+              : `${data.length} linha(s) nesta página${hasMore ? ' — use Anterior/Próxima para mais' : ''}`}
         </p>
+        {limitHit && (
+          <p className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-300">
+            A consulta ao ERP atingiu o limite de linhas; demandas ou estoques podem estar incompletos. Refine os filtros e use Atualizar.
+          </p>
+        )}
       </div>
 
       <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left min-w-[1200px]">
+          <table className="w-full text-sm text-left min-w-[880px]">
             <thead className="bg-primary-600 text-white">
               <tr>
                 {COLUNAS.map((col) => (
@@ -341,14 +406,17 @@ export default function MPPPage() {
                 </tr>
               ) : (
                 data.map((row, idx) => (
-                  <tr key={(row.idChave ?? row.idchave ?? idx) as string} className="group hover:bg-slate-50 dark:hover:bg-slate-700/50">
+                  <tr
+                    key={`${row.codigoComponente ?? ''}-${row.dataPrevisao ?? ''}-${idx}`}
+                    className="group hover:bg-slate-50 dark:hover:bg-slate-700/50"
+                  >
                     {COLUNAS.map((col) => (
                       <td
                         key={col.key}
                         className={`py-2 px-4 ${col.lastColumn ? 'sticky right-0 bg-white dark:bg-slate-800 shadow-[-4px_0_8px_rgba(0,0,0,0.08)] group-hover:bg-slate-50 dark:group-hover:bg-slate-700/50' : ''}`}
                       >
                         {formatCell(
-                          col.key === 'dataPrevisao' ? (row.dataPrevisao ?? row.DataPrevisao) : col.key === 'qtdAcumulado' ? row.qtdAcumulado : row[col.key],
+                          col.key === 'dataPrevisao' ? (row.dataPrevisao ?? row.DataPrevisao) : row[col.key],
                           { integer: col.integer, decimal: col.decimal }
                         )}
                       </td>

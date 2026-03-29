@@ -19,7 +19,9 @@ import PrecificacaoPage from './pages/PrecificacaoPage';
 import ResumoFinanceiroPage from './pages/financeiro/ResumoFinanceiroPage';
 import SycroOrderPage from './pages/pedidos/SycroOrderPage';
 import MRPPage from './pages/pedidos/MRPPage';
+import DashboardMRPPage from './pages/pedidos/DashboardMRPPage';
 import MPPPage from './pages/pedidos/MPPPage';
+import PCPedidoCompraPage from './pages/pedidos/PCPedidoCompraPage';
 import ProgramacaoSetorialPainelPage from './pages/pedidos/ProgramacaoSetorialPainelPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { getStoredToken } from './api/client';
@@ -69,6 +71,8 @@ export default function App() {
           <Route path="pedidos" element={<ErrorBoundary><PedidosPage /></ErrorBoundary>} />
           <Route path="pedidos/sycroorder" element={<ErrorBoundary><SycroOrderPage /></ErrorBoundary>} />
           <Route path="pedidos/mrp" element={<ErrorBoundary><MRPPage /></ErrorBoundary>} />
+          <Route path="pedidos/mrp-dashboard" element={<ErrorBoundary><DashboardMRPPage /></ErrorBoundary>} />
+          <Route path="pedidos/pc" element={<ErrorBoundary><PCPedidoCompraPage /></ErrorBoundary>} />
           <Route path="pedidos/mpp" element={<ErrorBoundary><MPPPage /></ErrorBoundary>} />
           <Route path="pedidos/programacao-setorial" element={<ErrorBoundary><ProgramacaoSetorialPainelPage /></ErrorBoundary>} />
           <Route path="heatmap" element={<HeatmapPage />} />
