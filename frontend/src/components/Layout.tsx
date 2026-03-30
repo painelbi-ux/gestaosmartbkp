@@ -295,12 +295,13 @@ export default function Layout() {
   const handleLogout = async () => {
     try {
       await logout();
-      await refreshUser();
-      navigate('/entrar', { replace: true });
     } catch {
-      await refreshUser();
-      navigate('/entrar', { replace: true });
+      // rede/servidor: logout() já removeu token local; segue para tela de login
     }
+    // Navegação completa evita estado preso (abas, PermissionGuard) e garante /entrar.
+    const base = import.meta.env.BASE_URL ?? '/';
+    const entrar = base === '/' ? '/entrar' : `${base.replace(/\/$/, '')}/entrar`;
+    window.location.replace(entrar);
   };
 
   const handleForcarTrocaSenha = async (e: React.FormEvent) => {

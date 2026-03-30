@@ -46,6 +46,8 @@ model GrupoUsuario {
   nome        String   @unique
   descricao   String?
   permissoes  String   // JSON array: ["dashboard.ver", "pedidos.ver", ...]
+  /// Chave da tela inicial (ex.: gerenciador_pedidos). Null = padrão do sistema.
+  telaPrincipalInicial String?
   ativo       Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

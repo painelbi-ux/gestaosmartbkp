@@ -9,6 +9,8 @@ interface AuthContextValue {
   grupo: string | null;
   isCommercialTeam: boolean;
   mustChangePassword: boolean;
+  /** Primeira tela após login (definida no grupo). */
+  telaInicialPath: string | null;
   permissoes: string[];
   isMaster: boolean;
   hasPermission: (codigo: CodigoPermissao) => boolean;
@@ -27,6 +29,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [grupo, setGrupo] = useState<string | null>(null);
   const [isCommercialTeam, setIsCommercialTeam] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [telaInicialPath, setTelaInicialPath] = useState<string | null>(null);
   const [permissoes, setPermissoes] = useState<string[]>([]);
 
   const refreshUser = useCallback(async () => {
@@ -37,6 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setGrupo(null);
       setIsCommercialTeam(false);
       setMustChangePassword(false);
+      setTelaInicialPath(null);
       setPermissoes([]);
       return;
     }
@@ -47,6 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setGrupo(me.grupo ?? null);
       setIsCommercialTeam(!!me.isCommercialTeam);
       setMustChangePassword(!!me.mustChangePassword);
+      setTelaInicialPath(me.telaInicialPath ?? null);
       setPermissoes(me.permissoes ?? []);
     } catch {
       setLogin(null);
@@ -54,6 +59,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setGrupo(null);
       setIsCommercialTeam(false);
       setMustChangePassword(false);
+      setTelaInicialPath(null);
       setPermissoes([]);
     }
   }, []);
@@ -92,13 +98,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       grupo,
       isCommercialTeam,
       mustChangePassword,
+      telaInicialPath,
       permissoes,
       isMaster: login === 'master',
       hasPermission,
       setUser,
       refreshUser,
     }),
-    [login, nome, grupo, isCommercialTeam, mustChangePassword, permissoes, hasPermission, setUser, refreshUser]
+    [login, nome, grupo, isCommercialTeam, mustChangePassword, telaInicialPath, permissoes, hasPermission, setUser, refreshUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

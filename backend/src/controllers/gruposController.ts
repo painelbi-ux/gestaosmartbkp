@@ -3,6 +3,7 @@ import { prisma } from '../config/prisma.js';
 import { LABELS_PERMISSOES, PERMISSOES, type CodigoPermissao } from '../config/permissoes.js';
 import { criarGrupoSchema, atualizarGrupoSchema } from '../validators/grupos.js';
 import { getPermissoesUsuario } from '../middleware/requirePermission.js';
+import { validarTelaPrincipalParaPermissoesGrupo } from '../config/telaPrincipalGrupo.js';
 
 function parsePermissoes(json: string): CodigoPermissao[] {
   try {
@@ -29,6 +30,7 @@ export async function listarGrupos(_req: Request, res: Response): Promise<void> 
         nome: true,
         descricao: true,
         permissoes: true,
+        telaPrincipalInicial: true,
         ativo: true,
         _count: { select: { usuarios: true } },
       },
@@ -38,6 +40,7 @@ export async function listarGrupos(_req: Request, res: Response): Promise<void> 
       nome: g.nome,
       descricao: g.descricao,
       permissoes: parsePermissoes(g.permissoes),
+      telaPrincipalInicial: g.telaPrincipalInicial ?? null,
       ativo: g.ativo,
       totalUsuarios: g._count.usuarios,
     }));
@@ -65,22 +68,36 @@ export async function criarGrupo(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Dados inválidos', details: parsed.error.flatten() });
     return;
   }
-  const { nome, descricao, permissoes, ativo } = parsed.data;
+  const { nome, descricao, permissoes, ativo, telaPrincipalInicial } = parsed.data;
+  const checkTela = validarTelaPrincipalParaPermissoesGrupo(telaPrincipalInicial ?? null, permissoes);
+  if (!checkTela.ok) {
+    res.status(400).json({ error: checkTela.error });
+    return;
+  }
   try {
     const grupo = await prisma.grupoUsuario.create({
       data: {
         nome,
         descricao: descricao ?? null,
         permissoes: serializePermissoes(permissoes),
+        telaPrincipalInicial: checkTela.value,
         ativo: ativo ?? true,
       },
-      select: { id: true, nome: true, descricao: true, permissoes: true, ativo: true },
+      select: {
+        id: true,
+        nome: true,
+        descricao: true,
+        permissoes: true,
+        telaPrincipalInicial: true,
+        ativo: true,
+      },
     });
     res.status(201).json({
       id: grupo.id,
       nome: grupo.nome,
       descricao: grupo.descricao,
       permissoes: parsePermissoes(grupo.permissoes),
+      telaPrincipalInicial: grupo.telaPrincipalInicial ?? null,
       ativo: grupo.ativo,
       totalUsuarios: 0,
     });
@@ -127,22 +144,57 @@ export async function atualizarGrupo(req: Request, res: Response): Promise<void>
   }
 
   const teveOutrosCampos =
-    parsed.data.nome !== undefined || parsed.data.descricao !== undefined || parsed.data.permissoes !== undefined;
+    parsed.data.nome !== undefined ||
+    parsed.data.descricao !== undefined ||
+    parsed.data.permissoes !== undefined ||
+    parsed.data.telaPrincipalInicial !== undefined;
   if (teveOutrosCampos && !podeEditar) {
     res.status(403).json({ error: 'Sem permissão para editar grupo.' });
     return;
   }
   try {
-    const existente = await prisma.grupoUsuario.findUnique({ where: { id } });
+    const existente = await prisma.grupoUsuario.findUnique({
+      where: { id },
+      select: { permissoes: true, telaPrincipalInicial: true },
+    });
     if (!existente) {
       res.status(404).json({ error: 'Grupo não encontrado.' });
       return;
     }
-    const data: { nome?: string; descricao?: string | null; permissoes?: string; ativo?: boolean } = {};
+    const precisaValidarTela =
+      parsed.data.permissoes !== undefined || parsed.data.telaPrincipalInicial !== undefined;
+    let telaPrincipalInicialGravar: string | null | undefined;
+    if (precisaValidarTela) {
+      const nextPerms =
+        parsed.data.permissoes !== undefined ? parsed.data.permissoes : parsePermissoes(existente.permissoes);
+      const nextTela =
+        parsed.data.telaPrincipalInicial !== undefined
+          ? parsed.data.telaPrincipalInicial
+          : existente.telaPrincipalInicial;
+      const checkTela = validarTelaPrincipalParaPermissoesGrupo(nextTela ?? null, nextPerms);
+      if (!checkTela.ok) {
+        res.status(400).json({ error: checkTela.error });
+        return;
+      }
+      if (parsed.data.telaPrincipalInicial !== undefined) {
+        telaPrincipalInicialGravar = checkTela.value;
+      }
+    }
+
+    const data: {
+      nome?: string;
+      descricao?: string | null;
+      permissoes?: string;
+      ativo?: boolean;
+      telaPrincipalInicial?: string | null;
+    } = {};
     if (parsed.data.nome !== undefined) data.nome = parsed.data.nome;
     if (parsed.data.descricao !== undefined) data.descricao = parsed.data.descricao ?? null;
     if (parsed.data.permissoes !== undefined) data.permissoes = serializePermissoes(parsed.data.permissoes);
     if (parsed.data.ativo !== undefined) data.ativo = parsed.data.ativo;
+    if (parsed.data.telaPrincipalInicial !== undefined) {
+      data.telaPrincipalInicial = telaPrincipalInicialGravar ?? null;
+    }
     const grupo = await prisma.grupoUsuario.update({
       where: { id },
       data,
@@ -151,6 +203,7 @@ export async function atualizarGrupo(req: Request, res: Response): Promise<void>
         nome: true,
         descricao: true,
         permissoes: true,
+        telaPrincipalInicial: true,
         ativo: true,
         _count: { select: { usuarios: true } },
       },
@@ -160,6 +213,7 @@ export async function atualizarGrupo(req: Request, res: Response): Promise<void>
       nome: grupo.nome,
       descricao: grupo.descricao,
       permissoes: parsePermissoes(grupo.permissoes),
+      telaPrincipalInicial: grupo.telaPrincipalInicial ?? null,
       ativo: grupo.ativo,
       totalUsuarios: grupo._count.usuarios,
     });

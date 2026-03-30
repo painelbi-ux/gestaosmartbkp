@@ -5,6 +5,8 @@ export interface Grupo {
   nome: string;
   descricao: string | null;
   permissoes: string[];
+  /** Chave da tela inicial (ex.: gerenciador_pedidos). Null = padrão do sistema. */
+  telaPrincipalInicial?: string | null;
   ativo: boolean;
   totalUsuarios?: number;
 }
@@ -27,6 +29,7 @@ export async function criarGrupo(payload: {
   descricao?: string | null;
   permissoes: string[];
   ativo?: boolean;
+  telaPrincipalInicial?: string | null;
 }): Promise<Grupo> {
   const res = await apiFetch('/api/grupos', {
     method: 'POST',
@@ -41,7 +44,13 @@ export async function criarGrupo(payload: {
 
 export async function atualizarGrupo(
   id: number,
-  payload: { nome?: string; descricao?: string | null; permissoes?: string[]; ativo?: boolean }
+  payload: {
+    nome?: string;
+    descricao?: string | null;
+    permissoes?: string[];
+    ativo?: boolean;
+    telaPrincipalInicial?: string | null;
+  }
 ): Promise<Grupo> {
   const res = await apiFetch(`/api/grupos/${id}`, {
     method: 'PUT',

@@ -114,6 +114,8 @@ export interface MeResponse {
   isCommercialTeam?: boolean;
   mustChangePassword?: boolean;
   permissoes: string[];
+  /** Rota (pathname) para abrir após login quando definida no grupo do usuário. */
+  telaInicialPath?: string | null;
 }
 
 export async function getMe(): Promise<MeResponse> {

@@ -5,6 +5,7 @@ import { getPermissoesUsuario } from '../middleware/requirePermission.js';
 import { prisma } from '../config/prisma.js';
 import { changePasswordSchema } from '../validators/auth.js';
 import { validateCsrf } from '../middleware/csrf.js';
+import { resolveTelaInicialPathParaUsuario } from '../config/telaPrincipalGrupo.js';
 
 const COMMERCIAL_TEAM_FLAG = '__time_comercial__';
 
@@ -34,12 +35,19 @@ router.get('/', async (req: Request, res: Response) => {
       nome: string | null;
       permissoes?: string | null;
       mustChangePassword?: boolean;
-      grupo?: { nome: string } | null;
+      grupo?: { nome: string; telaPrincipalInicial: string | null } | null;
     } | null = null;
     try {
       usuario = await prisma.usuario.findUnique({
         where: { login },
-        select: { id: true, login: true, nome: true, permissoes: true, mustChangePassword: true, grupo: { select: { nome: true } } },
+        select: {
+          id: true,
+          login: true,
+          nome: true,
+          permissoes: true,
+          mustChangePassword: true,
+          grupo: { select: { nome: true, telaPrincipalInicial: true } },
+        },
       });
     } catch (dbErr) {
       const msg = dbErr instanceof Error ? dbErr.message : String(dbErr);
@@ -62,6 +70,11 @@ router.get('/', async (req: Request, res: Response) => {
     } catch (_) {
       // mantém permissoes vazio em caso de falha (ex.: coluna/tabela ausente)
     }
+    const telaInicialPath =
+      login === 'master'
+        ? null
+        : resolveTelaInicialPathParaUsuario(usuario?.grupo?.telaPrincipalInicial ?? null, permissoes);
+
     res.json({
       login: usuario?.login ?? login,
       nome: usuario?.nome ?? null,
@@ -69,6 +82,7 @@ router.get('/', async (req: Request, res: Response) => {
       isCommercialTeam: parsePermissoes(usuario?.permissoes).includes(COMMERCIAL_TEAM_FLAG),
       mustChangePassword: !!usuario?.mustChangePassword,
       permissoes,
+      telaInicialPath,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

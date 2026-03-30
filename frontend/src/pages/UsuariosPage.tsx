@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { listarUsuarios, criarUsuario, atualizarUsuario, excluirUsuario, type Usuario } from '../api/usuarios';
 import { listarGrupos, listarPermissoes, criarGrupo, atualizarGrupo, excluirGrupo, type Grupo, type PermissaoItem } from '../api/grupos';
+import { OPCOES_TELA_PRINCIPAL, mensagemSeTelaPrincipalInvalidaParaGrupo } from '../config/telaPrincipalGrupo';
 import { z } from 'zod';
 
 const MAX_FOTO_BASE64 = 700000;
@@ -159,6 +160,7 @@ export default function UsuariosPage() {
   const [grupoDescricao, setGrupoDescricao] = useState('');
   const [grupoPermissoes, setGrupoPermissoes] = useState<string[]>([]);
   const [grupoAtivo, setGrupoAtivo] = useState(true);
+  const [grupoTelaPrincipal, setGrupoTelaPrincipal] = useState('');
   const [editandoGrupoId, setEditandoGrupoId] = useState<number | null>(null);
   const [salvandoGrupo, setSalvandoGrupo] = useState(false);
   const [formErrorGrupo, setFormErrorGrupo] = useState('');
@@ -366,6 +368,7 @@ export default function UsuariosPage() {
     setGrupoDescricao('');
     setGrupoPermissoes([]);
     setGrupoAtivo(true);
+    setGrupoTelaPrincipal('');
     setFormErrorGrupo('');
     setModalGrupoOpen(true);
   };
@@ -376,6 +379,7 @@ export default function UsuariosPage() {
     setGrupoDescricao(g.descricao ?? '');
     setGrupoPermissoes(g.permissoes ?? []);
     setGrupoAtivo(g.ativo);
+    setGrupoTelaPrincipal(g.telaPrincipalInicial ?? '');
     setFormErrorGrupo('');
     setModalGrupoOpen(true);
   };
@@ -386,6 +390,7 @@ export default function UsuariosPage() {
     setGrupoDescricao('');
     setGrupoPermissoes([]);
     setGrupoAtivo(true);
+    setGrupoTelaPrincipal('');
     setFormErrorGrupo('');
     setModalGrupoOpen(false);
   };
@@ -401,14 +406,23 @@ export default function UsuariosPage() {
       setFormErrorGrupo('Nome do grupo é obrigatório.');
       return;
     }
+    if (grupoTelaPrincipal) {
+      const msg = mensagemSeTelaPrincipalInvalidaParaGrupo(grupoTelaPrincipal, grupoPermissoes);
+      if (msg) {
+        setFormErrorGrupo(msg);
+        return;
+      }
+    }
     setSalvandoGrupo(true);
     try {
+      const telaPayload = grupoTelaPrincipal || null;
       if (editandoGrupoId) {
         await atualizarGrupo(editandoGrupoId, {
           nome: grupoNome.trim(),
           descricao: grupoDescricao.trim() || null,
           permissoes: grupoPermissoes,
           ativo: grupoAtivo,
+          telaPrincipalInicial: telaPayload,
         });
         showToast('Grupo atualizado com sucesso.');
       } else {
@@ -417,6 +431,7 @@ export default function UsuariosPage() {
           descricao: grupoDescricao.trim() || null,
           permissoes: grupoPermissoes,
           ativo: grupoAtivo,
+          telaPrincipalInicial: telaPayload,
         });
         showToast('Grupo criado com sucesso.');
       }
@@ -634,6 +649,24 @@ export default function UsuariosPage() {
           <form onSubmit={handleSubmitGrupo} className="space-y-4">
             <div><label className="block text-xs mb-1">Nome do grupo</label><input value={grupoNome} onChange={(e) => setGrupoNome(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
             <div><label className="block text-xs mb-1">Descrição</label><input value={grupoDescricao} onChange={(e) => setGrupoDescricao(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+            <div>
+              <label className="block text-xs mb-1 text-slate-700 dark:text-slate-300">Tela principal ao iniciar</label>
+              <select
+                value={grupoTelaPrincipal}
+                onChange={(e) => setGrupoTelaPrincipal(e.target.value)}
+                className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm text-slate-800 dark:text-slate-100"
+              >
+                <option value="">Padrão do sistema</option>
+                {OPCOES_TELA_PRINCIPAL.map((o) => (
+                  <option key={o.key} value={o.key}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Usuários deste grupo passam a abrir nesta tela ao entrar no sistema. É necessário que o grupo tenha permissão para acessar a área escolhida.
+              </p>
+            </div>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={grupoAtivo} onChange={(e) => setGrupoAtivo(e.target.checked)} /> Grupo ativo</label>
             <div className="space-y-3">
               {agruparPermissoes(permissoesLista).map(({ secao, itens }) => (
