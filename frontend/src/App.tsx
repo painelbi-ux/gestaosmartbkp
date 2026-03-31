@@ -24,13 +24,19 @@ import MPPPage from './pages/pedidos/MPPPage';
 import PCPedidoCompraPage from './pages/pedidos/PCPedidoCompraPage';
 import ProgramacaoSetorialPainelPage from './pages/pedidos/ProgramacaoSetorialPainelPage';
 import ErrorBoundary from './components/ErrorBoundary';
-import { getStoredToken } from './api/client';
+import { getStoredToken, SESSION_CLEARED_EVENT } from './api/client';
 import { checkAuth } from './api/auth';
 import SemAcessoPage from './pages/SemAcessoPage';
 import InicioPage from './pages/InicioPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const [auth, setAuth] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const onSessionCleared = () => setAuth(false);
+    window.addEventListener(SESSION_CLEARED_EVENT, onSessionCleared);
+    return () => window.removeEventListener(SESSION_CLEARED_EVENT, onSessionCleared);
+  }, []);
 
   useEffect(() => {
     const token = getStoredToken();

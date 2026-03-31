@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import CardsResumo from '../components/CardsResumo';
 import CardsResumoFinanceiro from '../components/CardsResumoFinanceiro';
 import FiltroPedidos, { type FiltrosPedidosState, defaultFiltros } from '../components/FiltroPedidos';
@@ -37,6 +38,7 @@ function toApiFiltros(f: FiltrosPedidosState) {
 }
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [resumo, setResumo] = useState<Resumo | null>(null);
   const [resumoFinanceiro, setResumoFinanceiro] = useState<ResumoFinanceiro | null>(null);
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
@@ -142,11 +144,9 @@ export default function Dashboard() {
     try {
       await logout();
     } catch {
-      // rede/servidor: logout() já removeu token local
+      // rede: token já removido
     }
-    const base = import.meta.env.BASE_URL ?? '/';
-    const entrar = base === '/' ? '/entrar' : `${base.replace(/\/$/, '')}/entrar`;
-    window.location.replace(entrar);
+    navigate('/entrar', { replace: true });
   };
 
   return (

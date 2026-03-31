@@ -1,4 +1,4 @@
-import { apiFetch, setCsrfToken, setAuthToken } from './client';
+import { apiFetch, setCsrfToken, setAuthToken, notifySessionCleared } from './client';
 
 export interface LoginResponse {
   ok: boolean;
@@ -99,6 +99,7 @@ export async function pingServer(): Promise<boolean> {
 export async function logout(): Promise<void> {
   sessionStorage.removeItem(TOKEN_KEY);
   setAuthToken(null);
+  notifySessionCleared();
   await apiFetch('/auth/logout', { method: 'POST' });
 }
 

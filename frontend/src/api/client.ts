@@ -10,6 +10,14 @@ function getApiBase(): string {
 }
 const TOKEN_KEY = 'gestor_token';
 
+/** Disparado quando o token é limpo (logout ou 401); ProtectedRoute redireciona para /entrar sem recarregar a página. */
+export const SESSION_CLEARED_EVENT = 'gestor:session-cleared';
+
+export function notifySessionCleared(): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(SESSION_CLEARED_EVENT));
+}
+
 let csrfToken: string | null = null;
 let authToken: string | null = null;
 
@@ -73,10 +81,7 @@ export async function apiFetch(
       sessionStorage.removeItem(TOKEN_KEY);
       setAuthToken(null);
     } catch {}
-    const naPaginaLogin = typeof window !== 'undefined' && window.location.pathname === '/entrar';
-    if (typeof window !== 'undefined' && !path.includes('/auth/login') && !naPaginaLogin) {
-      window.location.href = '/entrar';
-    }
+    notifySessionCleared();
   }
   return res;
 }

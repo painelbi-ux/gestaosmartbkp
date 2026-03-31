@@ -296,12 +296,10 @@ export default function Layout() {
     try {
       await logout();
     } catch {
-      // rede/servidor: logout() já removeu token local; segue para tela de login
+      // rede/servidor: logout() já removeu token e disparou sessão limpa
     }
-    // Navegação completa evita estado preso (abas, PermissionGuard) e garante /entrar.
-    const base = import.meta.env.BASE_URL ?? '/';
-    const entrar = base === '/' ? '/entrar' : `${base.replace(/\/$/, '')}/entrar`;
-    window.location.replace(entrar);
+    await refreshUser();
+    navigate('/entrar', { replace: true });
   };
 
   const handleForcarTrocaSenha = async (e: React.FormEvent) => {
