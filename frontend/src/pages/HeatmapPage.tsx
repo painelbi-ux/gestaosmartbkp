@@ -93,12 +93,27 @@ export default function HeatmapPage() {
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
 
+  const layoutToken = `${mostrarFiltros}-${mostrarCards}-${telaCheia}`;
+  const rootClass = telaCheia
+    ? 'h-screen box-border overflow-hidden bg-slate-50 dark:bg-slate-900 p-4 flex flex-col gap-4'
+    : 'h-full min-h-0 flex flex-col gap-6';
+  const areaPrincipalClass = telaCheia
+    ? `flex-1 min-h-0 flex flex-col items-stretch gap-6 ${mostrarCards ? 'xl:flex-row' : ''}`
+    : `items-stretch gap-6 ${mostrarCards ? 'flex flex-col lg:flex-row lg:min-h-[520px]' : 'flex flex-col flex-1 min-h-0'}`;
+  const mapaWrapperClass = mostrarCards
+    ? telaCheia
+      ? 'min-h-0 h-full'
+      : 'min-h-[400px] lg:min-h-0'
+    : telaCheia
+      ? 'h-full min-h-0'
+      : 'h-full min-h-[520px]';
+
   return (
     <div
       ref={rootRef}
-      className={`space-y-6 ${telaCheia ? 'min-h-screen box-border overflow-auto bg-slate-50 dark:bg-slate-900 p-4' : ''}`}
+      className={rootClass}
     >
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 shrink-0">
         <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">Heatmap</h2>
         <button
           type="button"
@@ -165,19 +180,23 @@ export default function HeatmapPage() {
         </button>
       </div>
       {mostrarFiltros && (
-        <FiltroPedidos
-          filtros={filtros}
-          onChange={setFiltros}
-          onAplicar={aplicarFiltros}
-          onLimpar={limparFiltros}
-        />
+        <div className="shrink-0">
+          <FiltroPedidos
+            filtros={filtros}
+            onChange={setFiltros}
+            onAplicar={aplicarFiltros}
+            onLimpar={limparFiltros}
+          />
+        </div>
       )}
-      {mostrarCards && <CardsResumoFinanceiro resumo={resumoFinanceiro} loading={loading} />}
-      <div
-        className={`flex flex-col gap-6 items-stretch ${mostrarCards ? 'lg:flex-row lg:min-h-[520px]' : 'min-h-[min(70vh,720px)]'}`}
-      >
+      {mostrarCards && (
+        <div className="shrink-0">
+          <CardsResumoFinanceiro resumo={resumoFinanceiro} loading={loading} />
+        </div>
+      )}
+      <div className={areaPrincipalClass}>
         {mostrarCards && (
-          <div className="flex flex-col gap-4 w-full lg:w-[280px] shrink-0">
+          <div className={`flex flex-col gap-4 w-full ${telaCheia ? 'xl:w-[280px]' : 'lg:w-[280px]'} shrink-0`}>
             <GaugeIndicador
               title="Retirada"
               value={resumoStatusTipoF?.retirada.percentual ?? 0}
@@ -196,11 +215,9 @@ export default function HeatmapPage() {
           </div>
         )}
         <div
-          className={`flex-1 flex flex-col rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 ${
-            mostrarCards ? 'min-h-[400px] lg:min-h-0' : 'min-h-[min(65vh,680px)]'
-          }`}
+          className={`flex-1 flex flex-col rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 ${mapaWrapperClass}`}
         >
-          <MapaMunicipios filtros={filtros as FiltrosPedidos} />
+          <MapaMunicipios filtros={filtros as FiltrosPedidos} layoutToken={layoutToken} />
         </div>
       </div>
     </div>

@@ -53,7 +53,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setMustChangePassword(!!me.mustChangePassword);
       setTelaInicialPath(me.telaInicialPath ?? null);
       setPermissoes(me.permissoes ?? []);
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err ?? '');
+      const unauthorized = msg.toLowerCase().includes('não autorizado') || msg.toLowerCase().includes('nao autorizado');
+      // Em queda/restart do backend, evita "deslogar"/"sem acesso" por falha transitória de rede.
+      if (!unauthorized && getStoredToken()) {
+        return;
+      }
       setLogin(null);
       setNome(null);
       setGrupo(null);

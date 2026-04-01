@@ -121,7 +121,10 @@ export interface MeResponse {
 
 export async function getMe(): Promise<MeResponse> {
   const res = await apiFetch('/api/me');
-  if (!res.ok) throw new Error('Não autorizado');
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Não autorizado');
+    throw new Error(`Falha ao carregar usuário (${res.status})`);
+  }
   return res.json();
 }
 

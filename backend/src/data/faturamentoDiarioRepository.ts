@@ -15,7 +15,7 @@ LEFT JOIN produto pd ON pd.id = ide.idProduto
 LEFT JOIN grupoproduto gp ON pd.idGrupoProduto = gp.id
 LEFT JOIN familiaproduto fp ON pd.idFamiliaProduto = fp.id
 WHERE (ISNULL(nfe.status) = 1 OR nfe.status = 4)
-  AND tm.id IN (52, 55)
+  AND tm.id IN (52)
   AND DATE(de.dataEmissao) = CURDATE()
 `;
 
@@ -29,7 +29,7 @@ LEFT JOIN produto pd ON pd.id = ide.idProduto
 LEFT JOIN grupoproduto gp ON pd.idGrupoProduto = gp.id
 LEFT JOIN familiaproduto fp ON pd.idFamiliaProduto = fp.id
 WHERE (ISNULL(nfe.status) = 1 OR nfe.status = 4)
-  AND tm.id IN (52, 55)
+  AND tm.id IN (52)
   AND YEAR(de.dataEmissao) = YEAR(CURDATE())
   AND MONTH(de.dataEmissao) = MONTH(CURDATE())
 `;
@@ -48,9 +48,12 @@ LEFT JOIN produto pd ON pd.id = ide.idProduto
 LEFT JOIN grupoproduto gp ON pd.idGrupoProduto = gp.id
 LEFT JOIN familiaproduto fp ON pd.idFamiliaProduto = fp.id
 WHERE (ISNULL(nfe.status) = 1 OR nfe.status IN (1, 3, 4))
-  AND (tm.nome LIKE 'Vend%' OR (tm.id IN (91, 133, 156) AND tm.nome <> 'VENDA DE MERCADORIA  ADQUIRIDA CONS FINAL - FORA DO ESTADO'))
-  AND tm.id NOT IN (150, 24)
-  AND de.numeroDocumentoFiscal NOT IN ('128748', '127108', '132272')
+  AND tm.id IN (27, 59, 21, 54, 6, 62, 45, 93, 83, 74, 108, 64, 92, 93)
+  AND de.idEmpresaSaida = 1
+  AND ide.id NOT IN (493134, 493135, 493136, 493137, 493138, 493139, 493140)
+  AND de.numeroDocumentoFiscal NOT IN (
+    128748, 127108, 133953, 133950, 133948, 133947, 133956, 133951, 133949, 133957, 133961, 133876
+  )
   AND DATE(de.dataEmissao) = CURDATE()
 GROUP BY DATE_FORMAT(de.dataEmissao, '%d/%m/%Y')
 `;
@@ -65,12 +68,15 @@ LEFT JOIN produto pd ON pd.id = ide.idProduto
 LEFT JOIN grupoproduto gp ON pd.idGrupoProduto = gp.id
 LEFT JOIN familiaproduto fp ON pd.idFamiliaProduto = fp.id
 WHERE (ISNULL(nfe.status) = 1 OR nfe.status IN (1, 3, 4))
-  AND tm.id <> 24
-  AND tm.id <> 150
-  AND (tm.nome LIKE 'Vend%' OR (tm.id IN (91, 133, 156) AND tm.nome <> 'VENDA DE MERCADORIA ADQUIRIDA CONS FINAL - FORA DO ESTADO'))
+  AND tm.id IN (27, 59, 21, 54, 6, 62, 45, 93, 83, 74, 108, 64, 92, 93)
+  AND DATE(de.dataEmissao) >= '2024-01-01'
+  AND de.idEmpresaSaida = 1
+  AND ide.id NOT IN (493134, 493135, 493136, 493137, 493138, 493139, 493140)
+  AND de.numeroDocumentoFiscal NOT IN (
+    128748, 127108, 133953, 133950, 133948, 133947, 133956, 133951, 133949, 133957, 133961, 133876
+  )
   AND YEAR(de.dataEmissao) = YEAR(CURDATE())
   AND MONTH(de.dataEmissao) = MONTH(CURDATE())
-  AND de.numeroDocumentoFiscal NOT IN ('128748', '127108', '132272')
 `;
 
 export interface FaturamentoDiarioDados {

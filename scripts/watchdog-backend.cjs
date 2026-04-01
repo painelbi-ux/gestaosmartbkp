@@ -8,6 +8,8 @@ const API_BASE = 'http://127.0.0.1:4000';
 const PING_URL = `${API_BASE}/auth/ping`;
 const LOGIN_URL = `${API_BASE}/auth/login`;
 const PORT = 4000;
+const MAX_CONSECUTIVE_FAILURES = 3;
+let consecutiveFailures = 0;
 
 function killPort(port) {
   const { execSync } = require('child_process');
@@ -67,15 +69,32 @@ async function checkLogin() {
 async function runCheck() {
   const pingOk = await checkPing();
   if (!pingOk) {
-    console.warn('[watchdog] /auth/ping falhou. Reiniciando backend...');
-    killPort(PORT);
+    consecutiveFailures += 1;
+    console.warn(`[watchdog] /auth/ping falhou (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}).`);
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      console.warn('[watchdog] Falhas consecutivas no ping. Reiniciando backend...');
+      killPort(PORT);
+      consecutiveFailures = 0;
+    }
     return;
   }
+
   const loginOk = await checkLogin();
   if (!loginOk) {
-    console.warn('[watchdog] Login de teste falhou (5xx). Reiniciando backend...');
-    killPort(PORT);
+    consecutiveFailures += 1;
+    console.warn(`[watchdog] Login de teste falhou (5xx) (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}).`);
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      console.warn('[watchdog] Falhas consecutivas no login de teste. Reiniciando backend...');
+      killPort(PORT);
+      consecutiveFailures = 0;
+    }
+    return;
   }
+
+  if (consecutiveFailures > 0) {
+    console.log('[watchdog] Backend respondeu novamente. Zerando contador de falhas.');
+  }
+  consecutiveFailures = 0;
 }
 
 function main() {

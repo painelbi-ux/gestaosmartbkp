@@ -215,9 +215,21 @@ function AjustarBounds({ items }: { items: MapaMunicipioItem[] }) {
 
 interface MapaMunicipiosProps {
   filtros?: FiltrosPedidos;
+  layoutToken?: string;
 }
 
-export default function MapaMunicipios({ filtros = {} }: MapaMunicipiosProps) {
+function RecalcularMapa({ token }: { token?: string }) {
+  const map = useMap();
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      map.invalidateSize();
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [map, token]);
+  return null;
+}
+
+export default function MapaMunicipios({ filtros = {}, layoutToken }: MapaMunicipiosProps) {
   const [resposta, setResposta] = useState<MapaMunicipiosResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
@@ -328,6 +340,7 @@ export default function MapaMunicipios({ filtros = {} }: MapaMunicipiosProps) {
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
             url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
           />
+          <RecalcularMapa token={layoutToken} />
           <AjustarBounds items={dados} />
           {dados.map((item, i) => {
             const key = item.chave || `${item.municipio}-${item.uf}-${i}`;
