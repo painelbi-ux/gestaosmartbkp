@@ -1,7 +1,7 @@
-# Libera as portas 5180 (interno) e 5174 (externo) no Firewall do Windows
+# Libera as portas 5180 (interno) e 5173 (externo) no Firewall do Windows
 # Execute como Administrador: PowerShell -ExecutionPolicy Bypass -File scripts\liberar-porta-externo.ps1
 
-foreach ($porta in @(5180, 5174)) {
+foreach ($porta in @(5180, 5173)) {
     $regra = "GestorPedidos-Frontend-$porta"
     $existe = Get-NetFirewallRule -DisplayName $regra -ErrorAction SilentlyContinue
     if ($existe) {
@@ -11,5 +11,5 @@ foreach ($porta in @(5180, 5174)) {
         Write-Host "Porta $porta liberada."
     }
 }
-Write-Host "Interno: http://SEU_IP:5180  |  Externo: http://SEU_IP:5174"
+Write-Host "Interno: http://SEU_IP:5180  |  Externo: http://SEU_IP:5173"
 Write-Host "Para ver o IP: ipconfig"

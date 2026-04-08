@@ -96,7 +96,7 @@ export default function HeatmapPage() {
   const layoutToken = `${mostrarFiltros}-${mostrarCards}-${telaCheia}`;
   const rootClass = telaCheia
     ? 'h-screen box-border overflow-hidden bg-slate-50 dark:bg-slate-900 p-4 flex flex-col gap-4'
-    : 'h-full min-h-0 flex flex-col gap-6';
+    : 'min-h-0 flex flex-col gap-6';
   const areaPrincipalClass = telaCheia
     ? `flex-1 min-h-0 flex flex-col items-stretch gap-6 ${mostrarCards ? 'xl:flex-row' : ''}`
     : `items-stretch gap-6 ${mostrarCards ? 'flex flex-col lg:flex-row lg:min-h-[520px]' : 'flex flex-col flex-1 min-h-0'}`;
@@ -106,7 +106,9 @@ export default function HeatmapPage() {
       : 'min-h-[400px] lg:min-h-0'
     : telaCheia
       ? 'h-full min-h-0'
-      : 'h-full min-h-[520px]';
+      : mostrarFiltros
+        ? 'h-[calc(100vh-320px)] min-h-[520px]'
+        : 'h-[calc(100vh-210px)] min-h-[620px]';
 
   return (
     <div
@@ -214,9 +216,7 @@ export default function HeatmapPage() {
             />
           </div>
         )}
-        <div
-          className={`flex-1 flex flex-col rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 ${mapaWrapperClass}`}
-        >
+        <div className={`flex-1 flex flex-col rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 ${mapaWrapperClass}`}>
           <MapaMunicipios filtros={filtros as FiltrosPedidos} layoutToken={layoutToken} />
         </div>
       </div>

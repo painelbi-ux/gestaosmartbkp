@@ -34,3 +34,10 @@ coverage/
 # Prisma (opcional: descomente se não quiser subir o schema)
 # backend/prisma/*.db
 # backend/prisma/*.db-journal
+
+# ACME / SSL (não commitar chaves)
+backend/var/.well-known/
+deploy/ssl/*.pem
+deploy/ssl/*.crt
+deploy/ssl/*.key
+deploy/wacs/

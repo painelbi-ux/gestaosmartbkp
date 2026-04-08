@@ -11,7 +11,7 @@
    ```bash
    npm run dev
    ```
-   Isso inicia o backend (porta 4000) e, depois que ele responder em `/health`, inicia os frontends (5180 e 5174). Não feche o terminal.
+   Isso inicia o backend (porta 4000) e, depois que ele responder em `/health`, inicia os frontends (5180 e 5173). Não feche o terminal.
 
 2. **Se estiver só no frontend**  
    Se você rodou apenas `npm run dev` dentro de `frontend/`, o backend não sobe. Use `npm run dev` na **raiz** para ter backend + frontend.

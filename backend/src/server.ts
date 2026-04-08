@@ -11,8 +11,10 @@ http.ServerResponse.prototype.writeHead = function (
   return (origWriteHead as (...a: unknown[]) => unknown).apply(this, [statusCode, ...args]) as ReturnType<typeof origWriteHead>;
 };
 
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import https from 'https';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { loadEnv } from './config/env.js';
@@ -95,6 +97,59 @@ function main(): void {
       console.error(`Porta ${port} já está em uso. Encerre o processo que a usa ou use outra porta.`);
     }
     process.exit(1);
+  });
+
+  startHttpsIfConfigured();
+}
+
+/** HTTPS direto no Node (sem nginx). PEM em deploy/ssl/ ou SSL_CERT_FILE / SSL_KEY_FILE; MikroTik: NAT TCP 443 → este host. */
+function startHttpsIfConfigured(): void {
+  const deploySsl = path.join(backendRoot, '..', 'deploy', 'ssl');
+  const pairs: { cert: string; key: string }[] = [];
+  if (process.env.SSL_CERT_FILE && process.env.SSL_KEY_FILE) {
+    pairs.push({ cert: process.env.SSL_CERT_FILE, key: process.env.SSL_KEY_FILE });
+  }
+  pairs.push(
+    { cert: path.join(deploySsl, 'fullchain.pem'), key: path.join(deploySsl, 'privkey.pem') },
+    { cert: path.join(deploySsl, 'gsmartsoaco-chain.pem'), key: path.join(deploySsl, 'gsmartsoaco-key.pem') }
+  );
+  let certFile = '';
+  let keyFile = '';
+  for (const p of pairs) {
+    if (fs.existsSync(p.cert) && fs.existsSync(p.key)) {
+      certFile = p.cert;
+      keyFile = p.key;
+      break;
+    }
+  }
+  if (!certFile || !keyFile) {
+    console.log(
+      '[startup] HTTPS não iniciado: defina SSL_CERT_FILE/SSL_KEY_FILE ou coloque PEM em deploy/ssl (ex.: fullchain.pem + privkey.pem; win-acme: gsmartsoaco-chain.pem + gsmartsoaco-key.pem).'
+    );
+    return;
+  }
+  const sslPort = Number(process.env.SSL_PORT || '443');
+  let credentials: { cert: string; key: string };
+  try {
+    credentials = {
+      cert: fs.readFileSync(certFile, 'utf8'),
+      key: fs.readFileSync(keyFile, 'utf8'),
+    };
+  } catch (e) {
+    console.error('[startup] Falha ao ler certificados SSL:', (e as Error).message);
+    return;
+  }
+  const httpsServer = https.createServer(credentials, app);
+  httpsServer.keepAliveTimeout = 65000;
+  httpsServer.headersTimeout = 66000;
+  httpsServer.listen(sslPort, '0.0.0.0', () => {
+    console.log(`HTTPS em https://0.0.0.0:${sslPort} (domínio gsmartsoaco.com.br)`);
+  });
+  httpsServer.on('error', (err: NodeJS.ErrnoException) => {
+    console.error('[startup] Erro ao subir HTTPS:', err.message);
+    if (err.code === 'EACCES') {
+      console.error('Porta 443 costuma exigir executar o Node como Administrador ou usar SSL_PORT=8443 + portproxy 443→8443.');
+    }
   });
 }
 

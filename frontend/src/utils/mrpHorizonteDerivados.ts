@@ -2,6 +2,11 @@ import type { MrpHorizonteLinha, MrpRow } from '../api/mrp';
 
 export type CelDiaHorizonteCalc = { consumo: number; saldoEstoque: number; entrada: number };
 
+/** Opções do horizonte: saldo do 1º dia vem da coluna Estoque da grade quando informado. */
+export type SaldoHorizonteOptions = {
+  saldoInicialPrimeiroDia?: number;
+};
+
 export function fmtNum2(n: number): string {
   return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -10,12 +15,35 @@ export function codigoChave(row: MrpRow): string {
   return String(row.codigocomponente ?? '').trim();
 }
 
+/** Converte valor numérico vindo da API / grade (aceita vírgula decimal). */
+export function numCampoMRP(val: unknown): number {
+  if (val == null || val === '') return 0;
+  if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+  let s = String(val).trim().replace(/\s/g, '');
+  if (!s) return 0;
+  let n = Number(s);
+  if (Number.isFinite(n)) return n;
+  if (s.includes(',')) {
+    s = s.replace(/\./g, '').replace(',', '.');
+    n = Number(s);
+  }
+  return Number.isFinite(n) ? n : 0;
+}
+
 /**
- * Um único passe: saldo efetivo exibido/calculado + necessidade acumulada por dia.
- * - Dia 0: saldo = valor de `saldoEstoque` da célula se > 0, senão 0.
- * - Dias seguintes: saldo = max(0, saldo do dia anterior − consumo do dia anterior + entrada do dia anterior).
+ * Um único passe: saldo exibido por dia + necessidade acumulada (carry-forward no tempo).
+ *
+ * - Consumo / Entrada: por dia, já vindos do backend (MPP / PC).
+ * - 1ª data — Saldo estoque: `opts.saldoInicialPrimeiroDia` se informado (coluna Estoque da linha MRP);
+ *   senão, saldo MPP da primeira célula (> 0, senão 0).
+ * - Demais datas — Saldo estoque: (saldo do dia anterior − consumo do dia anterior) + entrada do dia anterior.
+ * - Saldo usado na grade e na necessidade: nunca negativo (max(0, ·)).
+ * - Necessidade no dia: Consumo − (Saldo estoque + Entrada); acumulada: max(0, necessidade_dia + acumulado anterior).
  */
-export function saldosENecessidadesHorizonte(dias: CelDiaHorizonteCalc[]): {
+export function saldosENecessidadesHorizonte(
+  dias: CelDiaHorizonteCalc[],
+  opts?: SaldoHorizonteOptions
+): {
   saldosEf: number[];
   nAcum: number[];
 } {
@@ -26,17 +54,23 @@ export function saldosENecessidadesHorizonte(dias: CelDiaHorizonteCalc[]): {
     const cel = dias[i];
     let s: number;
     if (i === 0) {
-      const rawS = Number(cel.saldoEstoque);
-      const rawOk = Number.isFinite(rawS) ? rawS : 0;
-      s = rawOk > 0 ? rawOk : 0;
+      if (opts?.saldoInicialPrimeiroDia !== undefined) {
+        const n0 = Number(opts.saldoInicialPrimeiroDia);
+        s = Number.isFinite(n0) ? n0 : 0;
+      } else {
+        const rawS = Number(cel.saldoEstoque);
+        const rawOk = Number.isFinite(rawS) ? rawS : 0;
+        s = rawOk > 0 ? rawOk : 0;
+      }
     } else {
       const prevS = saldosEf[i - 1] ?? 0;
       const prevC = Number(dias[i - 1].consumo);
       const consumoAnterior = Number.isFinite(prevC) ? prevC : 0;
       const prevE = Number(dias[i - 1].entrada);
       const entradaAnterior = Number.isFinite(prevE) ? prevE : 0;
-      s = Math.max(0, prevS - consumoAnterior + entradaAnterior);
+      s = prevS - consumoAnterior + entradaAnterior;
     }
+    s = Math.max(0, s);
     saldosEf.push(s);
 
     const consumo = Number(cel.consumo);
@@ -51,12 +85,12 @@ export function saldosENecessidadesHorizonte(dias: CelDiaHorizonteCalc[]): {
   return { saldosEf, nAcum };
 }
 
-export function saldosEstoqueEfetivosHorizonte(dias: CelDiaHorizonteCalc[]): number[] {
-  return saldosENecessidadesHorizonte(dias).saldosEf;
+export function saldosEstoqueEfetivosHorizonte(dias: CelDiaHorizonteCalc[], opts?: SaldoHorizonteOptions): number[] {
+  return saldosENecessidadesHorizonte(dias, opts).saldosEf;
 }
 
-export function necessidadesAcumuladasHorizonte(dias: CelDiaHorizonteCalc[]): number[] {
-  return saldosENecessidadesHorizonte(dias).nAcum;
+export function necessidadesAcumuladasHorizonte(dias: CelDiaHorizonteCalc[], opts?: SaldoHorizonteOptions): number[] {
+  return saldosENecessidadesHorizonte(dias, opts).nAcum;
 }
 
 export function primeiroIndiceRupturaDeNAcum(nAcum: number[]): number {
@@ -66,15 +100,24 @@ export function primeiroIndiceRupturaDeNAcum(nAcum: number[]): number {
   return -1;
 }
 
-export function primeiroIndiceRupturaAcumulada(linha: MrpHorizonteLinha | undefined): number {
+export function primeiroIndiceRupturaAcumulada(
+  linha: MrpHorizonteLinha | undefined,
+  opts?: SaldoHorizonteOptions
+): number {
   if (!linha?.dias?.length) return -1;
-  return primeiroIndiceRupturaDeNAcum(necessidadesAcumuladasHorizonte(linha.dias));
+  return primeiroIndiceRupturaDeNAcum(necessidadesAcumuladasHorizonte(linha.dias, opts));
 }
 
-export function primeiraDataRuptura(linha: MrpHorizonteLinha | undefined): string | null {
-  const i = primeiroIndiceRupturaAcumulada(linha);
+export function primeiraDataRuptura(linha: MrpHorizonteLinha | undefined, opts?: SaldoHorizonteOptions): string | null {
+  const i = primeiroIndiceRupturaAcumulada(linha, opts);
   if (i < 0 || !linha?.dias?.[i]) return null;
   return linha.dias[i].data;
+}
+
+/** Primeira data com necessidade acumulada > 0, usando o Estoque da linha MRP no 1º dia. */
+export function primeiraDataRupturaParaRow(linha: MrpHorizonteLinha | undefined, row: MrpRow): string | null {
+  if (!linha?.dias?.length) return null;
+  return primeiraDataRuptura(linha, { saldoInicialPrimeiroDia: numCampoMRP(row.estoque) });
 }
 
 export function parseDataMRP(val: unknown): string | null {

@@ -18,8 +18,8 @@ export default defineConfig({
         alias: { '@': path.resolve(__dirname, './src') },
     },
     server: {
-        port: 5180, // interno; --port 5174 no script dev:frontend:externo
-        host: '0.0.0.0', // escuta em todas as interfaces (interno 5180 + externo 5174)
+        port: 5180, // interno; --port 5173 no script dev:frontend:externo
+        host: '0.0.0.0', // escuta em todas as interfaces (interno 5180 + externo 5173)
         strictPort: true, // falha se a porta estiver em uso (predev libera antes)
         // Acesso externo: permitir qualquer host (evita "Invalid Host header" ao acessar por IP)
         allowedHosts: true,

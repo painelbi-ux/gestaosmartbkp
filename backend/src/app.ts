@@ -1,3 +1,4 @@
+import fs from 'fs';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -25,6 +26,33 @@ import programacaoSetorialRoutes from './routes/programacaoSetorialRoutes.js';
 import { csrfProtect } from './middleware/csrf.js';
 
 const app = express();
+
+const __dirnameApp = path.dirname(fileURLToPath(import.meta.url));
+const backendRootApp = path.join(__dirnameApp, '..');
+
+// Atrás de nginx/IIS com HTTPS (TRUST_PROXY=true no .env) — necessário para req.secure e cookies corretos
+if (process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', 1);
+}
+
+// Let's Encrypt HTTP-01: win-acme com --webroot = backend/var (arquivos em var/.well-known/acme-challenge/).
+const acmeWellKnownRoot = path.join(backendRootApp, 'var', '.well-known');
+fs.mkdirSync(path.join(acmeWellKnownRoot, 'acme-challenge'), { recursive: true });
+app.use(
+  '/.well-known',
+  express.static(acmeWellKnownRoot, { dotfiles: 'allow', index: false, maxAge: 0 })
+);
+
+// Só ative no .env após HTTPS na 443 estar OK (senão redireciona para um site que ainda não responde em TLS).
+if (process.env.FORCE_HTTPS_REDIRECT === 'true') {
+  app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.path.startsWith('/.well-known')) return next();
+    if (req.secure) return next();
+    const host = (req.headers.host || '').split(':')[0];
+    if (!host) return next();
+    return res.redirect(301, `https://${host}${req.originalUrl || '/'}`);
+  });
+}
 
 // Garante que nenhuma rota devolva 500 (evita "Internal Server Error" no frontend)
 app.use((_req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -138,13 +166,14 @@ app.get('/health', async (_req, res) => {
   res.json({ ok: true, build: BUILD_ID, db });
 });
 
-// Em produção, serve o frontend estático (após build)
-if (process.env.NODE_ENV === 'production') {
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const publicDir = path.join(__dirname, '..', 'public');
+// Frontend estático (build em backend/public). Também com "npm run dev" na raiz: NODE_ENV pode vir
+// como development do processo pai e o .env não sobrescreve (override:false) — o site no domínio :80→:4000 ficaria sem SPA.
+const publicDir = path.join(backendRootApp, 'public');
+const spaIndex = path.join(publicDir, 'index.html');
+if (fs.existsSync(spaIndex)) {
   app.use(express.static(publicDir));
   app.get('*', (_req, res) => {
-    res.sendFile(path.join(publicDir, 'index.html'));
+    res.sendFile(spaIndex);
   });
 }
 

@@ -1,6 +1,6 @@
 /**
  * Cliente API com credenciais (cookies + Bearer token) e CSRF.
- * Sem VITE_API_URL: usa a mesma origem (porta 5180 ou 5174); o proxy encaminha /api e /auth para a 4000.
+ * Sem VITE_API_URL: usa a mesma origem (porta 5180 ou 5173); o proxy encaminha /api e /auth para a 4000.
  * Com VITE_API_URL: usa a URL definida (ex: http://10.80.1.187:4000).
  */
 function getApiBase(): string {

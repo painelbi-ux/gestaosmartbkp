@@ -115,6 +115,24 @@ function computarStatus(row: Record<string, unknown>): 'Atrasado' | 'Em dia' {
   return 'Em dia';
 }
 
+/**
+ * Chave canônica pedido+item (ignora prefixo da carrada/romaneio e normaliza item: 0645 e 645 -> mesmo grupo).
+ * Ex.: "12345-179648-3255" e "0000000-179648-3255" -> "179648-3255".
+ * Assim o histórico SQLite permanece associado à linha lógica quando o vínculo com a carrada muda no ERP.
+ */
+function chavePedidoItem(id: string): string {
+  const parts = String(id ?? '').trim().split('-');
+  if (parts.length >= 3) {
+    const pedido = parts[parts.length - 2]!.trim();
+    const itemStr = parts[parts.length - 1]!.trim();
+    const numItem = parseInt(itemStr, 10);
+    const itemCanonico = Number.isNaN(numItem) ? itemStr : String(numItem);
+    return `${pedido}-${itemCanonico}`;
+  }
+  if (parts.length === 2) return parts.join('-').trim();
+  return String(id ?? '').trim();
+}
+
 /** Último e penúltimo ajuste por id_pedido (para Previsão atual e Previsão anterior). */
 type AjusteInfo = {
   ultimo: { previsao_nova: Date; motivo: string | null; observacao: string | null };
@@ -124,25 +142,26 @@ type AjusteInfo = {
 /** Linha bruta do SQLite (datas podem vir como string, número ou timestamp ms). */
 type AjusteRow = { id: number; id_pedido: string; previsao_nova: unknown; motivo: string; observacao: string | null; data_ajuste: unknown };
 
-/** Busca último e penúltimo ajuste por id_pedido exato (mesmo critério do histórico). Assim a grade mostra a mesma previsão que o último registro do histórico. */
+/** Busca último e penúltimo ajuste pela chave canônica pedido+item (alinha com histórico e com mudanças de carrada no ERP). */
 async function obterUltimoEPenultimoPorPedido(ids: string[]): Promise<Map<string, AjusteInfo>> {
   if (ids.length === 0) return new Map();
   const result = new Map<string, AjusteInfo>();
   const idsUnicos = [...new Set(ids)].filter((id) => id != null && String(id).trim() !== '');
   try {
     const todos = await prisma.pedidoPrevisaoAjuste.findMany({
-      take: 15000,
       select: { id: true, id_pedido: true, previsao_nova: true, motivo: true, observacao: true, data_ajuste: true },
+      orderBy: [{ data_ajuste: 'desc' }, { id: 'desc' }],
     });
-    const porIdExato = new Map<string, AjusteRow[]>();
+    const porCanonico = new Map<string, AjusteRow[]>();
     for (const a of todos) {
       const idNorm = String(a.id_pedido ?? '').trim();
       if (!idNorm) continue;
-      const list = porIdExato.get(idNorm) ?? [];
+      const canon = chavePedidoItem(idNorm);
+      const list = porCanonico.get(canon) ?? [];
       list.push(a as AjusteRow);
-      porIdExato.set(idNorm, list);
+      porCanonico.set(canon, list);
     }
-    for (const [, list] of porIdExato) {
+    for (const [, list] of porCanonico) {
       list.sort((x, y) => {
         const tx = parseDateFromDb(x.data_ajuste).getTime();
         const ty = parseDateFromDb(y.data_ajuste).getTime();
@@ -151,8 +170,8 @@ async function obterUltimoEPenultimoPorPedido(ids: string[]): Promise<Map<string
       });
     }
     for (const idChave of idsUnicos) {
-      const idNorm = String(idChave).trim();
-      const list = porIdExato.get(idNorm);
+      const canon = chavePedidoItem(String(idChave).trim());
+      const list = porCanonico.get(canon);
       if (!list || list.length === 0) continue;
       const ultimo = list[0]!;
       const penultimo = list[1]?.previsao_nova ?? null;
@@ -1368,14 +1387,20 @@ async function obterUltimaPrevisaoPorIds(ids: string[]): Promise<Map<string, Dat
   const idsNorm = ids.map((id) => String(id).trim()).filter(Boolean);
   if (idsNorm.length === 0) return new Map();
   const rows = await prisma.pedidoPrevisaoAjuste.findMany({
-    where: { id_pedido: { in: idsNorm } },
     select: { id_pedido: true, previsao_nova: true },
     orderBy: [{ data_ajuste: 'desc' }, { id: 'desc' }],
   });
-  const map = new Map<string, Date>();
+  const latestByCanon = new Map<string, Date>();
   for (const r of rows) {
-    const key = String(r.id_pedido).trim();
-    if (!map.has(key)) map.set(key, r.previsao_nova);
+    const c = chavePedidoItem(String(r.id_pedido ?? '').trim());
+    if (!c) continue;
+    if (!latestByCanon.has(c)) latestByCanon.set(c, r.previsao_nova);
+  }
+  const map = new Map<string, Date>();
+  for (const id of idsNorm) {
+    const c = chavePedidoItem(id);
+    const d = latestByCanon.get(c);
+    if (d) map.set(id, d);
   }
   return map;
 }
@@ -1456,11 +1481,15 @@ export async function registrarAjustesPrevisaoLote(
   }
 }
 
-/** Busca um pedido por id (lista Nomus + ajuste). Compara com id normalizado (trim). */
+/** Busca um pedido por id (lista Nomus + ajuste). Compara com id exato; se não achar, pela chave canônica pedido+item (mesma linha após mudança de carrada). */
 export async function buscarPedidoPorId(idPedido: string): Promise<PedidoRow | null> {
   const idNorm = (idPedido ?? '').trim();
   const { data: pedidos } = await listarPedidos({});
-  return pedidos.find((p) => (p.id_pedido ?? '').trim() === idNorm) ?? null;
+  const exact = pedidos.find((p) => (p.id_pedido ?? '').trim() === idNorm);
+  if (exact) return exact;
+  const canon = chavePedidoItem(idNorm);
+  if (!canon) return null;
+  return pedidos.find((p) => chavePedidoItem(String(p.id_pedido ?? '')) === canon) ?? null;
 }
 
 /**
@@ -1486,25 +1515,7 @@ function parseDateFromDb(val: unknown): Date {
   return Number.isNaN(d.getTime()) ? new Date(0) : d;
 }
 
-/**
- * Chave canônica pedido+item (ignora prefixo da rota e normaliza item: 0645 e 645 -> mesmo grupo).
- * Ex.: "179648-46836-3255" -> "46836-3255"; "179259-46827-0645" -> "46827-645".
- * Usado só para leitura; gravação mantém id completo.
- */
-function chavePedidoItem(id: string): string {
-  const parts = String(id ?? '').trim().split('-');
-  if (parts.length >= 3) {
-    const pedido = parts[parts.length - 2]!.trim();
-    const itemStr = parts[parts.length - 1]!.trim();
-    const numItem = parseInt(itemStr, 10);
-    const itemCanonico = Number.isNaN(numItem) ? itemStr : String(numItem);
-    return `${pedido}-${itemCanonico}`;
-  }
-  if (parts.length === 2) return parts.join('-').trim();
-  return String(id ?? '').trim();
-}
-
-/** Histórico de ajustes por pedido (SQLite). Busca pelo id_pedido exato da linha para não misturar registros de outras rotas/itens. */
+/** Histórico de ajustes por pedido (SQLite). Agrupa pela chave canônica pedido+item para incluir registros gravados com id_chave antigo (outra carrada). */
 export async function listarHistoricoAjustes(idPedido: string): Promise<{
   id: number;
   id_pedido: string;
@@ -1516,6 +1527,7 @@ export async function listarHistoricoAjustes(idPedido: string): Promise<{
 }[]> {
   const idNorm = (idPedido ?? '').trim();
   if (!idNorm) return [];
+  const canon = chavePedidoItem(idNorm);
 
   const mapRow = (r: { id: number; id_pedido: string; previsao_nova: unknown; motivo: string; observacao: string | null; usuario: string; data_ajuste: unknown }) => ({
     id: r.id,
@@ -1531,12 +1543,20 @@ export async function listarHistoricoAjustes(idPedido: string): Promise<{
   let rows: Row[] = [];
 
   try {
-    rows = await prisma.$queryRaw<Row[]>`
-      SELECT id, id_pedido, previsao_nova, motivo, observacao, usuario, data_ajuste
-      FROM pedido_previsao_ajuste
-      WHERE TRIM(id_pedido) = ${idNorm}
-      ORDER BY data_ajuste DESC, id DESC
-    `;
+    const todos = await prisma.pedidoPrevisaoAjuste.findMany({
+      orderBy: [{ data_ajuste: 'desc' }, { id: 'desc' }],
+    });
+    rows = todos
+      .filter((r) => chavePedidoItem(String(r.id_pedido ?? '').trim()) === canon)
+      .map((r) => ({
+        id: r.id,
+        id_pedido: r.id_pedido,
+        previsao_nova: r.previsao_nova,
+        motivo: r.motivo,
+        observacao: r.observacao,
+        usuario: r.usuario,
+        data_ajuste: r.data_ajuste,
+      })) as Row[];
   } catch (_) {
     rows = [];
   }
@@ -1581,18 +1601,16 @@ export async function listarAlteracoesParaRelatorio(
     lte.setHours(23, 59, 59, 999);
     where.data_ajuste = { ...where.data_ajuste, lte };
   }
+  let clienteCanonicals: Set<string> | null = null;
   if (filtros.cliente?.trim()) {
     const { data: pedidosCliente } = await listarPedidos({ cliente: filtros.cliente.trim() });
     const idsCliente = [...new Set(pedidosCliente.map((p) => p.id_pedido))];
     if (idsCliente.length === 0) return [];
     if (filtros.id_pedido?.trim()) {
-      if (!idsCliente.includes(filtros.id_pedido.trim())) return [];
-      where.id_pedido = filtros.id_pedido.trim();
-    } else {
-      where.id_pedido = { in: idsCliente };
+      const alvo = chavePedidoItem(filtros.id_pedido.trim());
+      if (!idsCliente.some((id) => chavePedidoItem(id) === alvo)) return [];
     }
-  } else if (filtros.id_pedido?.trim()) {
-    where.id_pedido = filtros.id_pedido.trim();
+    clienteCanonicals = new Set(idsCliente.map((id) => chavePedidoItem(id)));
   }
 
   const ajustes = await prisma.pedidoPrevisaoAjuste.findMany({
@@ -1600,19 +1618,25 @@ export async function listarAlteracoesParaRelatorio(
     orderBy: { data_ajuste: 'desc' },
   });
 
-  const idsUnicos = [...new Set(ajustes.map((a) => a.id_pedido))];
-  const { data: pedidos } = await listarPedidos({});
-  const clientePorId = new Map<string, string>();
-  for (const p of pedidos) {
-    if (idsUnicos.includes(p.id_pedido) && !clientePorId.has(p.id_pedido)) {
-      clientePorId.set(p.id_pedido, p.cliente ?? '');
-    }
+  let filtrados = ajustes;
+  if (filtros.id_pedido?.trim()) {
+    const alvo = chavePedidoItem(filtros.id_pedido.trim());
+    filtrados = ajustes.filter((a) => chavePedidoItem(a.id_pedido) === alvo);
+  } else if (clienteCanonicals) {
+    filtrados = ajustes.filter((a) => clienteCanonicals!.has(chavePedidoItem(a.id_pedido)));
   }
 
-  return ajustes.map((a) => ({
+  const { data: pedidos } = await listarPedidos({});
+  const clientePorCanon = new Map<string, string>();
+  for (const p of pedidos) {
+    const c = chavePedidoItem(p.id_pedido);
+    if (!clientePorCanon.has(c)) clientePorCanon.set(c, p.cliente ?? '');
+  }
+
+  return filtrados.map((a) => ({
     id: a.id,
     id_pedido: a.id_pedido,
-    cliente: clientePorId.get(a.id_pedido) ?? '',
+    cliente: clientePorCanon.get(chavePedidoItem(a.id_pedido)) ?? '',
     previsao_nova: a.previsao_nova,
     motivo: a.motivo,
     observacao: a.observacao,
@@ -1642,30 +1666,41 @@ export async function limparImportacaoSemAlteracao(): Promise<void> {
   if (importacoes.length === 0) return;
 
   const { data: pedidos } = await listarPedidos({});
-  const originalPorId = new Map<string, Date>();
+  const originalPorCanon = new Map<string, Date>();
   for (const p of pedidos) {
-    originalPorId.set(p.id_pedido, p.previsao_entrega);
+    const c = chavePedidoItem(p.id_pedido);
+    if (!originalPorCanon.has(c)) originalPorCanon.set(c, p.previsao_entrega);
   }
 
-  const idsUnicos = [...new Set(importacoes.map((a) => a.id_pedido))];
-  const todosAjustesPorId = new Map<
+  const todosAjustes = await prisma.pedidoPrevisaoAjuste.findMany({
+    orderBy: { data_ajuste: 'asc' },
+    select: { id: true, id_pedido: true, previsao_nova: true, data_ajuste: true },
+  });
+  const todosAjustesPorCanon = new Map<
     string,
     { id: number; id_pedido: string; previsao_nova: Date; data_ajuste: Date }[]
   >();
-  for (const id of idsUnicos) {
-    const todos = await prisma.pedidoPrevisaoAjuste.findMany({
-      where: { id_pedido: id },
-      orderBy: { data_ajuste: 'asc' },
-      select: { id: true, id_pedido: true, previsao_nova: true, data_ajuste: true },
+  for (const t of todosAjustes) {
+    const c = chavePedidoItem(t.id_pedido);
+    const list = todosAjustesPorCanon.get(c) ?? [];
+    list.push(t);
+    todosAjustesPorCanon.set(c, list);
+  }
+  for (const [, list] of todosAjustesPorCanon) {
+    list.sort((x, y) => {
+      const tx = x.data_ajuste.getTime();
+      const ty = y.data_ajuste.getTime();
+      if (tx !== ty) return tx - ty;
+      return x.id - y.id;
     });
-    todosAjustesPorId.set(id, todos);
   }
 
   const idsToDelete: number[] = [];
   for (const a of importacoes) {
-    const todos = todosAjustesPorId.get(a.id_pedido) ?? [];
+    const c = chavePedidoItem(a.id_pedido);
+    const todos = todosAjustesPorCanon.get(c) ?? [];
     const idx = todos.findIndex((x) => x.id === a.id);
-    const anterior = idx <= 0 ? originalPorId.get(a.id_pedido) : todos[idx - 1].previsao_nova;
+    const anterior = idx <= 0 ? originalPorCanon.get(c) : todos[idx - 1]!.previsao_nova;
     const novaStr = toDateOnly(a.previsao_nova);
     const anteriorStr = anterior ? toDateOnly(anterior) : '';
     if (anteriorStr === novaStr) idsToDelete.push(a.id);

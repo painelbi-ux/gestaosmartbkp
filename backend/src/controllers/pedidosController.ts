@@ -40,6 +40,21 @@ function isCarradaRota(dm: string): boolean {
   return normalizeRotaName(dm).startsWith('rota ');
 }
 
+/** Extrai dígitos do número do PD (ex.: "PD 47192" -> "47192") para casar com order_number no Sycro. */
+function extractPdDigits(pd: string): string {
+  const m = String(pd ?? '').trim().match(/\d+/);
+  return m ? m[0] : '';
+}
+
+/** Variantes comuns de order_number no banco do card (Sycro). */
+function sycroOrderNumberVariants(pd: string): string[] {
+  const raw = String(pd ?? '').trim();
+  if (!raw) return [];
+  const digits = extractPdDigits(raw);
+  if (!digits) return [raw];
+  return [...new Set([raw, digits, `PD ${digits}`, `PD${digits}`, `pd ${digits}`, `pd${digits}`])].filter(Boolean);
+}
+
 /** Rotas parametrizadas pela SQL do Gerenciador — não replicam ajuste entre pedidos por carrada. */
 const EXCLUDED_SQL_ROTA_CATEGORIES = new Set([
   'retirada na so aco',
@@ -667,10 +682,14 @@ export async function getHistorico(req: Request, res: Response): Promise<void> {
       const pedido = await buscarPedidoPorId(idPedido);
       const pd = pedido ? String((pedido as Record<string, unknown>).PD ?? (pedido as Record<string, unknown>).pd ?? '').trim() : '';
       if (pd) {
-        const sycroOrder = await prisma.sycroOrderOrder.findFirst({
-          where: { order_number: pd },
-          select: { id: true },
-        });
+        const variants = sycroOrderNumberVariants(pd);
+        const sycroOrder =
+          variants.length > 0
+            ? await prisma.sycroOrderOrder.findFirst({
+                where: { OR: variants.map((v) => ({ order_number: v })) },
+                select: { id: true },
+              })
+            : null;
         if (sycroOrder) {
           const sycroHistory = await prisma.sycroOrderHistory.findMany({
             where: { order_id: sycroOrder.id },
@@ -687,7 +706,7 @@ export async function getHistorico(req: Request, res: Response): Promise<void> {
             const previsaoNova = h.new_date ? new Date(h.new_date + 'T12:00:00') : new Date(0);
             itens.push({
               id: -h.id,
-              id_pedido,
+              id_pedido: idPedido,
               previsao_nova: previsaoNova,
               motivo: h.action_type === 'AJUSTE_PREVISAO' ? 'Ajuste de previsão' : h.action_type,
               observacao: h.observation,

@@ -22,11 +22,10 @@ import {
   codigoChave,
   empenhoHorizonteUltimoDia,
   fmtNum2,
-  necessidadesAcumuladasHorizonte,
-  primeiraDataRuptura,
+  numCampoMRP,
+  primeiraDataRupturaParaRow,
   qtdeAComprarHorizonte,
   saldosENecessidadesHorizonte,
-  saldosEstoqueEfetivosHorizonte,
   parseDataMRP,
   statusHorizonteParaLinha,
 } from '../../utils/mrpHorizonteDerivados';
@@ -287,10 +286,7 @@ const HORIZONTE_BORDA_INTERNA =
 const HORIZONTE_TD_INTERNA =
   'border-t border-b border-r border-slate-200 border-l border-slate-200/55 dark:border-slate-600 dark:border-l-slate-700/40';
 
-type MrpDerivadosHorizonte = {
-  saldosEf: number[];
-  nAcum: number[];
-  isoDataRuptura: string | null;
+type MrpDerivadosHorizonteEmpenho = {
   empenhoHorizonteFmt: string;
 };
 
@@ -304,7 +300,7 @@ const MrpTableBodyRow = memo(
   function MrpTableBodyRow({
     row,
     linhaH,
-    dh,
+    empenhoHorizonteFmt,
     horizonte,
     temHorizonteNaGrade,
     colunasVisiveisLista,
@@ -312,27 +308,43 @@ const MrpTableBodyRow = memo(
   }: {
     row: MrpRow;
     linhaH: MrpHorizonteLinha | undefined;
-    dh: MrpDerivadosHorizonte | undefined;
+    empenhoHorizonteFmt: string | undefined;
     horizonte: MrpHorizonteResponse | null;
     temHorizonteNaGrade: boolean;
     colunasVisiveisLista: ColunaMRPVisivel[];
     empenhoMppNum: number | undefined;
   }) {
-    const isoDataRuptura = linhaH
-      ? dh !== undefined
-        ? dh.isoDataRuptura
-        : primeiraDataRuptura(linhaH)
-      : null;
+    const horizonteCalc = useMemo(() => {
+      if (!linhaH?.dias?.length) return null;
+      const saldo0 = numCampoMRP(row.estoque);
+      const { saldosEf, nAcum } = saldosENecessidadesHorizonte(linhaH.dias, {
+        saldoInicialPrimeiroDia: saldo0,
+      });
+      let isoDataRuptura: string | null = null;
+      for (let i = 0; i < nAcum.length; i++) {
+        if (nAcum[i] > 0) {
+          isoDataRuptura = linhaH.dias[i].data;
+          break;
+        }
+      }
+      return { saldosEf, nAcum, isoDataRuptura };
+    }, [linhaH, row.estoque]);
+
+    const isoDataRuptura = linhaH ? (horizonteCalc?.isoDataRuptura ?? null) : null;
     const statusHorizonteTxt = statusHorizonteParaLinha(
       row,
       linhaH,
-      dh !== undefined ? dh.isoDataRuptura : undefined
+      linhaH ? (horizonteCalc?.isoDataRuptura ?? null) : undefined
     );
-    const qtdeAComprarTxt = qtdeAComprarHorizonte(statusHorizonteTxt, linhaH, dh?.nAcum);
+    const qtdeAComprarTxt = qtdeAComprarHorizonte(
+      statusHorizonteTxt,
+      linhaH,
+      horizonteCalc?.nAcum
+    );
     const empenhoTotalTxt =
       empenhoMppNum != null && Number.isFinite(empenhoMppNum) ? fmtNum2(empenhoMppNum) : '—';
     const empenhoHorizonteTxt = linhaH
-      ? (dh?.empenhoHorizonteFmt ?? empenhoHorizonteUltimoDia(linhaH))
+      ? (empenhoHorizonteFmt ?? empenhoHorizonteUltimoDia(linhaH))
       : '—';
 
     return (
@@ -380,16 +392,16 @@ const MrpTableBodyRow = memo(
           horizonte &&
           (linhaH
             ? (() => {
-                const saldosEf = dh?.saldosEf ?? saldosEstoqueEfetivosHorizonte(linhaH.dias);
-                const nAcum = dh?.nAcum ?? necessidadesAcumuladasHorizonte(linhaH.dias);
+                const saldosEf = horizonteCalc?.saldosEf ?? [];
+                const nAcum = horizonteCalc?.nAcum ?? [];
                 return linhaH.dias.flatMap((cel, di) => {
                   const nVal = nAcum[di] ?? 0;
                   const necessidadeAlerta = nVal > 0;
                   const saldoExibido = saldosEf[di] ?? 0;
                   const tituloSaldoEstoque =
                     di > 0
-                      ? 'Saldo = max(0, saldo do dia anterior − consumo do dia anterior + entrada do dia anterior).'
-                      : 'Saldo inicial: saldo MPP da célula se > 0, senão 0.';
+                      ? 'Saldo = max(0, (saldo anterior − consumo anterior) + entrada anterior). Esse valor entra na Necessidade.'
+                      : 'Saldo inicial: max(0, coluna Estoque desta linha). Esse valor entra na Necessidade.';
                   return [
                     <td
                       key={`${cel.data}-c`}
@@ -439,7 +451,7 @@ const MrpTableBodyRow = memo(
   (prev, next) =>
     prev.row === next.row &&
     prev.linhaH === next.linhaH &&
-    prev.dh === next.dh &&
+    prev.empenhoHorizonteFmt === next.empenhoHorizonteFmt &&
     prev.horizonte === next.horizonte &&
     prev.temHorizonteNaGrade === next.temHorizonteNaGrade &&
     prev.colunasVisiveisLista === next.colunasVisiveisLista &&
@@ -655,36 +667,17 @@ export default function MRPPage() {
   }, [horizonte]);
 
   const derivadosHorizontePorCodigo = useMemo(() => {
-    const m = new Map<
-      string,
-      {
-        saldosEf: number[];
-        nAcum: number[];
-        isoDataRuptura: string | null;
-        empenhoHorizonteFmt: string;
-      }
-    >();
+    const m = new Map<string, MrpDerivadosHorizonteEmpenho>();
     if (!horizonte?.linhas) return m;
     for (const linha of horizonte.linhas) {
       const k = linha.codigo.trim();
       if (!k || m.has(k)) continue;
-      const { saldosEf, nAcum } = saldosENecessidadesHorizonte(linha.dias);
-      let isoDataRuptura: string | null = null;
-      for (let i = 0; i < nAcum.length; i++) {
-        if (nAcum[i] > 0) {
-          isoDataRuptura = linha.dias[i].data;
-          break;
-        }
-      }
       let sumC = 0;
       for (const cel of linha.dias) {
         const c = Number(cel.consumo);
         if (Number.isFinite(c)) sumC += c;
       }
       m.set(k, {
-        saldosEf,
-        nAcum,
-        isoDataRuptura,
         empenhoHorizonteFmt: fmtNum2(sumC),
       });
     }
@@ -719,12 +712,8 @@ export default function MRPPage() {
 
       const chave = codigoChave(row);
       const linhaH = chave ? horizontePorCodigo.get(chave) : undefined;
-      const dh = chave ? derivadosHorizontePorCodigo.get(chave) : undefined;
-      const statusTxt = statusHorizonteParaLinha(
-        row,
-        linhaH,
-        dh !== undefined ? dh.isoDataRuptura : undefined
-      );
+      const isoRupRow = primeiraDataRupturaParaRow(linhaH, row);
+      const statusTxt = statusHorizonteParaLinha(row, linhaH, linhaH ? isoRupRow : undefined);
       if (deferredFilterStatusHorizonte && statusTxt !== deferredFilterStatusHorizonte) return false;
 
       const isoNec = parseDataMRP(row.dataNecessidade);
@@ -734,13 +723,7 @@ export default function MRPPage() {
         return false;
       }
 
-      const isoRup =
-        linhaH != null
-          ? dh !== undefined
-            ? dh.isoDataRuptura
-            : primeiraDataRuptura(linhaH)
-          : null;
-      if (!isoDentroIntervalo(isoRup, deferredDataRupturaIni, deferredDataRupturaFim)) return false;
+      if (!isoDentroIntervalo(isoRupRow, deferredDataRupturaIni, deferredDataRupturaFim)) return false;
 
       return true;
     });
@@ -756,7 +739,6 @@ export default function MRPPage() {
     deferredDataRupturaIni,
     deferredDataRupturaFim,
     horizontePorCodigo,
-    derivadosHorizontePorCodigo,
   ]);
 
   /** Chave estável por objeto de linha: evita remontar a árvore inteira ao mudar só a posição na lista filtrada. */
@@ -1066,7 +1048,7 @@ export default function MRPPage() {
                     <th
                       key={`${d}-se`}
                       className={`py-1.5 px-1 text-[10px] sm:text-[11px] font-medium text-center bg-amber-500 text-white min-w-[4.25rem] max-w-[5rem] whitespace-normal leading-tight ${HORIZONTE_BORDA_INTERNA}`}
-                      title="Primeiro dia: saldo MPP da célula se > 0, senão 0. Demais dias: max(0, saldo anterior − consumo anterior + entrada anterior)."
+                      title="Saldo exibido e usado na Necessidade: mínimo 0. 1º dia: coluna Estoque. Demais: (saldo anterior − consumo anterior) + entrada anterior."
                     >
                       Saldo Estoque
                     </th>,
@@ -1079,7 +1061,7 @@ export default function MRPPage() {
                     <th
                       key={`${d}-n`}
                       className={`py-1.5 px-1 text-[10px] sm:text-[11px] font-medium text-center bg-amber-500 text-white min-w-[4.25rem] whitespace-normal leading-tight border-t border-b border-r border-amber-600/70 border-l border-amber-500/35 dark:border-amber-700/50 dark:border-l-amber-800/40`}
-                      title="Usa o saldo estoque efetivo da coluna anterior (regra do primeiro dia e encadeamento). Consumo − (Entrada + Saldo) + N anterior; se ≤ 0 vira 0 no dia e segue para o seguinte."
+                      title="Consumo − (Saldo estoque + Entrada), com saldo estoque ≥ 0; acumula no tempo (carry-forward)."
                     >
                       Necessidade
                     </th>,
@@ -1100,7 +1082,7 @@ export default function MRPPage() {
                 filteredData.map((row) => {
                   const chave = codigoChave(row);
                   const linhaH = chave ? horizontePorCodigo.get(chave) : undefined;
-                  const dh = chave ? derivadosHorizontePorCodigo.get(chave) : undefined;
+                  const empenhoFmt = chave ? derivadosHorizontePorCodigo.get(chave)?.empenhoHorizonteFmt : undefined;
                   const empenhoMpp = chave ? mppQtdePorCodigo[chave.trim()] : undefined;
                   const stableKey = stableKeyByRow.get(row) ?? (chave ? `mrp-cod-${chave}` : 'mrp-row');
                   return (
@@ -1108,7 +1090,7 @@ export default function MRPPage() {
                       key={stableKey}
                       row={row}
                       linhaH={linhaH}
-                      dh={dh}
+                      empenhoHorizonteFmt={empenhoFmt}
                       horizonte={horizonte}
                       temHorizonteNaGrade={temHorizonteNaGrade}
                       colunasVisiveisLista={colunasVisiveisLista}

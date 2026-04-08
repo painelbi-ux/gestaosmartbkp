@@ -1,7 +1,7 @@
 {
   "name": "gestorpedidos-soaco",
   "private": true,
-  "description": "Gestor de Pedidos — interno: 5180, externo: 5174, API: 4000.",
+  "description": "Gestor de Pedidos — interno: 5180, externo: 5173, API: 4000.",
   "scripts": {
     "predev": "node scripts/kill-ports.cjs",
     "dev": "concurrently -k -n api,fe,watchdog -c blue,green,magenta \"npm run dev:backend\" \"npm run dev:wait-fe\" \"node scripts/watchdog-backend.cjs\"",
@@ -11,7 +11,9 @@
     "dev:full:frontend": "npm install --prefix frontend",
     "dev:backend": "node scripts/run-backend-loop.cjs",
     "dev:frontend": "npm run dev --prefix frontend -- --port 5180",
-    "dev:frontend:externo": "npm run dev --prefix frontend -- --port 5174"
+    "dev:frontend:externo": "npm run dev --prefix frontend -- --port 5173",
+    "build:production": "npm run build --prefix backend && npm run build:frontend --prefix backend",
+    "start:production": "npm start --prefix backend"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

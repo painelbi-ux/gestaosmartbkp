@@ -11,6 +11,7 @@ import {
 import {
   codigoChave,
   fmtNum2,
+  numCampoMRP,
   saldosENecessidadesHorizonte,
   statusHorizonteParaLinha,
   qtdeAComprarHorizonteValor,
@@ -199,7 +200,11 @@ export default function DashboardMRPPage() {
     for (const linha of horizonte.linhas) {
       const k = linha.codigo.trim();
       if (!k || m.has(k)) continue;
-      const { nAcum } = saldosENecessidadesHorizonte(linha.dias);
+      const rowMatch = rows.find((r) => codigoChave(r) === k);
+      const { nAcum } = saldosENecessidadesHorizonte(
+        linha.dias,
+        rowMatch ? { saldoInicialPrimeiroDia: numCampoMRP(rowMatch.estoque) } : undefined
+      );
       let isoDataRuptura: string | null = null;
       for (let i = 0; i < nAcum.length; i++) {
         if (nAcum[i] > 0) {
@@ -210,7 +215,7 @@ export default function DashboardMRPPage() {
       m.set(k, { nAcum, isoDataRuptura });
     }
     return m;
-  }, [horizonte]);
+  }, [horizonte, rows]);
 
   const horizontePorCodigo = useMemo(() => {
     const m = new Map<string, MrpHorizonteLinha>();
@@ -258,7 +263,11 @@ export default function DashboardMRPPage() {
 
       if (!temHorizonte) continue;
 
-      const status = statusHorizonteParaLinha(row, linhaH, dh?.isoDataRuptura);
+      const status = statusHorizonteParaLinha(
+        row,
+        linhaH,
+        linhaH && dh ? (dh.isoDataRuptura ?? null) : undefined
+      );
       statusCount[status] = (statusCount[status] ?? 0) + 1;
 
       const q = qtdeAComprarHorizonteValor(status, linhaH, dh?.nAcum);

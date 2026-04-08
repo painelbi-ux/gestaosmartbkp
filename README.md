@@ -82,7 +82,7 @@ O repositório já envolve esse SQL em uma CTE e adiciona a coluna **`previsao_e
 
 ## Execução
 
-**Portas:** **5180** = acesso interno (rede local), **5174** = acesso externo (internet/outra rede). A **4000** é a API (backend).
+**Portas:** **5180** = acesso interno (rede local), **5173** = acesso externo (internet/outra rede). A **4000** é a API (backend).
 
 ### Opção A — Um comando só (recomendado)
 
@@ -93,10 +93,10 @@ npm install
 npm run dev
 ```
 
-Isso sobe o backend (4000) e **dois** frontends: **5180** (interno) e **5174** (externo).
+Isso sobe o backend (4000) e **dois** frontends: **5180** (interno) e **5173** (externo).
 
 - **Interno (rede local):** http://localhost:5180 ou http://SEU_IP:5180  
-- **Externo:** http://170.84.146.147:5174 (liberar/encaminhar porta 5174 no roteador se for internet)
+- **Externo:** http://170.84.146.147:5173 (liberar/encaminhar porta 5173 no roteador se for internet)
 
 #### Firewall (acesso por IP)
 
@@ -107,14 +107,14 @@ cd C:\caminho\para\gestorpedidosSoAco
 .\scripts\liberar-porta-externo.ps1
 ```
 
-Isso libera as portas **5180** e **5174** no Firewall do Windows. Para acesso pela internet, encaminhe a **5174** no roteador (ex.: MikroTik) para o IP do PC.
+Isso libera as portas **5180** e **5173** no Firewall do Windows. Para acesso pela internet, encaminhe a **5173** no roteador (ex.: MikroTik) para o IP do PC.
 
 #### Externo ainda não abre pelo link?
 
-1. **Firewall Windows:** execute `scripts\liberar-porta-externo.ps1` como Administrador (libera 5180 e 5174).
-2. **Teste na rede local:** de outro PC na mesma rede, abra `http://IP_DO_PC:5174` (veja o IP com `ipconfig` no PC do servidor). Se abrir, o servidor está OK; o problema é roteador.
-3. **Acesso pela internet:** no roteador (ex. MikroTik), encaminhe a porta **5174** para o IP do PC onde o app roda:
-   - **MikroTik:** IP → Firewall → NAT → Add → Chain=dstnat, Dst. Port=5174, Action=dst-nat, To Addresses=IP_DO_PC, To Ports=5174. Depois em Firewall → Filter Rules permitir tráfego na porta 5174.
+1. **Firewall Windows:** execute `scripts\liberar-porta-externo.ps1` como Administrador (libera 5180 e 5173).
+2. **Teste na rede local:** de outro PC na mesma rede, abra `http://IP_DO_PC:5180` (interno). Se abrir, o servidor está OK na LAN.
+3. **Acesso pela internet:** no roteador (ex. MikroTik), encaminhe a porta **5173** para o IP do PC onde o app roda:
+   - **MikroTik:** IP → Firewall → NAT → Add → Chain=dstnat, Dst. Port=5173, Action=dst-nat, To Addresses=IP_DO_PC, To Ports=5173. Depois em Firewall → Filter Rules permitir tráfego na porta 5173.
    - Use o **IP público** do link (ex. 170.84.146.147) para acessar de fora.
 
 ### Opção B — Dois terminais (só interno)
@@ -138,7 +138,7 @@ npm install
 npm run dev -- --port 5180
 ```
 
-Para ter também o externo (5174), em um terceiro terminal: `npm run dev -- --port 5174` (na pasta frontend).
+Para ter também o externo (5173), em um terceiro terminal: `npm run dev -- --port 5173` (na pasta frontend).
 
 #### URL amigável (opcional)
 
@@ -150,7 +150,7 @@ Para acessar com um endereço mais amigável em desenvolvimento (ex.: **http://g
    ```
 2. Salve o arquivo e abra no navegador: **http://gestaosmart.local:5180/entrar**
 
-A rota de login é **/entrar** (em vez de /login). Use **http://localhost:5180/entrar** (interno) ou **http://IP:5174/entrar** (externo).
+A rota de login é **/entrar** (em vez de /login). Use **http://localhost:5180/entrar** (interno) ou **http://IP:5173/entrar** (externo).
 
 ### Build para produção
 
@@ -235,16 +235,16 @@ npm run test
 
 ### "Servidor offline" / ECONNREFUSED / 500 no login ou no ping
 
-**Causa:** O backend precisa escutar na **porta 4000**. O proxy do Vite e o `wait-on` só usam `http://localhost:4000`. Se o backend subir em outra porta (ex.: 3000 ou 5174 por causa do `backend/.env`), o frontend não consegue falar com a API.
+**Causa:** O backend precisa escutar na **porta 4000**. O proxy do Vite e o `wait-on` só usam `http://localhost:4000`. Se o backend subir em outra porta (ex.: 3000 por causa do `backend/.env`), o frontend não consegue falar com a API.
 
 **O que foi feito no projeto:**
 
 1. **`backend/src/load-dotenv.ts`** usa `override: false` ao carregar o `.env`. Assim, quando você roda **`npm run dev` na raiz**, o `run-backend-loop` já define `APP_PORT=4000` e o `.env` **não** sobrescreve essa porta.
-2. **Sempre subir pela raiz:** na pasta raiz execute `npm run dev`. Não rode só `npm run dev` dentro de `backend/` se no `.env` tiver `APP_PORT=3000` ou `5174` — ou deixe o `.env` sem `APP_PORT` (o script da raiz usa 4000).
+2. **Sempre subir pela raiz:** na pasta raiz execute `npm run dev`. Não rode só `npm run dev` dentro de `backend/` se no `.env` tiver `APP_PORT` diferente de 4000 — ou alinhe com `APP_PORT=4000` (o script da raiz força 4000 ao subir pela raiz).
 3. Se o backend estiver em outra porta, no log aparecerá:  
    `[startup] Backend na porta X. Proxy e wait-on esperam 4000 — use APP_PORT=4000 ou rode "npm run dev" na raiz.`
 
-**Resumo:** Para desenvolvimento local com os dois frontends (5180 e 5174), use **sempre** `npm run dev` na **pasta raiz**. O backend sobe na 4000, o wait-on espera o `/health` na 4000 e só então sobem os frontends; o watchdog testa ping/login e reinicia o backend se falhar.
+**Resumo:** Para desenvolvimento local com os dois frontends (5180 e 5173), use **sempre** `npm run dev` na **pasta raiz**. O backend sobe na 4000, o wait-on espera o `/health` na 4000 e só então sobem os frontends; o watchdog testa ping/login e reinicia o backend se falhar.
 
 ### Erro 500 vira 503 no navegador
 
@@ -259,4 +259,4 @@ O backend e o proxy do Vite foram configurados para **nunca** devolver 500 ao cl
 3. **Rodar local**:  
    - `cd backend && npm install && npx prisma generate && npm run migrate && npm run dev`  
    - `cd frontend && npm install && npm run dev`  
-   - Acesse http://localhost:5180 (interno) ou http://IP:5174 (externo), faça login (ex.: admin / admin123 após `npm run seed`) e use o dashboard e o ajuste de previsão.
+   - Acesse http://localhost:5180 (interno) ou http://IP:5173 (externo), faça login (ex.: admin / admin123 após `npm run seed`) e use o dashboard e o ajuste de previsão.
