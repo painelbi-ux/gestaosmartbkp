@@ -2,7 +2,7 @@
 <#
   Emite certificado Let's Encrypt (HTTP-01) para gsmartsoaco.com.br + www.
   PRÉ-REQUISITO OBRIGATÓRIO (HTTP-01): a porta TCP 80 do IP público deve chegar a ESTE PC na 80.
-  Só ter 5173/5180 abertas no MikroTik NÃO basta para Let's Encrypt por HTTP — ou abra a 80 ou use validação DNS-01.
+  Só ter 5173/5174/5051/5180 abertas no MikroTik NÃO basta para Let's Encrypt por HTTP — ou abra a 80 ou use validação DNS-01.
   Se o Let's Encrypt falhar com "Connection refused" no :80, o problema é NAT no MikroTik ou firewall da operadora,
   não o Windows — veja comentários no final deste script.
 

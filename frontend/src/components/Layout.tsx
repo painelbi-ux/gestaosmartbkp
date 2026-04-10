@@ -299,7 +299,7 @@ export default function Layout() {
       // rede/servidor: logout() já removeu token e disparou sessão limpa
     }
     await refreshUser();
-    navigate('/entrar', { replace: true });
+    navigate('/', { replace: true });
   };
 
   const handleForcarTrocaSenha = async (e: React.FormEvent) => {

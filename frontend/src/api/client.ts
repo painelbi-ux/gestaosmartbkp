@@ -1,6 +1,6 @@
 /**
  * Cliente API com credenciais (cookies + Bearer token) e CSRF.
- * Sem VITE_API_URL: usa a mesma origem (porta 5180 ou 5173); o proxy encaminha /api e /auth para a 4000.
+ * Sem VITE_API_URL: usa a mesma origem (5180 ou 5173/5174/5051); o proxy encaminha /api e /auth para a 4000.
  * Com VITE_API_URL: usa a URL definida (ex: http://10.80.1.187:4000).
  */
 function getApiBase(): string {
@@ -10,7 +10,7 @@ function getApiBase(): string {
 }
 const TOKEN_KEY = 'gestor_token';
 
-/** Disparado quando o token é limpo (logout ou 401); ProtectedRoute redireciona para /entrar sem recarregar a página. */
+/** Disparado quando o token é limpo (logout ou 401); a app volta ao login na raiz `/` sem recarregar a página. */
 export const SESSION_CLEARED_EVENT = 'gestor:session-cleared';
 
 export function notifySessionCleared(): void {

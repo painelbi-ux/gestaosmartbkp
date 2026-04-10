@@ -1,0 +1,78 @@
+================================================================================
+O servidor Windows ESTÁ OK se:
+  - netstat mostra 0.0.0.0:5173, :5174 e :5051 LISTENING (com npm run dev na raiz)
+  - http://127.0.0.1:5173/ (ou :5174 ou :5051) abre no próprio PC
+  - http://10.80.1.187:5173/ abre noutro PC na mesma rede
+  - Com NAT WAN:80 -> PC:5173: http://gsmartsoaco.com.br/ (sem porta) abre o mesmo Vite
+
+Se acima funciona mas DA INTERNET não: o problema é 100% rede (MikroTik / firewall
+do router / regra errada), NÃO o código Node.
+
+--------------------------------------------------------------------------------
+MESMA PORTA, OUTRA APLICAÇÃO JÁ FUNCIONAVA ANTES
+--------------------------------------------------------------------------------
+A porta no router está "liberada", mas o NAT não manda tráfego para o "nome da
+porta" — manda para um IP INTERNO (to-addresses).
+
+Se a outra app corria noutro servidor (outro IP na LAN, VM, Docker noutra máquina,
+etc.), a regra NAT ainda pode apontar para ESSE IP — não para o PC onde está
+o Gestor agora.
+
+O QUE FAZER: no MikroTik, abra a regra dst-nat da porta que usa (5173, 5174 ou 5051) e confira:
+  to-addresses = IP atual deste PC (veja com ipconfig no Windows)
+
+Se for preciso, altere só o to-addresses para o IP do PC do Gestor (ex. 10.80.1.187)
+e mantenha to-ports igual à porta externa (5173→5173, etc.).
+
+================================================================================
+CHECKLIST MIKROTIK (RouterOS 7)
+================================================================================
+
+1) IP do servidor Windows é fixo ou reserva DHCP = 10.80.1.187 ?
+   Confirme com ipconfig no PC. A regra NAT tem de apontar para ESTE IP.
+
+2) NAT — dstnat (DNAT) para cada porta que for usar (80 opcional -> 5173, 5173, 5174, 5051)
+   Winbox: IP → Firewall → NAT
+
+   Linha típica (terminal):
+   /ip firewall nat print detail where chain=dstnat
+
+   Deve existir (uma por porta ou combinação equivalente), por exemplo:
+     chain=dstnat protocol=tcp dst-port=5173 in-interface=<SUA_WAN>
+     action=dst-nat to-addresses=10.80.1.187 to-ports=5173
+
+   - in-interface DEVE ser a interface que recebe o tráfego da internet (ether1, etc.)
+   - Não use "in-interface=bridge" errado para tráfego WAN.
+
+3) hairpin-nat=yes na mesma regra (para testar da LAN com o IP público).
+
+4) Firewall FILTER — encaminhamento forward
+   Se tiver "drop" no forward antes do accept, tráfego morre.
+
+   /ip firewall filter print where chain=forward
+
+   Geralmente precisa de:
+     chain=forward action=accept connection-state=established,related
+     chain=forward action=accept in-interface=<LAN> out-interface=<WAN>
+     chain=forward action=accept in-interface=<WAN> out-interface=<LAN>  (para DSTNAT voltar)
+
+   Ou regras específicas para dst-port=5173,5174,5051 dst-address=10.80.1.187 action=accept
+
+5) Teste de um telemóvel em 4G (não Wi-Fi da empresa):
+   http://170.84.146.147:5173/   (ou :5174 ou :5051) ou http://170.84.146.147/ com NAT 80->5173
+
+6) Se o IP público no MikroTik (IP → Addresses na WAN) NÃO for 170.84.146.147,
+   o DNS da Hostinger está apontando para IP errado — atualize o registro A.
+
+================================================================================
+ACESSO IMEDIATO SEM MEXER NO MIKROTIK (temporário)
+================================================================================
+
+Com o projeto a correr (npm run dev na raiz), noutro terminal:
+
+  npm run tunnel:externo
+
+O comando mostra um URL https://xxxx.loca.lt (ou similar) que encaminha para a
+porta 5173 local. Use para testes ou até arranjar NAT.
+
+================================================================================

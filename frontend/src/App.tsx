@@ -1,6 +1,6 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { AuthProvider } from './contexts/AuthContext';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Login from './pages/Login';
 import Layout from './components/Layout';
 import PedidosPage from './pages/PedidosPage';
@@ -29,7 +29,10 @@ import { checkAuth } from './api/auth';
 import SemAcessoPage from './pages/SemAcessoPage';
 import InicioPage from './pages/InicioPage';
 
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
+/** App autenticado: Layout + rotas. Visitante: login na raiz `/` (URL limpa com HTTP na porta 80). */
+function RootEntry() {
+  const location = useLocation();
+  const { login: ctxLogin } = useAuth();
   const [auth, setAuth] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -44,10 +47,31 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
       setAuth(true);
       return;
     }
+    let cancelled = false;
+    const AUTH_CHECK_MS = 10000;
+    const timeoutId = window.setTimeout(() => {
+      if (!cancelled) setAuth(false);
+    }, AUTH_CHECK_MS);
     checkAuth()
-      .then(setAuth)
-      .catch(() => setAuth(false));
+      .then((ok) => {
+        if (!cancelled) setAuth(ok);
+      })
+      .catch(() => {
+        if (!cancelled) setAuth(false);
+      })
+      .finally(() => {
+        cancelled = true;
+        window.clearTimeout(timeoutId);
+      });
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
   }, []);
+
+  useEffect(() => {
+    if (ctxLogin && getStoredToken()) setAuth(true);
+  }, [ctxLogin]);
 
   if (auth === null) {
     return (
@@ -56,23 +80,21 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  if (!auth) return <Navigate to="/entrar" replace />;
-  return <>{children}</>;
+  if (!auth) {
+    if (location.pathname !== '/') {
+      return <Navigate to="/" replace />;
+    }
+    return <Login />;
+  }
+  return <Layout />;
 }
 
 export default function App() {
   return (
     <AuthProvider>
       <Routes>
-        <Route path="/entrar" element={<Login />} />
-        <Route
-          path="/"
-          element={
-            <ProtectedRoute>
-              <Layout />
-            </ProtectedRoute>
-          }
-        >
+        <Route path="/entrar" element={<Navigate to="/" replace />} />
+        <Route path="/" element={<RootEntry />}>
           <Route index element={<InicioPage />} />
           <Route path="pedidos" element={<ErrorBoundary><PedidosPage /></ErrorBoundary>} />
           <Route path="pedidos/sycroorder" element={<ErrorBoundary><SycroOrderPage /></ErrorBoundary>} />

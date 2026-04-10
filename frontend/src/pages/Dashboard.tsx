@@ -146,7 +146,7 @@ export default function Dashboard() {
     } catch {
       // rede: token já removido
     }
-    navigate('/entrar', { replace: true });
+    navigate('/', { replace: true });
   };
 
   return (

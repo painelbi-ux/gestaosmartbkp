@@ -8,10 +8,10 @@ alwaysApply: true
 Quando o usuário solicitar **qualquer alteração** (código, configuração, etc.) e você aplicar mudanças no projeto:
 
 1. **Ao finalizar as alterações**, reinicie os servidores **sem perguntar**:
-   - Encerre os processos nas portas **4000** (backend), **5180** (interno) e **5173** (externo).
-   - Inicie na raiz: `npm run dev` (sobe backend + frontend 5180 + frontend 5173 em background).
+   - Encerre os processos nas portas **4000** (backend), **5180** (interno) e **5173**, **5174**, **5051** (externos).
+   - Inicie na raiz: `npm run dev` (sobe backend + Vite 5180 + 5173 + 5174 + 5051 em background).
 
-2. Use PowerShell: para encadear use `;`. Para encerrar: `Get-NetTCPConnection -LocalPort 4000,5180,5173` e `Stop-Process`.
+2. Use PowerShell: para encadear use `;`. Para encerrar: `Get-NetTCPConnection -LocalPort 4000,5180,5173,5174,5051` e `Stop-Process` (ou `node scripts/kill-ports.cjs` na raiz).
 
 3. O backend é iniciado via `scripts/run-backend-loop.cjs`, que **reinicia o processo automaticamente** se ele cair (após 2 s).
 

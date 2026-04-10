@@ -1,0 +1,35 @@
+================================================================================
+ACESSO INTERNO ao www.gsmartsoaco.com.br (quando de fora já funciona)
+================================================================================
+
+1) Causa mais comum no MikroTik
+   Regras /ip firewall nat com in-interface=<WAN> NÃO se aplicam quando um PC da
+   LAN acessa o IP PÚBLICO (o pacote entra pela interface LAN, não pela WAN).
+
+2) O que fazer
+   a) No Winbox: IP → Firewall → NAT — remova ou desative regras dstnat duplicadas
+      do Gestor que usem APENAS in-interface=WAN para as portas 80, 5180, 5173…
+   b) Importe (Terminal → File → ou cole) o arquivo:
+        deploy\mikrotik-nat-unificado-hairpin.rsc
+      ANTES: edite no arquivo o IP público 170.84.146.147 e o servidor 10.80.1.187
+      se forem diferentes.
+
+   As novas regras usam dst-address=<IP_PUBLICO> (sem fixar só a WAN), com
+   hairpin-nat=yes, para que o mesmo NAT sirva tanto internet quanto LAN.
+
+3) Teste rápido (na LAN)
+   No PowerShell de um PC interno:
+     curl -v http://170.84.146.147/
+   (deve conectar ao Vite na 5180 se a regra 80->5180 estiver ativa)
+
+4) Se ainda falhar
+   - IP → Firewall → Filter: verifique se não há regra bloqueando forward
+     LAN → 10.80.1.187 nas portas usadas.
+   - No servidor Windows (10.80.1.187), como plano B, rode como Administrador:
+       scripts\portproxy-80-para-vite.ps1
+     e/ou use hosts (scripts\adicionar-hosts-interno-gsmartsoaco.ps1) nos PCs.
+
+5) Limpar DNS em cache no PC de teste
+   ipconfig /flushdns
+
+================================================================================

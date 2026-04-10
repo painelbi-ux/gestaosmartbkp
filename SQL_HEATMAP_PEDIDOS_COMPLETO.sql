@@ -52,7 +52,7 @@ case when
     WHEN (de.observacoes IS NULL) then 'Inserir em Romaneio'
     ELSE de.observacoes end) like '%Entrega%'
 then 'PI' else
-	ifnull(mc.uf, m.uf) end as 'UF',
+	ifnull(m.uf, mc.uf) end as 'UF',
 case when
 (CASE 
 	WHEN (de.observacoes IS NULL AND me.opcao = 'Retirada na Só Móveis') THEN 'Retirada na So Moveis'

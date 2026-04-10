@@ -1,17 +1,22 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { fileURLToPath } from 'url';
+import type { UserConfig } from 'vite';
 
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: { '@': path.resolve(__dirname, './src') },
-  },
-  server: {
-    port: 5180, // interno; --port 5173 no script dev:frontend:externo
-    host: '0.0.0.0', // escuta em todas as interfaces (interno 5180 + externo 5173)
-    strictPort: true, // falha se a porta estiver em uso (predev libera antes)
-    // true = qualquer Host (domínio, IP público, LAN) — necessário para http://gsmartsoaco.com.br:5173
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, __dirname, '');
+  const disableHmr = env.VITE_DISABLE_HMR === 'true';
+  const hmrClientPort = env.VITE_HMR_CLIENT_PORT ? parseInt(env.VITE_HMR_CLIENT_PORT, 10) : undefined;
+  const devOrigin = env.VITE_DEV_ORIGIN?.trim() || undefined;
+
+  const server: NonNullable<UserConfig['server']> = {
+    port: 5180, // interno; externos: npm run dev:frontend:5173 | :5174 | :5051
+    host: '0.0.0.0',
+    strictPort: true,
+    // true = qualquer Host — http://gsmartsoaco.com.br:5173 (ou :5174 :5051)
     allowedHosts: true,
     proxy: {
       '/api': {
@@ -19,7 +24,7 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
         timeout: 120000,
-        selfHandleResponse: true, // reescreve 500→503 antes de enviar ao cliente
+        selfHandleResponse: true,
         configure: (proxy) => {
           proxy.on('proxyRes', (proxyRes, _req, res) => {
             const clientRes = res as import('http').ServerResponse;
@@ -43,13 +48,16 @@ export default defineConfig({
           });
           let lastApiLog = 0;
           const API_LOG_INTERVAL_MS = 15000;
-          proxy.on('error', (err, _req, res) => {
+          proxy.on('error', (_err, _req, res) => {
             const now = Date.now();
             if (now - lastApiLog >= API_LOG_INTERVAL_MS) {
               lastApiLog = now;
               console.warn('[proxy /api] Backend inacessível (porta 4000). Confira se o backend está rodando.');
             }
-            if (res && !(res as import('http').ServerResponse).headersSent) (res as import('http').ServerResponse).writeHead(503, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'Servidor indisponível.' }));
+            if (res && !(res as import('http').ServerResponse).headersSent)
+              (res as import('http').ServerResponse)
+                .writeHead(503, { 'Content-Type': 'application/json' })
+                .end(JSON.stringify({ error: 'Servidor indisponível.' }));
           });
         },
       },
@@ -58,11 +66,11 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
         timeout: 120000,
-        selfHandleResponse: true, // reescreve 500→503 antes de enviar ao cliente
+        selfHandleResponse: true,
         configure: (proxy) => {
           let lastAuthLog = 0;
           const AUTH_LOG_INTERVAL_MS = 15000;
-          proxy.on('proxyRes', (proxyRes, req, res) => {
+          proxy.on('proxyRes', (proxyRes, _req, res) => {
             const clientRes = res as import('http').ServerResponse;
             const status = proxyRes.statusCode === 500 ? 503 : proxyRes.statusCode;
             const headers = { ...proxyRes.headers };
@@ -82,13 +90,16 @@ export default defineConfig({
               }
             });
           });
-          proxy.on('error', (err, _req, res) => {
+          proxy.on('error', (_err, _req, res) => {
             const now = Date.now();
             if (now - lastAuthLog >= AUTH_LOG_INTERVAL_MS) {
               lastAuthLog = now;
               console.warn('[proxy /auth] Backend inacessível (porta 4000). Confira se o backend está rodando.');
             }
-            if (res && !(res as import('http').ServerResponse).headersSent) (res as import('http').ServerResponse).writeHead(503, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'Servidor indisponível.' }));
+            if (res && !(res as import('http').ServerResponse).headersSent)
+              (res as import('http').ServerResponse)
+                .writeHead(503, { 'Content-Type': 'application/json' })
+                .end(JSON.stringify({ error: 'Servidor indisponível.' }));
           });
         },
       },
@@ -122,5 +133,25 @@ export default defineConfig({
         },
       },
     },
-  },
+  };
+
+  // Acesso http://dominio/ (NAT WAN:80 -> Vite:5173): o browser pensa que está na 80, mas o HMR
+  // tenta ws na 5173 (fechada no router) → página em branco. Desative HMR ou use VITE_HMR_CLIENT_PORT=80.
+  if (disableHmr) {
+    server.hmr = false;
+  } else if (hmrClientPort) {
+    server.hmr = { clientPort: hmrClientPort };
+  }
+
+  if (devOrigin) {
+    server.origin = devOrigin;
+  }
+
+  return {
+    plugins: [react()],
+    resolve: {
+      alias: { '@': path.resolve(__dirname, './src') },
+    },
+    server,
+  };
 });

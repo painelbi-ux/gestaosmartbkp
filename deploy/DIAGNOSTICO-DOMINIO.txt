@@ -1,26 +1,27 @@
 ================================================================================
-DIAGNÓSTICO: gsmartsoaco.com.br + porta 5173 (acesso externo / pelo nome)
+DIAGNÓSTICO: gsmartsoaco.com.br + portas 5173 / 5174 / 5051 (acesso externo)
 ================================================================================
 
 1) DNS (já validado de vários pontos)
    - gsmartsoaco.com.br e www resolvem para 170.84.146.147 (Google DNS, Cloudflare).
    - Registro A está correto na Hostinger.
-   - ATENÇÃO: os nameservers autoritativos ainda são byte.dns-parking.com e
+   - ATENÇÃO: os nameservers autoritativos ainda podem ser byte.dns-parking.com e
      pixel.dns-parking.com (modo "estacionamento"). Recomenda-se trocar no
      painel Hostinger para os nameservers DNS normais da Hostinger, para a zona
      ser estável e previsível.
 
-2) URL obrigatória com a porta
-   - O browser em http://gsmartsoaco.com.br usa a porta 80 por defeito.
-   - Só a 5173 está aberta no MikroTik → tem de usar:
-       http://gsmartsoaco.com.br:5173/entrar
-       http://www.gsmartsoaco.com.br:5173/entrar
-   - Sem ":5173" não vai bater no Vite.
+2) URL com ou sem porta
+   - Com NAT WAN:80 -> PC (porta do Vite): http://gsmartsoaco.com.br/ (sem :porta).
+   - Em deploy\mikrotik-nat-externos.rsc o exemplo usa WAN:80 -> 5173; se quiser alinhar
+     com o Vite “interno” (5180), altere to-ports=5180 nessa regra.
+   - Sem NAT na 80: use explicitamente a porta do Vite, ex.:
+       http://gsmartsoaco.com.br:5173/
+       http://gsmartsoaco.com.br:5051/
 
-3) "Connection refused" ao testar do próprio servidor (curl para o IP público:5173)
+3) "Connection refused" ao testar do próprio servidor (curl para o IP público)
    - Comportamento típico quando o router NÃO faz hairpin/NAT loopback: um PC
      na LAN que tenta 170.84.146.147:5173 não é devolvido para 10.80.1.187.
-   - No MikroTik, na regra dst-nat da 5173, ative hairpin-nat (NAT loopback),
+   - No MikroTik, na regra dst-nat correspondente, ative hairpin-nat (NAT loopback),
      ou teste sempre a partir de dados móveis (4G) fora da empresa.
    - Isto NÃO substitui o dst-nat da WAN: quem vem da internet precisa de regra
      separada (in-interface=WAN ou equivalente).
@@ -29,23 +30,59 @@ DIAGNÓSTICO: gsmartsoaco.com.br + porta 5173 (acesso externo / pelo nome)
    /ip firewall nat add chain=dstnat protocol=tcp dst-port=5173 in-interface=<WAN> \
      action=dst-nat to-addresses=10.80.1.187 to-ports=5173 comment="Gestor Vite" \
      hairpin-nat=yes
+   - Repita para 5174 e 5051 se for usar essas portas.
    - Confirme que o IP 10.80.1.187 ainda é o PC onde corre "npm run dev".
-   - Filter forward: permitir encaminhamento para a LAN na 5173.
+   - Filter forward: permitir encaminhamento para a LAN nas portas usadas.
 
 5) Windows neste PC
-   - Vite tem de estar a escutar 0.0.0.0:5173 (npm run dev na raiz).
-   - Firewall: scripts\garantir-firewall-5173.ps1 (Administrador).
+   - Vite tem de estar a escutar 0.0.0.0 nas portas (npm run dev na raiz).
+   - Firewall: scripts\garantir-firewall-externo.ps1 (Administrador).
 
 6) HTTPS no browser
-   - Se alguém abrir https://gsmartsoaco.com.br:5173/ sem certificado TLS no Vite,
-     falha. Use http:// (com S explicitamente) ou trate SSL à frente (nginx).
+   - Se alguém abrir https://gsmartsoaco.com.br:5051/ sem certificado TLS no Vite,
+     o browser pode bloquear ou avisar — use http:// ou configure TLS no backend.
 
-7) Checklist rápido
-   [ ] De um telemóvel em 4G: http://170.84.146.147:5173/entrar abre?
-       Não → NAT/firewall/ISP; não é DNS.
-   [ ] No 4G: http://gsmartsoaco.com.br:5173/entrar abre?
-       IP sim, nome não → só DNS (propagação / nameservers).
-   [ ] Na empresa com PC na LAN: só funciona com 10.80.1.187:5180 ou :5173?
-       Se sim e o nome não → hairpin ou use DNS interno apontando nome → 10.80.1.187.
+7) Mesma rede LAN: não abre www.gsmartsoaco.com.br, mas 10.80.1.187:5180 funciona
+   PASSO DEFINITIVO (MikroTik): use regras dstnat por dst-address=IP_PUBLICO, NÃO só
+   in-interface=WAN — veja deploy\MIKROTIK-ACESSO-INTERNO.txt e
+   deploy\mikrotik-nat-unificado-hairpin.rsc
+   - O DNS público aponta para o IP da internet (ex.: 170.84.146.147). Na LAN, ao usar
+     o domínio, o PC tenta esse IP. Se o roteador não fizer hairpin/NAT loopback de
+     forma correta, a conexão não chega ao 10.80.1.187.
+
+   Opção A — MikroTik (recomendado se todos os PCs devem usar o domínio sem hosts):
+   - Nas regras /ip firewall nat dst-nat para as portas do Gestor, use hairpin-nat=yes
+     (já está no exemplo deploy\mikrotik-nat-externos.rsc).
+   - Confirme no roteador que a regra existe e que o forward permite tráfego LAN→servidor.
+
+   Opção B — Resolver o nome para o IP interno (rápido por máquina):
+   - PowerShell Administrador, na raiz do repositório:
+       powershell -ExecutionPolicy Bypass -File scripts\adicionar-hosts-interno-gsmartsoaco.ps1
+   - Depois use no browser a MESMA porta que o Vite usa naquele PC, por exemplo:
+       http://www.gsmartsoaco.com.br:5180   (instância interna do npm run dev)
+       http://www.gsmartsoaco.com.br:5173   (instância “externa”)
+   - Sem “:porta”, o navegador usa a porta 80; aí é preciso nginx/IIS na 80 ou NAT específico.
+
+   Opção C — DNS interno (Active Directory / servidor DNS na empresa):
+   - Zona interna ou override: A www e @ → 10.80.1.187 (split-horizon).
+
+8) Quero http://www.gsmartsoaco.com.br/ SEM :5180 ou :5173
+   A) De FORA (internet): sim — aponte no MikroTik a porta WAN 80 para a porta do Vite
+      no PC (5180 ou 5173, a que estiver rodando). Exemplo (ajuste ether1-WAN):
+        /ip firewall nat add chain=dstnat protocol=tcp dst-port=80 in-interface=ether1-WAN \
+          action=dst-nat to-addresses=10.80.1.187 to-ports=5180 comment="HTTP->Vite5180" hairpin-nat=yes
+      (Já existe variante em deploy\mikrotik-nat-externos.rsc; pode mudar to-ports de 5173 para 5180.)
+      O visitante usa http://gsmartsoaco.com.br/ — o roteador encaminha para 10.80.1.187:5180.
+
+   B) Na MESMA LAN com IP interno (10.80.1.187) ou hosts apontando para esse IP:
+      O tráfego NÃO passa pelo MikroTik. O PC precisa ter ALGO na porta 80 ou o browser
+      não acha serviço. Duas formas:
+      - Redirecionar 80 -> Vite no Windows (PowerShell Admin):
+          scripts\portproxy-80-para-vite.ps1
+        (opcional: -VitePort 5173). Para remover: ... -Remove
+      - Ou nginx/IIS na 80 fazendo proxy para 127.0.0.1:5180.
+
+   C) Na LAN mas usando o IP público / domínio com hairpin funcionando:
+      A regra MikroTik WAN:80 -> 5180 + hairpin-nat=yes costuma bastar; não precisa :porta.
 
 ================================================================================

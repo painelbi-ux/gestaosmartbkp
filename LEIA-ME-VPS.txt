@@ -1,48 +1,26 @@
-Gestor Pedidos — portas alinhadas ao MikroTik (exemplo SoAço)
+================================================================================
+  GESTOR DE PEDIDOS — VPS / ACESSO EXTERNO (5173, 5174, 5051)
+================================================================================
 
-  • Rede interna:  http://10.80.1.187:5180/   (Vite “interno”)
-  • Internet:      http://170.84.146.147:5173/ (Vite “externo” — NAT MikroTik)
-  • API (backend): porta 4000 (localhost; o Vite nas portas acima faz proxy de /api e /auth)
+1) Na VPS (ou PC servidor), clone o repositório e instale dependências:
+   npm install
+   cd backend && npx prisma migrate deploy && cd ..
 
-backend/.env em produção com build estático no próprio Node:
-  APP_PORT=4000
-  NODE_ENV=production
+2) Firewall Windows (Administrador):
+   powershell -ExecutionPolicy Bypass -File scripts\garantir-firewall-externo.ps1
 
-NÃO use APP_PORT=5173 no backend — 5173 é só o frontend Vite na internet.
+3) Iniciar em desenvolvimento (backend 4000 + Vite 5180 + 5173 + 5174 + 5051):
+   npm run dev
 
-MikroTik: encaminhar WAN TCP 5173 → 10.80.1.187:5173 (e 5180 só se precisar de fora; em geral 5180 é só LAN).
+   Ou use: powershell -ExecutionPolicy Bypass -File iniciar-gestor.ps1
 
-Firewall Windows: scripts\liberar-porta-externo.ps1 (5180 + 5173) como Administrador.
+4) MikroTik: encaminhe para o IP LAN do PC as portas que for usar (5173, 5174, 5051).
+   Exemplo: deploy\mikrotik-nat-externos.rsc (ajuste ether1-WAN e to-addresses).
 
-Subir tudo: na pasta raiz do projeto, npm run dev
-  (sobe API 4000, Vite 5180 e Vite 5173)
+5) Teste de fora da rede (4G):
+   Com NAT WAN:80 -> PC:5173 (ver deploy\mikrotik-nat-externos.rsc): http://gsmartsoaco.com.br
+   Ou direto na porta: http://SEU_IP_PUBLICO:5173
 
---- Domínio gsmartsoaco.com.br (Hostinger + MikroTik) ---
+6) Produção (build + servir estático pelo backend): ver README.md seção "Produção".
 
-1) DNS: o registro A @ → 170.84.146.147 está certo. Os nameservers
-   "byte.dns-parking.com" / "pixel.dns-parking.com" são de ESTACIONAMENTO.
-   No painel Hostinger, troque para os nameservers DNS normais da Hostinger
-   (menu Domínios → DNS / Nameservers → "Usar DNS da Hostinger") para o
-   domínio não ficar em modo parking.
-
-2) Porta no navegador: http://gsmartsoaco.com.br abre a porta 80 no IP.
-   Se só a 5173 está encaminhada no MikroTik, use SEMPRE:
-     http://gsmartsoaco.com.br:5173/
-     http://www.gsmartsoaco.com.br:5173/
-   Ou no MikroTik crie NAT: WAN tcp dst-port 80 → 10.80.1.187 to-ports 5173
-   (assim http://gsmartsoaco.com.br funciona sem ":5173" na URL).
-
-3) www: CNAME www → gsmartsoaco.com.br está ok (cai no mesmo A).
-
-4) Se http://170.84.146.147:5173/entrar parar (mas no servidor abrir
-   http://10.80.1.187:5173/entrar funciona):
-   - Rode como Admin: scripts\garantir-firewall-5173.ps1
-   - No MikroTik confira dst-nat WAN:5173 -> 10.80.1.187:5173
-   - Confirme que "npm run dev" está a correr na raiz do projeto
-
-5) URL com domínio na porta liberada:
-   http://gsmartsoaco.com.br:5173/entrar
-   (sem :5173 o browser usa porta 80, que não está liberada.)
-
-6) Análise completa (DNS, hairpin NAT, MikroTik, testes 4G):
-   deploy\DIAGNOSTICO-DOMINIO.txt
+================================================================================

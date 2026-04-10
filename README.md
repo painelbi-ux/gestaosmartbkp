@@ -82,7 +82,7 @@ O repositório já envolve esse SQL em uma CTE e adiciona a coluna **`previsao_e
 
 ## Execução
 
-**Portas:** **5180** = acesso interno (rede local), **5173** = acesso externo (internet/outra rede). A **4000** é a API (backend).
+**Portas:** **5180** = interno (LAN). **5173**, **5174** e **5051** = três Vite externos (qualquer uma serve; use a que o MikroTik encaminhar). **4000** = API (backend).
 
 ### Opção A — Um comando só (recomendado)
 
@@ -93,10 +93,24 @@ npm install
 npm run dev
 ```
 
-Isso sobe o backend (4000) e **dois** frontends: **5180** (interno) e **5173** (externo).
+Isso sobe o backend (4000), o Vite **5180** (interno) e **três** Vites externos nas portas **5173**, **5174** e **5051**.
 
 - **Interno (rede local):** http://localhost:5180 ou http://SEU_IP:5180  
-- **Externo:** http://170.84.146.147:5173 (liberar/encaminhar porta 5173 no roteador se for internet)
+- **Externo (escolha a porta aberta no MikroTik):** por exemplo `http://170.84.146.147:5173` ou `:5174` ou `:5051` (login na raiz `/`)
+
+#### Domínio `gsmartsoaco.com.br` (só nome, sem `:5173`)
+
+**DNS:** registro **A** `@` e **A** (ou **CNAME**) `www` → `170.84.146.147`. Nameservers normais da Hostinger.
+
+**Porta 80 (HTTP “normal”):** o Vite continua na **5173** no PC; não é preciso instalar nada na porta 80 no Windows. No **MikroTik**, adicione **dst-nat**: tráfego **WAN tcp/80** → **IP do PC tcp/5173** (primeira regra em `deploy/mikrotik-nat-externos.rsc`). Ative **hairpin-nat** na mesma regra. A partir daí:
+
+- **http://gsmartsoaco.com.br** e **http://www.gsmartsoaco.com.br** abrem o login na raiz `/` (a rota antiga `/entrar` redireciona para `/`).
+
+**Manter também a 5173:** se quiser continuar a testar por `http://IP:5173`, mantenha a regra NAT da porta **5173** (já existente). A **API** segue pela mesma origem (proxy do Vite); **não defina `VITE_API_URL`**.
+
+**Conflito:** se no futuro a porta **80** da internet tiver de servir **só** o Let's Encrypt para outro destino, use DNS-01 para o certificado ou ajuste as regras NAT — não duplique 80 para dois serviços sem critério.
+
+**Página em branco em `http://gsmartsoaco.com.br/` (sem `:5173`):** em modo dev o Vite usa WebSocket (HMR) na mesma porta do servidor; com NAT **80→5173** o browser pensa que está na **80**, mas o cliente tentava ligar o WS à **5173** (muitas vezes fechada no MikroTik). Crie `frontend/.env.development.local` com `VITE_DISABLE_HMR=true` (há exemplo em `frontend/.env.example`) e **reinicie** `npm run dev`. Use **`http://`** (não `https://`) enquanto não houver TLS no Vite.
 
 #### Firewall (acesso por IP)
 
@@ -107,14 +121,13 @@ cd C:\caminho\para\gestorpedidosSoAco
 .\scripts\liberar-porta-externo.ps1
 ```
 
-Isso libera as portas **5180** e **5173** no Firewall do Windows. Para acesso pela internet, encaminhe a **5173** no roteador (ex.: MikroTik) para o IP do PC.
+Isso libera **5180**, **5173**, **5174**, **5051** e **4000** no Firewall. No MikroTik, encaminhe para o IP do PC as portas que for usar (5173, 5174 e/ou 5051).
 
 #### Externo ainda não abre pelo link?
 
-1. **Firewall Windows:** execute `scripts\liberar-porta-externo.ps1` como Administrador (libera 5180 e 5173).
+1. **Firewall Windows:** execute `scripts\liberar-porta-externo.ps1` como Administrador.
 2. **Teste na rede local:** de outro PC na mesma rede, abra `http://IP_DO_PC:5180` (interno). Se abrir, o servidor está OK na LAN.
-3. **Acesso pela internet:** no roteador (ex. MikroTik), encaminhe a porta **5173** para o IP do PC onde o app roda:
-   - **MikroTik:** IP → Firewall → NAT → Add → Chain=dstnat, Dst. Port=5173, Action=dst-nat, To Addresses=IP_DO_PC, To Ports=5173. Depois em Firewall → Filter Rules permitir tráfego na porta 5173.
+3. **Acesso pela internet:** no MikroTik, **dst-nat** da(s) porta(s) que usar (**5173**, **5174**, **5051**) para o IP do PC — ver `deploy/mikrotik-nat-externos.rsc`.
    - Use o **IP público** do link (ex. 170.84.146.147) para acessar de fora.
 
 ### Opção B — Dois terminais (só interno)
@@ -138,19 +151,19 @@ npm install
 npm run dev -- --port 5180
 ```
 
-Para ter também o externo (5173), em um terceiro terminal: `npm run dev -- --port 5173` (na pasta frontend).
+Com `npm run dev` na raiz já sobem os três externos; não precisa de terminais extra.
 
 #### URL amigável (opcional)
 
-Para acessar com um endereço mais amigável em desenvolvimento (ex.: **http://gestaosmart.local:5180/entrar**):
+Para acessar com um endereço mais amigável em desenvolvimento (ex.: **http://gestaosmart.local:5180/**):
 
 1. **Windows**: Edite como administrador o arquivo `C:\Windows\System32\drivers\etc\hosts` e adicione uma linha:
    ```
    127.0.0.1   gestaosmart.local
    ```
-2. Salve o arquivo e abra no navegador: **http://gestaosmart.local:5180/entrar**
+2. Salve o arquivo e abra no navegador: **http://gestaosmart.local:5180/**
 
-A rota de login é **/entrar** (em vez de /login). Use **http://localhost:5180/entrar** (interno) ou **http://IP:5173/entrar** (externo).
+O login fica na **raiz** `/` (links antigos para `/entrar` redirecionam). Use **http://localhost:5180/** (interno) ou **http://IP:5173** (ou :5174 / :5051 conforme o NAT).
 
 ### Build para produção
 
@@ -244,7 +257,7 @@ npm run test
 3. Se o backend estiver em outra porta, no log aparecerá:  
    `[startup] Backend na porta X. Proxy e wait-on esperam 4000 — use APP_PORT=4000 ou rode "npm run dev" na raiz.`
 
-**Resumo:** Para desenvolvimento local com os dois frontends (5180 e 5173), use **sempre** `npm run dev` na **pasta raiz**. O backend sobe na 4000, o wait-on espera o `/health` na 4000 e só então sobem os frontends; o watchdog testa ping/login e reinicia o backend se falhar.
+**Resumo:** Para desenvolvimento com interno + três externos (5180 + 5173+5174+5051), use **sempre** `npm run dev` na **pasta raiz**. O backend sobe na 4000, o wait-on espera o `/health` na 4000 e só então sobem os frontends; o watchdog testa ping/login e reinicia o backend se falhar.
 
 ### Erro 500 vira 503 no navegador
 
@@ -259,4 +272,4 @@ O backend e o proxy do Vite foram configurados para **nunca** devolver 500 ao cl
 3. **Rodar local**:  
    - `cd backend && npm install && npx prisma generate && npm run migrate && npm run dev`  
    - `cd frontend && npm install && npm run dev`  
-   - Acesse http://localhost:5180 (interno) ou http://IP:5173 (externo), faça login (ex.: admin / admin123 após `npm run seed`) e use o dashboard e o ajuste de previsão.
+   - Acesse http://localhost:5180 (interno) ou http://IP:5173 (ou :5174 / :5051) (externo), faça login (ex.: admin / admin123 após `npm run seed`) e use o dashboard e o ajuste de previsão.
