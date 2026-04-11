@@ -17,7 +17,10 @@ import {
   type MrpHorizonteResponse,
   type MrpRow,
 } from '../../api/mrp';
+import { PERMISSOES } from '../../config/permissoes';
+import { useAuth } from '../../contexts/AuthContext';
 import FiltroDatasMRPPopover from '../../components/FiltroDatasMRPPopover';
+import { downloadMrpXlsx } from '../../utils/exportMrpXlsx';
 import {
   codigoChave,
   empenhoHorizonteUltimoDia,
@@ -482,9 +485,16 @@ function HorizonteLoadingOverlay() {
 }
 
 export default function MRPPage() {
+  const { hasPermission } = useAuth();
+  const podeExportarXlsx =
+    hasPermission(PERMISSOES.PCP_EXPORTAR_XLSX) ||
+    hasPermission(PERMISSOES.PCP_TOTAL) ||
+    hasPermission(PERMISSOES.PEDIDOS_EDITAR);
+
   const [data, setData] = useState<MrpRow[]>(() => mrpCache?.data ?? []);
   const [loading, setLoading] = useState(() => !mrpCache);
   const [erro, setErro] = useState<string | null>(null);
+  const [exportLoading, setExportLoading] = useState(false);
   const [filterCodigo, setFilterCodigo] = useState(() => mrpUiPersistido.filterCodigo);
   const [filterComponente, setFilterComponente] = useState(() => mrpUiPersistido.filterComponente);
   const [filterColeta, setFilterColeta] = useState(() => mrpUiPersistido.filterColeta);
@@ -781,6 +791,34 @@ export default function MRPPage() {
     setFilterHorizonteFim('');
   };
 
+  const exportarExcel = useCallback(async () => {
+    if (filteredData.length === 0) {
+      window.alert('Nenhum registro para exportar com os filtros atuais.');
+      return;
+    }
+    setExportLoading(true);
+    try {
+      await downloadMrpXlsx(
+        {
+          rows: filteredData,
+          columns: colunasVisiveisLista.map((c) => ({
+            key: c.key,
+            label: c.label,
+            integer: c.integer,
+          })),
+          horizonte,
+          horizontePorCodigo,
+          mppQtdePorCodigo,
+        },
+        `mrp_${new Date().toISOString().slice(0, 10)}.xlsx`
+      );
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Erro ao exportar MRP.');
+    } finally {
+      setExportLoading(false);
+    }
+  }, [filteredData, colunasVisiveisLista, horizonte, horizontePorCodigo, mppQtdePorCodigo]);
+
   if (loading) {
     return (
       <div className="flex flex-col flex-1 min-h-0 p-6">
@@ -875,6 +913,36 @@ export default function MRPPage() {
               </div>
             ) : null}
           </div>
+          {podeExportarXlsx && (
+            <button
+              type="button"
+              onClick={() => void exportarExcel()}
+              disabled={exportLoading}
+              className="inline-flex items-center justify-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Exporta todas as linhas filtradas da grade (colunas visíveis e horizonte, se carregado) para Excel"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <path d="M14 2v6h6" />
+                <path d="M8 13h2" />
+                <path d="M8 17h8" />
+                <path d="M8 9h1" />
+                <path d="M12 9h4" />
+              </svg>
+              {exportLoading ? 'Exportando…' : 'Excel'}
+            </button>
+          )}
           <button
             type="button"
             onClick={carregar}

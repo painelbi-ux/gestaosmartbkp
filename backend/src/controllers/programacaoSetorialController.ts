@@ -13,6 +13,8 @@ type PlanningItem = {
   Cod: string;
   'Descricao do produto': string;
   'Setor de Producao': string;
+  Recurso?: string;
+  tipoF?: string;
   'Qtde Pendente Real': number;
 };
 
@@ -43,6 +45,14 @@ function toPlanningItem(row: any): PlanningItem | null {
     Cod: String(row?.Cod ?? ''),
     'Descricao do produto': String(row?.['Descricao do produto'] ?? row?.produto ?? ''),
     'Setor de Producao': String(row?.['Setor de Producao'] ?? ''),
+    Recurso: (() => {
+      const r = row?.Recurso ?? row?.recurso;
+      return r != null && String(r).trim() !== '' ? String(r) : undefined;
+    })(),
+    tipoF: (() => {
+      const t = row?.tipoF ?? row?.TipoF;
+      return t != null && String(t).trim() !== '' ? String(t) : undefined;
+    })(),
     'Qtde Pendente Real': qtdePend,
   };
 }
@@ -87,16 +97,29 @@ export async function listarProgramacoesSetoriais(_req: Request, res: Response) 
 }
 
 export async function criarProgramacaoSetorial(req: Request, res: Response) {
-  const nome = String((req.body as { nome?: unknown })?.nome ?? '').trim();
-  const observacaoRaw = (req.body as { observacao?: unknown })?.observacao;
+  const body = req.body as { nome?: unknown; observacao?: unknown; dadosProgramacao?: unknown };
+  const nome = String(body?.nome ?? '').trim();
+  const observacaoRaw = body?.observacao;
   const observacao = observacaoRaw == null ? null : String(observacaoRaw).trim() || null;
+  let dadosProgramacao: string | undefined;
+  if (body.dadosProgramacao !== undefined && body.dadosProgramacao !== null) {
+    dadosProgramacao =
+      typeof body.dadosProgramacao === 'string'
+        ? body.dadosProgramacao
+        : JSON.stringify(body.dadosProgramacao);
+  }
   if (!nome) {
     return res.status(400).json({ error: 'Informe o nome da programação.' });
   }
   try {
     const criadoPor = req.user?.login ?? null;
     const data = await prisma.programacaoSetorialRegistro.create({
-      data: { nome, observacao, criadoPor },
+      data: {
+        nome,
+        observacao,
+        criadoPor,
+        ...(dadosProgramacao !== undefined ? { dadosProgramacao } : {}),
+      },
     });
     return res.status(201).json(data);
   } catch (err) {
@@ -109,8 +132,13 @@ export async function atualizarProgramacaoSetorial(req: Request, res: Response) 
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'ID inválido.' });
 
-  const body = req.body as { nome?: unknown; observacao?: unknown; status?: unknown };
-  const dataUpdate: { nome?: string; observacao?: string | null; status?: string } = {};
+  const body = req.body as { nome?: unknown; observacao?: unknown; status?: unknown; dadosProgramacao?: unknown };
+  const dataUpdate: {
+    nome?: string;
+    observacao?: string | null;
+    status?: string;
+    dadosProgramacao?: string | null;
+  } = {};
 
   if (body.nome !== undefined) {
     const nome = String(body.nome ?? '').trim();
@@ -125,6 +153,16 @@ export async function atualizarProgramacaoSetorial(req: Request, res: Response) 
     const status = String(body.status ?? '').trim().toUpperCase();
     if (!STATUS_VALIDOS.has(status)) return res.status(400).json({ error: 'Status inválido.' });
     dataUpdate.status = status;
+  }
+  if (body.dadosProgramacao !== undefined) {
+    const dp = body.dadosProgramacao;
+    if (dp === null) {
+      dataUpdate.dadosProgramacao = null;
+    } else if (typeof dp === 'string') {
+      dataUpdate.dadosProgramacao = dp;
+    } else {
+      dataUpdate.dadosProgramacao = JSON.stringify(dp);
+    }
   }
   if (Object.keys(dataUpdate).length === 0) {
     return res.status(400).json({ error: 'Nenhum campo informado para atualização.' });

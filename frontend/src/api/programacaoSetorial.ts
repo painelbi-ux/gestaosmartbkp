@@ -10,6 +10,8 @@ export type ProgramacaoSetorialPlanningItem = {
   Cod: string;
   'Descricao do produto': string;
   'Setor de Producao': string;
+  Recurso?: string;
+  tipoF?: string;
   'Qtde Pendente Real': number;
 };
 
@@ -37,6 +39,8 @@ export type ProgramacaoSetorialRegistro = {
   nome: string;
   status: 'PENDENTE' | 'EM_EXECUCAO' | 'CONCLUIDA' | 'CANCELADA';
   observacao: string | null;
+  /** JSON serializado no backend (SQLite). */
+  dadosProgramacao?: string | null;
   criadoPor: string | null;
   createdAt: string;
   updatedAt: string;
@@ -49,13 +53,20 @@ export async function listarProgramacaoSetorialRegistros(): Promise<{ data: Prog
 export async function criarProgramacaoSetorialRegistro(payload: {
   nome: string;
   observacao?: string | null;
+  dadosProgramacao?: unknown;
 }): Promise<ProgramacaoSetorialRegistro> {
   return apiJson('/api/programacao-setorial/registros', { method: 'POST', body: payload as unknown as BodyInit });
 }
 
 export async function atualizarProgramacaoSetorialRegistro(
   id: number,
-  payload: { nome?: string; observacao?: string | null; status?: ProgramacaoSetorialRegistro['status'] }
+  payload: {
+    nome?: string;
+    observacao?: string | null;
+    status?: ProgramacaoSetorialRegistro['status'];
+    /** Objeto ou JSON já serializado; usado p.ex. para congelar datas da impressão no snapshot. */
+    dadosProgramacao?: unknown;
+  }
 ): Promise<ProgramacaoSetorialRegistro> {
   return apiJson(`/api/programacao-setorial/registros/${id}`, { method: 'PATCH', body: payload as unknown as BodyInit });
 }

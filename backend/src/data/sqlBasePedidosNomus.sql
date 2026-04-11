@@ -25,6 +25,7 @@ END
 	s1.opcao as 'Subgrupo1',
 	s2.opcao as 'Subgrupo2',
 	sp.opcao as 'Setor de Producao',
+	sr.opcao as 'Recurso',
 	if((ip.status = 1),'Aguardando liberacao',
 	if((ip.status = 2),'Liberado',
 	if((ip.status = 5),'Atendido com corte',
@@ -266,6 +267,13 @@ END AS StatusPedido
 	alo.opcao
 	from atributoprodutovalor apv
 	left join atributolistaopcao alo on alo.id = apv.idListaOpcao
+	where apv.idAtributo = 587) sr on sr.idProduto = p.id
+	left join 
+	(select
+	apv.idProduto,
+	alo.opcao
+	from atributoprodutovalor apv
+	left join atributolistaopcao alo on alo.id = apv.idListaOpcao
 	where apv.idAtributo = 679) sp on sp.idProduto = p.id
 	left join
 	(select 
@@ -451,6 +459,7 @@ and ip.status in (2,3)
 	aloreq.opcao,
 	aloret.opcao,
 	aloent.opcao,
+	sr.opcao,
 	pd.condicaopagamento,
 	fp.nome,
 	cp.nome

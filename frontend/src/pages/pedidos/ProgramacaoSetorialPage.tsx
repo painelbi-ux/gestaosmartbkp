@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { jsPDF } from 'jspdf';
-// jspdf-autotable não tem tipagem obrigatória; tratamos como `any`.
-import autoTable from 'jspdf-autotable';
 import { obterFiltrosOpcoes, type FiltrosOpcoes } from '../../api/pedidos';
-import { getProgramacaoSetorialEstoque, getProgramacaoSetorialPlanning } from '../../api/programacaoSetorial';
+import {
+  criarProgramacaoSetorialRegistro,
+  getProgramacaoSetorialEstoque,
+  getProgramacaoSetorialPlanning,
+} from '../../api/programacaoSetorial';
 import MultiSelectWithSearch from '../../components/MultiSelectWithSearch';
+import { isRecursoPcp } from '../../utils/programacaoSetorialRecursoPcp';
 
 type PlanningRow = {
   idChave: string;
@@ -16,6 +18,9 @@ type PlanningRow = {
   Cod: string;
   'Descricao do produto': string;
   'Setor de Producao': string;
+  /** Atributo produto 587; filtro exclusivo do setor "Corte e Dobra" (= PCP). */
+  Recurso?: string;
+  tipoF?: string;
   'Qtde Pendente Real': number;
   [key: string]: any;
 };
@@ -25,8 +30,6 @@ type ProcessedItem = PlanningRow & {
   qtyToProduce: number;
   fulfilledByStock: number;
 };
-
-const LOGO_URL = 'https://lh3.googleusercontent.com/d/1eKGfnhvBBCoNc1t-HNLFxjpZFV00XL4g';
 
 function normalize(str: string): string {
   return str
@@ -65,7 +68,85 @@ function isWithinInterval(date: Date, start: Date, end: Date): boolean {
   return date.getTime() >= start.getTime() && date.getTime() <= end.getTime();
 }
 
-export default function ProgramacaoSetorialPage() {
+/**
+ * Não exibir na grade nem oferecer no filtro de setor:
+ * setor vazio sem Recurso PCP; "Outros"; "Não considerar na meta".
+ */
+function linhaExcluidaProgramacaoSetorial(item: ProcessedItem): boolean {
+  const setorRaw = String(item['Setor de Producao'] ?? '').trim();
+  const setorNorm = normalize(setorRaw);
+  if (setorNorm === 'outros') return true;
+  if (setorNorm === 'nao considerar na meta') return true;
+  if (!setorRaw) {
+    if (!isRecursoPcp(item.Recurso ?? item['Recurso'])) return true;
+  }
+  return false;
+}
+
+function snapshotLinha(item: ProcessedItem) {
+  return {
+    observacoes: item.Observacoes,
+    previsao: item.Previsao,
+    pd: item.PD,
+    cod: item.Cod,
+    descricao: item['Descricao do produto'],
+    setor: item['Setor de Producao'],
+    recurso: item.Recurso,
+    tipoF: item.tipoF,
+    originalQty: item.originalQty,
+    qtyToProduce: item.qtyToProduce,
+    fulfilledByStock: item.fulfilledByStock,
+  };
+}
+
+/** Conflito: mesma carrada (Observações/rota) com tipo Carradas e mais de uma previsão. */
+type CarradasConflict = {
+  observacoes: string;
+  datas: string[];
+  itens: { pd: string; previsao: string }[];
+};
+
+function dedupeLinhasParaSalvar(items: ProcessedItem[]): ProcessedItem[] {
+  const map = new Map<string, ProcessedItem>();
+  for (const it of items) {
+    const k = `${String(it.idChave ?? it.id)}|${String(it.Observacoes)}|${String(it.Previsao)}|${String(it.Cod)}`;
+    if (!map.has(k)) map.set(k, it);
+  }
+  return [...map.values()];
+}
+
+function validarCarradasMesmaDataPorCarrada(items: ProcessedItem[]): CarradasConflict[] {
+  const carradas = items.filter((i) => normalize(String(i.tipoF ?? '')) === 'carradas');
+  const byObs = new Map<string, ProcessedItem[]>();
+  for (const it of carradas) {
+    const key = String(it.Observacoes ?? '').trim() || '(sem observação de rota)';
+    const list = byObs.get(key) ?? [];
+    list.push(it);
+    byObs.set(key, list);
+  }
+  const conflicts: CarradasConflict[] = [];
+  for (const [obs, group] of byObs) {
+    const datas = new Set(group.map((g) => String(g.Previsao ?? '').trim()).filter(Boolean));
+    if (datas.size <= 1) continue;
+    const datasSorted = [...datas].sort((a, b) => parsePtBrDateSafe(a).getTime() - parsePtBrDateSafe(b).getTime());
+    conflicts.push({
+      observacoes: obs,
+      datas: datasSorted,
+      itens: group.map((g) => ({
+        pd: String(g.PD ?? ''),
+        previsao: String(g.Previsao ?? ''),
+      })),
+    });
+  }
+  return conflicts;
+}
+
+export type ProgramacaoSetorialPageProps = {
+  /** Chamado após gravar com sucesso no painel principal (lista de programações). */
+  onProgramacaoSalva?: () => void;
+};
+
+export default function ProgramacaoSetorialPage({ onProgramacaoSalva }: ProgramacaoSetorialPageProps) {
   const [planningData, setPlanningData] = useState<PlanningRow[]>([]);
   const [stockData, setStockData] = useState<Record<string, number>>({});
   const [activeTab, setActiveTab] = useState<'planning' | 'fulfilled'>('planning');
@@ -97,29 +178,14 @@ export default function ProgramacaoSetorialPage() {
     codigos: [],
   });
 
-  const [printVersions, setPrintVersions] = useState<Record<string, number>>({});
-  const [logoBase64, setLogoBase64] = useState<string | null>(null);
-
-  // Modal de impressão
-  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
-  const [consolidatedStart, setConsolidatedStart] = useState<string>('');
-  const [consolidatedEnd, setConsolidatedEnd] = useState<string>('');
-
-  useEffect(() => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.src = LOGO_URL;
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, 0, 0);
-        setLogoBase64(canvas.toDataURL('image/png'));
-      }
-    };
-  }, []);
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [saveNome, setSaveNome] = useState('');
+  const [saveObservacao, setSaveObservacao] = useState('');
+  const [saveSaving, setSaveSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveOkMessage, setSaveOkMessage] = useState<string | null>(null);
+  const [carradasErroOpen, setCarradasErroOpen] = useState(false);
+  const [carradasErroConflicts, setCarradasErroConflicts] = useState<CarradasConflict[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -213,14 +279,34 @@ export default function ProgramacaoSetorialPage() {
         if (item.PD && !String(groups[key].PD || '').includes(item.PD)) {
           groups[key].PD = groups[key].PD ? `${groups[key].PD}, ${item.PD}` : item.PD;
         }
+        // Recurso: necessário para o setor "Corte e Dobra" (PCP). Se o primeiro item não tinha PCP, outro da mesma chave pode ter.
+        if (isRecursoPcp(item.Recurso)) {
+          groups[key].Recurso = item.Recurso;
+        } else if (!isRecursoPcp(groups[key].Recurso) && item.Recurso != null && String(item.Recurso).trim() !== '') {
+          groups[key].Recurso = item.Recurso;
+        }
       }
     }
     return Object.values(groups);
   }, [processedItems]);
 
+  const aglutinatedItemsFiltrados = useMemo(
+    () => aglutinatedItems.filter((item) => !linhaExcluidaProgramacaoSetorial(item)),
+    [aglutinatedItems],
+  );
+
   const sectors = useMemo(() => {
-    const uniqueSectors = Array.from(new Set(planningData.map((item) => String(item['Setor de Producao'] || ''))));
-    return ['Geral', 'Corte e Dobra', ...uniqueSectors.filter((s) => s && s !== 'undefined' && s.trim() !== '')];
+    const seen = new Set<string>();
+    for (const item of planningData) {
+      const s = String(item['Setor de Producao'] ?? '').trim();
+      if (!s || s === 'undefined') continue;
+      const n = normalize(s);
+      if (n === 'outros') continue;
+      if (n === 'nao considerar na meta') continue;
+      seen.add(s);
+    }
+    const rest = [...seen].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    return ['Geral', 'Corte e Dobra', ...rest];
   }, [planningData]);
 
   const filterByRules = (items: ProcessedItem[], sector: string, start: string, end: string) => {
@@ -238,12 +324,7 @@ export default function ProgramacaoSetorialPage() {
 
     if (sector !== 'Geral') {
       if (sector === 'Corte e Dobra') {
-        const excludedSectors = ['Móveis de aço', 'Móveis em melamínico', 'Cadeiras', 'Bebedouros', 'Fogões'].map((s) => normalize(s));
-        result = result.filter((item) => {
-          const itemSector = normalize(String(item['Setor de Producao'] || ''));
-          const itemDesc = normalize(String(item['Descricao do produto'] || ''));
-          return !excludedSectors.includes(itemSector) && !itemDesc.includes('estante') && !itemDesc.includes('compensado');
-        });
+        result = result.filter((item) => isRecursoPcp(item.Recurso ?? item['Recurso']));
       } else {
         result = result.filter((item) => String(item['Setor de Producao']) === sector);
       }
@@ -251,11 +332,7 @@ export default function ProgramacaoSetorialPage() {
       const desc = (item: ProcessedItem) => String(item['Descricao do produto'] || '').toLowerCase();
       const sectorNorm = normalize(sector);
 
-      if (sectorNorm === 'outros') {
-        result = result.filter((item) => !desc(item).includes('estante'));
-      } else if (sectorNorm === 'nao considerar na meta') {
-        result = result.filter((item) => !desc(item).includes('coluna para estante') && !desc(item).includes('compensado'));
-      } else if (sectorNorm.includes('porta-palete') || sectorNorm.includes('porta palete')) {
+      if (sectorNorm.includes('porta-palete') || sectorNorm.includes('porta palete')) {
         result = result.filter((item) => !desc(item).toUpperCase().startsWith('PORTA PALETE'));
       }
     }
@@ -263,122 +340,103 @@ export default function ProgramacaoSetorialPage() {
     return result;
   };
 
-  const currentDisplayList = useMemo(() => filterByRules(aglutinatedItems, selectedSector, startDate, endDate), [aglutinatedItems, selectedSector, startDate, endDate]);
-  const planningList = currentDisplayList.filter((item) => item.qtyToProduce > 0);
-  const fulfilledList = currentDisplayList.filter((item) => item.fulfilledByStock > 0);
+  /** Filtro de setor (e período): apenas a tabela; não restringe o registro salvo. */
+  const listaVisual = useMemo(
+    () => filterByRules(aglutinatedItemsFiltrados, selectedSector, startDate, endDate),
+    [aglutinatedItemsFiltrados, selectedSector, startDate, endDate],
+  );
 
-  const handlePrint = () => {
-    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  /** Programação total a gravar: todos os setores, mesmo período (regras como setor "Geral"). */
+  const listaParaSalvarBase = useMemo(
+    () => filterByRules(aglutinatedItemsFiltrados, 'Geral', startDate, endDate),
+    [aglutinatedItemsFiltrados, startDate, endDate],
+  );
 
-    const currentSector = selectedSector;
-    const currentVersion = (printVersions[currentSector] || 0) + 1;
-    setPrintVersions((prev) => ({ ...prev, [currentSector]: currentVersion }));
+  const planningList = listaVisual.filter((item) => item.qtyToProduce > 0);
+  const fulfilledList = listaVisual.filter((item) => item.fulfilledByStock > 0);
 
-    const now = new Date();
-    const dateStr = now.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
-    const periodStr = startDate && endDate ? `${startDate} a ${endDate}` : 'Período Completo';
-    const consolidatedPeriodStr = consolidatedStart && consolidatedEnd ? `${consolidatedStart} a ${consolidatedEnd}` : 'Período Completo';
+  const planningListParaSalvar = listaParaSalvarBase.filter((item) => item.qtyToProduce > 0);
+  const fulfilledListParaSalvar = listaParaSalvarBase.filter((item) => item.fulfilledByStock > 0);
 
-    const itemsToPrintMain = planningList;
-    const itemsForConsolidatedRaw = filterByRules(aglutinatedItems, selectedSector, consolidatedStart, consolidatedEnd).filter((i) => i.qtyToProduce > 0);
+  const podeSalvar = hasLoadedData && (planningListParaSalvar.length > 0 || fulfilledListParaSalvar.length > 0);
 
-    const consolidatedMap: Record<string, { cod: string; desc: string; total: number }> = {};
-    for (const item of itemsForConsolidatedRaw) {
-      const cod = String(item.Cod || '');
-      if (!consolidatedMap[cod]) consolidatedMap[cod] = { cod, desc: String(item['Descricao do produto'] || ''), total: 0 };
-      consolidatedMap[cod].total += item.qtyToProduce;
+  function abrirModalSalvar() {
+    setSaveError(null);
+    setSaveOkMessage(null);
+    setCarradasErroOpen(false);
+    setCarradasErroConflicts([]);
+    const sugestao = `Programação setorial — ${new Date().toLocaleString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })}`;
+    setSaveNome(sugestao);
+    setSaveObservacao('');
+    setSaveModalOpen(true);
+  }
+
+  async function confirmarSalvarProgramacao() {
+    const nome = saveNome.trim();
+    if (!nome) {
+      setSaveError('Informe um nome para a programação.');
+      return;
     }
+    const linhasParaValidar = dedupeLinhasParaSalvar([...planningListParaSalvar, ...fulfilledListParaSalvar]);
+    const conflitosCarradas = validarCarradasMesmaDataPorCarrada(linhasParaValidar);
+    if (conflitosCarradas.length > 0) {
+      setCarradasErroConflicts(conflitosCarradas);
+      setCarradasErroOpen(true);
+      setSaveModalOpen(false);
+      return;
+    }
+    setSaveSaving(true);
+    setSaveError(null);
+    try {
+      const dadosProgramacao = {
+        versao: 1 as const,
+        geradoEm: new Date().toISOString(),
+        filtros: {
+          observacoesParam,
+          selectedSector,
+          startDate,
+          endDate,
+          showPD,
+        },
+        abaAtiva: activeTab,
+        linhasProgramacao: planningListParaSalvar.map(snapshotLinha),
+        linhasEstoqueAtendido: fulfilledListParaSalvar.map(snapshotLinha),
+      };
+      await criarProgramacaoSetorialRegistro({
+        nome,
+        observacao: saveObservacao.trim() || null,
+        dadosProgramacao,
+      });
+      setSaveModalOpen(false);
+      setSaveOkMessage('Programação registrada no painel.');
+      onProgramacaoSalva?.();
+      window.setTimeout(() => setSaveOkMessage(null), 4000);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaveSaving(false);
+    }
+  }
 
-    const consolidatedFinalList = Object.values(consolidatedMap).sort((a, b) => a.desc.localeCompare(b.desc));
-    const grandTotal = consolidatedFinalList.reduce((acc, curr) => acc + curr.total, 0);
-
-    const drawPageHeader = (title: string, subtitle: string) => {
-      if (logoBase64) {
-        doc.addImage(logoBase64, 'PNG', 14, 8, 30, 10);
-      }
-      doc.setFontSize(14);
-      doc.setTextColor(0, 26, 61);
-      doc.text(title, 46, 13);
-      doc.setFontSize(9);
-      doc.text(`Impresso em: ${dateStr} | Versão: V.${currentVersion}`, 46, 18);
-      doc.text(subtitle, 46, 22);
-    };
-
-    // Página principal
-    drawPageHeader(`Programação de Produção - ${currentSector}`, `Período Programação: ${periodStr}`);
-
-    const headers = [['Observações', 'Previsão', 'Cód', 'Descrição do Produto', 'Qtde Real', 'Obs. Produção']];
-    if (showPD) headers[0].splice(2, 0, 'PD');
-
-    const body = itemsToPrintMain.map((item) => {
-      const row = [
-        String(item.Observacoes || ''),
-        String(item.Previsao || ''),
-        String(item.Cod || ''),
-        String(item['Descricao do produto'] || ''),
-        String(item.qtyToProduce ?? ''),
-        '',
-      ];
-      if (showPD) row.splice(2, 0, String(item.PD || ''));
-      return row;
-    });
-
-    const descColIdx = showPD ? 4 : 3;
-    const codColIdx = showPD ? 3 : 2;
-    const pdColIdx = showPD ? 2 : -1;
-    const qtyColIdx = showPD ? 5 : 4;
-    const obsProdColIdx = showPD ? 6 : 5;
-
-    autoTable(doc as any, {
-      startY: 30,
-      head: headers,
-      body,
-      theme: 'grid',
-      headStyles: { fillColor: [0, 26, 61], textColor: [255, 255, 255], fontStyle: 'bold' },
-      styles: { fontSize: 9.5, cellPadding: 2, overflow: 'linebreak' },
-      columnStyles: {
-        0: { cellWidth: 40 },
-        1: { cellWidth: 20 },
-        [codColIdx]: { cellWidth: 22 },
-        [descColIdx]: { cellWidth: 'auto' },
-        [qtyColIdx]: { cellWidth: 15, halign: 'center' },
-        [obsProdColIdx]: { cellWidth: 35 },
-        ...(showPD ? { [pdColIdx]: { cellWidth: 18 } } : {}),
-      },
-    });
-
-    // Consolidação
-    doc.addPage();
-    drawPageHeader(`CONSOLIDAÇÃO DA PROGRAMAÇÃO - ${currentSector}`, `Resumo Totalizador | Período: ${consolidatedPeriodStr}`);
-
-    const consolidatedHeaders = [['Cód', 'Descrição do Produto', 'Total a Produzir']];
-    const consolidatedBody: any[][] = consolidatedFinalList.map((item) => [item.cod, item.desc, item.total.toString()]);
-    consolidatedBody.push([
-      { content: 'TOTAL GERAL', colSpan: 2, styles: { halign: 'right', fontStyle: 'bold', fillColor: [240, 240, 240] } },
-      { content: grandTotal.toString(), styles: { halign: 'right', fontStyle: 'bold', fillColor: [240, 240, 240] } },
-    ]);
-
-    autoTable(doc as any, {
-      startY: 28,
-      head: consolidatedHeaders,
-      body: consolidatedBody,
-      theme: 'grid',
-      headStyles: { fillColor: [242, 169, 0], textColor: [0, 26, 61], fontStyle: 'bold' },
-      styles: { fontSize: 11, cellPadding: 3, overflow: 'linebreak' },
-      columnStyles: {
-        0: { cellWidth: 30 },
-        1: { cellWidth: 'auto' },
-        2: { cellWidth: 35, halign: 'right', fontStyle: 'bold' },
-      },
-    });
-
-    doc.save(`programacao_${currentSector}_V${currentVersion}.pdf`);
-    setIsPrintModalOpen(false);
-  };
+  useEffect(() => {
+    if (sectors.length > 0 && !sectors.includes(selectedSector)) {
+      setSelectedSector('Geral');
+    }
+  }, [sectors, selectedSector]);
 
   const labelClass = 'block text-xs text-slate-500 dark:text-slate-400 mb-1';
   const inputClass =
     'w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-600 focus:border-transparent';
+
+  /** Mesmo tamanho/estilo dos botões Carregar informações e Salvar programação. */
+  const btnAcaoPrimariaClass =
+    'inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed w-full sm:w-auto';
 
   return (
     <div className="p-6 flex flex-col min-h-0 font-sans">
@@ -408,7 +466,21 @@ export default function ProgramacaoSetorialPage() {
         </button>
       </div>
 
-      <div className="mb-3 flex justify-end">
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+        {saveOkMessage && !mostrarFaixas && (
+          <span className="text-sm text-emerald-700 dark:text-emerald-400 font-medium order-first sm:order-none">{saveOkMessage}</span>
+        )}
+        {!mostrarFaixas && (
+          <button
+            type="button"
+            onClick={abrirModalSalvar}
+            disabled={!podeSalvar}
+            className={btnAcaoPrimariaClass}
+            title={!hasLoadedData ? 'Carregue as informações primeiro' : !podeSalvar ? 'Não há linhas para salvar' : 'Registrar no painel de programações'}
+          >
+            Salvar programação
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setMostrarFaixas((v) => !v)}
@@ -433,50 +505,108 @@ export default function ProgramacaoSetorialPage() {
         </button>
       </div>
 
-      {/* Modal de impressão */}
-      {isPrintModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60">
+      {/* Modal salvar */}
+      {saveModalOpen && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-black/60">
           <div className="w-full max-w-lg rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 shadow-xl overflow-hidden">
             <div className="bg-primary-700 text-white px-5 py-4 flex items-center justify-between">
-              <h3 className="font-semibold">Configuração de Impressão</h3>
-              <button type="button" onClick={() => setIsPrintModalOpen(false)} className="rounded p-1 hover:bg-white/10" aria-label="Fechar">
+              <h3 className="font-semibold">Salvar programação</h3>
+              <button
+                type="button"
+                onClick={() => !saveSaving && setSaveModalOpen(false)}
+                className="rounded p-1 hover:bg-white/10"
+                aria-label="Fechar"
+              >
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="18" y1="6" x2="6" y2="18" />
                   <line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
               </button>
             </div>
-            <div className="p-5 space-y-5">
-              <section className="space-y-2">
-                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wide">Período Programação Normal</label>
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[11px] text-slate-500">Início</span>
-                    <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm" />
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[11px] text-slate-500">Término</span>
-                    <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm" />
-                  </label>
-                </div>
-              </section>
+            <div className="p-5 space-y-4">
+              {saveError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{saveError}</div>}
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wide">Nome (aparece na tela principal)</span>
+                <input
+                  type="text"
+                  value={saveNome}
+                  readOnly
+                  aria-readonly="true"
+                  tabIndex={-1}
+                  className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900/50 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm cursor-default select-all"
+                  disabled={saveSaving}
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wide">Observação (opcional)</span>
+                <textarea
+                  value={saveObservacao}
+                  onChange={(e) => setSaveObservacao(e.target.value)}
+                  rows={3}
+                  className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm resize-y min-h-[72px]"
+                  disabled={saveSaving}
+                />
+              </label>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Será registrada no painel &quot;Programações Setoriais&quot; com os dados da tabela atual (programação e estoque atendido), filtros e parâmetros.
+              </p>
+              <button
+                type="button"
+                onClick={() => void confirmarSalvarProgramacao()}
+                disabled={saveSaving}
+                className="w-full bg-primary-600 hover:bg-primary-700 text-white rounded-lg py-3 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saveSaving ? 'Salvando...' : 'Confirmar e registrar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
-              <section className="space-y-2">
-                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wide">Período Consolidado (Última Folha)</label>
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[11px] text-slate-500">Início</span>
-                    <input type="date" value={consolidatedStart} onChange={(e) => setConsolidatedStart(e.target.value)} className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm" />
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[11px] text-slate-500">Término</span>
-                    <input type="date" value={consolidatedEnd} onChange={(e) => setConsolidatedEnd(e.target.value)} className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm" />
-                  </label>
-                </div>
-              </section>
-
-              <button type="button" onClick={handlePrint} className="w-full bg-primary-600 hover:bg-primary-700 text-white rounded-lg py-3 font-semibold">
-                Confirmar e Gerar PDF
+      {carradasErroOpen && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center p-4 bg-black/60">
+          <div className="w-full max-w-lg max-h-[85vh] rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 shadow-xl overflow-hidden flex flex-col">
+            <div className="bg-amber-700 text-white px-5 py-4 flex items-center justify-between shrink-0">
+              <h3 className="font-semibold">Datas inconsistentes (Carradas)</h3>
+              <button
+                type="button"
+                onClick={() => setCarradasErroOpen(false)}
+                className="rounded p-1 hover:bg-white/10"
+                aria-label="Fechar"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto space-y-4 text-sm text-slate-700 dark:text-slate-200">
+              <p>
+                Para pedidos com tipo <strong>Carradas</strong>, todos os itens da mesma carrada (mesma observação de rota) precisam ter a <strong>mesma previsão</strong>. Corrija as datas ou os filtros e salve novamente.
+              </p>
+              <ul className="space-y-4 list-none">
+                {carradasErroConflicts.map((c) => (
+                  <li key={c.observacoes} className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-950/30 p-3">
+                    <div className="font-semibold text-amber-900 dark:text-amber-200">Carrada: {c.observacoes}</div>
+                    <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">Datas encontradas: {c.datas.join(' · ')}</div>
+                    <ul className="mt-2 space-y-1.5 text-xs border-t border-amber-200/60 dark:border-amber-800/60 pt-2">
+                      {c.itens.map((it, idx) => (
+                        <li key={`${it.pd}-${it.previsao}-${idx}`}>
+                          PD <span className="font-mono">{it.pd || '—'}</span>
+                          {' — '}
+                          previsão <span className="font-medium">{it.previsao || '—'}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                onClick={() => setCarradasErroOpen(false)}
+                className="w-full bg-slate-700 hover:bg-slate-800 dark:bg-slate-600 text-white rounded-lg py-2.5 font-semibold"
+              >
+                Fechar
               </button>
             </div>
           </div>
@@ -491,29 +621,39 @@ export default function ProgramacaoSetorialPage() {
         )}
         {mostrarFaixas && (
           <>
-            <div className="mb-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Seleciona Parâmetros</p>
-              <div className="flex flex-wrap items-end gap-3">
-                <MultiSelectWithSearch
-                  label="Observações"
-                  placeholder={loadingParams ? 'Carregando...' : 'Todas'}
-                  options={opcoes.rotas}
-                  value={observacoesParam}
-                  onChange={setObservacoesParam}
-                  labelClass={labelClass}
-                  inputClass={inputClass}
-                  minWidth="260px"
-                  optionLabel="observações"
-                />
-                <button
-                  type="button"
-                  onClick={handleCarregarDados}
-                  disabled={loadingData || loadingParams}
-                  className="relative overflow-hidden inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {loadingData ? 'Carregando dados...' : 'Carregar informações'}
-                  {loadingData && <span className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/20 to-transparent" />}
-                </button>
+            <div className="mb-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 sm:p-5 shadow-sm">
+              <div className="mb-4 pb-3 border-b border-slate-100 dark:border-slate-700/80">
+                <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 tracking-tight">Seleciona parâmetros</h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed max-w-3xl">
+                  Defina as <strong className="font-medium text-slate-600 dark:text-slate-300">observações / rotas</strong> para buscar no servidor e clique em{' '}
+                  <span className="whitespace-nowrap">Carregar informações</span>. O filtro de setor abaixo atua só na tabela após o carregamento.
+                </p>
+              </div>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
+                <div className="min-w-0 flex-1 w-full sm:max-w-2xl">
+                  <MultiSelectWithSearch
+                    label="Observações (rotas)"
+                    placeholder={loadingParams ? 'Carregando...' : 'Todas'}
+                    options={opcoes.rotas}
+                    value={observacoesParam}
+                    onChange={setObservacoesParam}
+                    labelClass={labelClass}
+                    inputClass={inputClass}
+                    minWidth="100%"
+                    optionLabel="observações"
+                  />
+                </div>
+                <div className="flex shrink-0 w-full sm:w-auto sm:justify-end sm:pb-0.5">
+                  <button
+                    type="button"
+                    onClick={handleCarregarDados}
+                    disabled={loadingData || loadingParams}
+                    className={`relative overflow-hidden ${btnAcaoPrimariaClass}`}
+                  >
+                    {loadingData ? 'Carregando dados...' : 'Carregar informações'}
+                    {loadingData && <span className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/20 to-transparent" />}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -537,9 +677,13 @@ export default function ProgramacaoSetorialPage() {
             )}
 
             <div
-              className={`mb-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-4 flex flex-wrap gap-4 items-end justify-between ${loadingData ? 'opacity-60 pointer-events-none' : ''}`}
+              className={`mb-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-4 flex flex-col gap-3 ${loadingData ? 'opacity-60 pointer-events-none' : ''}`}
             >
-              <div className="flex flex-wrap gap-4 items-end">
+              <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                O <strong>setor</strong> escolhido filtra só a tabela. Ao salvar, a programação registrada inclui <strong>todos os setores</strong>, respeitando o período de datas (e as observações usadas ao carregar).
+              </p>
+              <div className="flex flex-wrap items-end justify-between gap-4 w-full">
+              <div className="flex flex-wrap gap-4 items-end min-w-0 flex-1">
                 <label className="flex flex-col gap-1 min-w-[240px]">
                   <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Setor</span>
                   <select value={selectedSector} onChange={(e) => setSelectedSector(e.target.value)} className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm">
@@ -556,31 +700,50 @@ export default function ProgramacaoSetorialPage() {
                     <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Início</span>
                     <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm" />
                   </label>
-                  <span className="text-slate-400 font-bold">→</span>
+                  <span className="text-slate-400 font-bold pb-2">→</span>
                   <label className="flex flex-col gap-1">
                     <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Fim</span>
                     <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm" />
                   </label>
                 </div>
 
-                <label className="flex items-center gap-2 cursor-pointer select-none px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800">
-                  <input type="checkbox" checked={showPD} onChange={(e) => setShowPD(e.target.checked)} className="w-4 h-4 rounded text-primary-600 focus:ring-primary-500" />
-                  <span className="text-sm font-medium text-slate-800 dark:text-slate-200">Mostrar PD</span>
-                </label>
+                <div className="flex flex-col gap-1.5 min-w-[200px]">
+                  <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Exibir Pedidos</span>
+                  <div className="flex items-center gap-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={showPD}
+                      aria-label={showPD ? 'Exibir coluna de pedidos: ativado' : 'Exibir coluna de pedidos: desativado'}
+                      onClick={() => setShowPD((v) => !v)}
+                      className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-800 ${
+                        showPD ? 'bg-primary-600' : 'bg-slate-300 dark:bg-slate-600'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow ring-0 transition-transform duration-200 ease-in-out ${
+                          showPD ? 'translate-x-5' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{showPD ? 'Sim' : 'Não'}</span>
+                  </div>
+                </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setConsolidatedStart(startDate);
-                  setConsolidatedEnd(endDate);
-                  setIsPrintModalOpen(true);
-                }}
-                disabled={!hasLoadedData || planningList.length === 0}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Imprimir PDF
-              </button>
+              <div className="flex flex-col items-end gap-2 shrink-0 w-full sm:w-auto sm:ml-auto">
+                {saveOkMessage && <span className="text-sm text-emerald-700 dark:text-emerald-400 font-medium text-right">{saveOkMessage}</span>}
+                <button
+                  type="button"
+                  onClick={abrirModalSalvar}
+                  disabled={!podeSalvar}
+                  className={btnAcaoPrimariaClass}
+                  title={!hasLoadedData ? 'Carregue as informações primeiro' : !podeSalvar ? 'Não há linhas para salvar' : 'Registrar no painel de programações'}
+                >
+                  Salvar programação
+                </button>
+              </div>
+              </div>
             </div>
           </>
         )}
@@ -659,6 +822,7 @@ export default function ProgramacaoSetorialPage() {
             </table>
           </div>
         </div>
+
       </>
     </div>
   );
