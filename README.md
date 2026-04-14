@@ -257,7 +257,7 @@ npm run test
 3. Se o backend estiver em outra porta, no log aparecerá:  
    `[startup] Backend na porta X. Proxy e wait-on esperam 4000 — use APP_PORT=4000 ou rode "npm run dev" na raiz.`
 
-**Resumo:** Para desenvolvimento com interno + três externos (5180 + 5173+5174+5051), use **sempre** `npm run dev` na **pasta raiz**. O backend sobe na 4000, o wait-on espera o `/health` na 4000 e só então sobem os frontends; o watchdog testa ping/login e reinicia o backend se falhar.
+**Resumo:** Para desenvolvimento com interno + três externos (5180 + 5173+5174+5051), use **sempre** `npm run dev` na **pasta raiz**. O backend sobe na 4000 e os frontends sobem **em paralelo** (a página abre logo; se a API ainda não estiver pronta, aparece “servidor offline” até o `/health` responder). O watchdog testa ping/login e reinicia o backend se falhar. (Script opcional: `npm run dev:wait-fe` só sobe o Vite depois do `/health`.)
 
 ### Erro 500 vira 503 no navegador
 

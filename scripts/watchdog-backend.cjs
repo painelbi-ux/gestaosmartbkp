@@ -98,7 +98,7 @@ async function runCheck() {
 }
 
 function main() {
-  const FIRST_CHECK_DELAY_MS = 12 * 1000; // primeiro check após 12s (backend já subiu pelo wait-on)
+  const FIRST_CHECK_DELAY_MS = 20 * 1000; // primeiro check após cold start (backend sobe em paralelo com o Vite)
   console.log('[watchdog] Ativo: testando ping e login a cada', INTERVAL_MS / 1000, 's. Falha = reinicia backend.');
   setTimeout(() => {
     runCheck();

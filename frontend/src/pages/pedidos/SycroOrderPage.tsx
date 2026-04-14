@@ -324,6 +324,9 @@ export default function SycroOrderPage() {
   const [modalEditarTagDisponivel, setModalEditarTagDisponivel] = useState<boolean | null>(null);
   const [tagLoadingOrderId, setTagLoadingOrderId] = useState<number | null>(null);
   const [modalHistorico, setModalHistorico] = useState<Order | null>(null);
+  /** Evita aplicar resposta de um fetch antigo se o usuário trocar de card antes de concluir. */
+  const historicoSeqRef = useRef(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [modalNotif, setModalNotif] = useState(false);
   const [notifFilter, setNotifFilter] = useState<'todas' | 'lidas' | 'nao_lidas'>('nao_lidas');
   const [notifTogglingId, setNotifTogglingId] = useState<number | null>(null);
@@ -479,13 +482,27 @@ export default function SycroOrderPage() {
   };
 
 
+  const fecharModalHistorico = useCallback(() => {
+    historicoSeqRef.current += 1;
+    setModalHistorico(null);
+    setHistoryLoading(false);
+    setHistory([]);
+  }, []);
+
   const abrirHistorico = async (order: Order) => {
+    const seq = ++historicoSeqRef.current;
     setModalHistorico(order);
+    setHistoryLoading(true);
+    setHistory([]);
     try {
       const list = await getSycroOrderHistory(order.id);
+      if (seq !== historicoSeqRef.current) return;
       setHistory(list);
     } catch {
+      if (seq !== historicoSeqRef.current) return;
       setHistory([]);
+    } finally {
+      if (seq === historicoSeqRef.current) setHistoryLoading(false);
     }
   };
 
@@ -517,7 +534,7 @@ export default function SycroOrderPage() {
   const abrirAtualizarDoHistorico = () => {
     const o = modalHistorico;
     if (!o || o.can_respond === false) return;
-    setModalHistorico(null);
+    fecharModalHistorico();
     setModalEditarTagDisponivel(null);
     setModalEditar(o);
     setSycroOrderRead(o.id, true).then(() => carregar()).catch(() => {});
@@ -1035,7 +1052,8 @@ export default function SycroOrderPage() {
                                 'Respondido'
                               )}
                             </p>
-                            {o.carradas_info && o.carradas_info.length > 1 ? (
+                            {/* Rota/carrada atual vem do Gerenciador (carradas_info); delivery_method é só snapshot na criação e fica desatualizado após troca de carrada */}
+                            {o.carradas_info && o.carradas_info.length > 0 ? (
                               <div className="mt-1 space-y-0.5">
                                 {o.carradas_info.map((c) => (
                                   <p key={`${o.id}-${c.rota}`} className="text-xs text-slate-600 dark:text-slate-400">
@@ -1067,7 +1085,7 @@ export default function SycroOrderPage() {
                               )}
                             </div>
                             <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">Data original: {formatDate(o.data_original ?? o.current_promised_date)}</p>
-                            {(!o.carradas_info || o.carradas_info.length <= 1) && (
+                            {(!o.carradas_info || o.carradas_info.length === 0) && (
                               <p className="text-xs text-slate-500 dark:text-slate-500">Previsão atual: {formatDate(o.previsao_atual ?? o.current_promised_date)}</p>
                             )}
                             <p className="text-xs text-slate-500 dark:text-slate-500">Criador: {o.creator_name ?? '—'}</p>
@@ -1150,7 +1168,7 @@ export default function SycroOrderPage() {
       {modalHistorico && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
-          onClick={() => setModalHistorico(null)}
+          onClick={fecharModalHistorico}
           role="dialog"
           aria-modal="true"
           aria-labelledby="modal-historico-title"
@@ -1177,7 +1195,7 @@ export default function SycroOrderPage() {
                 )}
                 <button
                   type="button"
-                  onClick={() => setModalHistorico(null)}
+                  onClick={fecharModalHistorico}
                   className="rounded-lg p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition"
                   aria-label="Fechar"
                 >
@@ -1186,7 +1204,32 @@ export default function SycroOrderPage() {
               </div>
             </div>
             <div className="px-6 py-4 overflow-y-auto flex-1 min-h-0">
-              {history.length === 0 ? (
+              {historyLoading ? (
+                <div
+                  className="flex flex-col items-center justify-center gap-3 py-12 text-slate-600 dark:text-slate-400"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <svg
+                    className="h-8 w-8 animate-spin text-primary-600 dark:text-primary-400"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    aria-hidden
+                  >
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    />
+                  </svg>
+                  <p className="text-sm font-medium">Carregando informações…</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-500 text-center max-w-xs">
+                    Aguarde o histórico completo antes de decidir ou fechar.
+                  </p>
+                </div>
+              ) : history.length === 0 ? (
                 <p className="text-slate-500 dark:text-slate-400 text-sm">Nenhum registro.</p>
               ) : (
                 <ul className="space-y-4">
@@ -1258,20 +1301,12 @@ export default function SycroOrderPage() {
                             <p className="text-sm text-slate-700 dark:text-slate-300 font-medium">
                               Data original: {formatDate(modalHistorico.data_original ?? modalHistorico.current_promised_date)}
                             </p>
-                            {modalHistorico.carradas_info && modalHistorico.carradas_info.length > 0 ? (
-                              <div className="mt-1 space-y-0.5">
-                                {modalHistorico.carradas_info.map((c) => (
-                                  <p key={`hist-create-${modalHistorico.id}-${c.rota}`} className="text-sm text-slate-700 dark:text-slate-300 font-medium">
-                                    {c.rota}: {formatDate(c.previsao_atual ?? modalHistorico.previsao_atual ?? modalHistorico.current_promised_date)}
-                                    {c.codigos.length > 0 ? ` • Cód. ${c.codigos.join(', ')}` : ''}
-                                  </p>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-sm text-slate-700 dark:text-slate-300 font-medium">
-                                Previsão atual: {formatDate(modalHistorico.previsao_atual ?? modalHistorico.current_promised_date)}
-                              </p>
-                            )}
+                            <p className="text-sm text-slate-700 dark:text-slate-300 font-medium mt-0.5">
+                              Carrada / forma na criação do card: {modalHistorico.delivery_method}
+                            </p>
+                            <p className="text-sm text-slate-700 dark:text-slate-300 font-medium">
+                              Previsão atual: {formatDate(modalHistorico.previsao_atual ?? modalHistorico.current_promised_date)}
+                            </p>
                           </div>
                         ) : (
                           isUpdate ? (

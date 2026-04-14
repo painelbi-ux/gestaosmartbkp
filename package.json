@@ -4,8 +4,9 @@
   "description": "Gestor de Pedidos — interno: 5180, externos: 5173+5174+5051, API: 4000.",
   "scripts": {
     "predev": "node scripts/kill-ports.cjs",
-    "dev": "concurrently -k -n api,fe,watchdog -c blue,green,magenta \"npm run dev:backend\" \"npm run dev:wait-fe\" \"node scripts/watchdog-backend.cjs\"",
-    "dev:wait-fe": "wait-on -t 45000 http://127.0.0.1:4000/health && concurrently -n interno,p5173,p5174,p5051 -c green,yellow,blue,magenta \"npm run dev:frontend\" \"npm run dev:frontend:5173\" \"npm run dev:frontend:5174\" \"npm run dev:frontend:5051\"",
+    "dev": "concurrently -k -n api,fe,watchdog -c blue,green,magenta \"npm run dev:backend\" \"npm run dev:fe-all\" \"node scripts/watchdog-backend.cjs\"",
+    "dev:fe-all": "concurrently -n interno,p5173,p5174,p5051 -c green,yellow,blue,magenta \"npm run dev:frontend\" \"npm run dev:frontend:5173\" \"npm run dev:frontend:5174\" \"npm run dev:frontend:5051\"",
+    "dev:wait-fe": "wait-on -t 45000 http://127.0.0.1:4000/health && npm run dev:fe-all",
     "dev:full": "npm install && npm run dev:full:backend && npm run dev:full:frontend && npm run dev",
     "dev:full:backend": "npm install --prefix backend && npm run generate --prefix backend",
     "dev:full:frontend": "npm install --prefix frontend",

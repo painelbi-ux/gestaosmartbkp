@@ -75,6 +75,77 @@ function parseJsonArray(value: string | null | undefined): string[] | null {
   }
 }
 
+/** Primeiro valor não vazio entre várias chaves possíveis (colunas variam na origem SQL). */
+function getFieldFromRow(row: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const v = row[k];
+    if (v != null && String(v).trim()) return String(v).trim();
+  }
+  return '';
+}
+
+/**
+ * Cliente e vendedor são atributos do pedido (PD), não da linha selecionada no card.
+ * Usar sempre todas as linhas do PD no Gerenciador — não `relevantRows` filtrado por item_ids_json,
+ * pois IDs desatualizados ou incompatíveis deixavam o filtro vazio e sumiam os nomes na capa.
+ */
+function pickFirstDistinctFromRows(
+  rows: Array<Record<string, unknown>>,
+  keys: string[]
+): string | null {
+  const values = rows.map((r) => getFieldFromRow(r, keys)).filter(Boolean);
+  return values.length > 0 ? [...new Set(values)][0]! : null;
+}
+
+/**
+ * Chave canônica pedido+item (alinhada a pedidosRepository) para casar id_pedido quando o ERP
+ * altera o prefixo (ex.: troca de romaneio/carrada na chave).
+ */
+function chavePedidoItem(id: string): string {
+  const parts = String(id ?? '')
+    .trim()
+    .split('-');
+  if (parts.length >= 3) {
+    const pedido = parts[parts.length - 2]!.trim();
+    const itemStr = parts[parts.length - 1]!.trim();
+    const numItem = parseInt(itemStr, 10);
+    const itemCanonico = Number.isNaN(numItem) ? itemStr : String(numItem);
+    return `${pedido}-${itemCanonico}`;
+  }
+  if (parts.length === 2) return parts.join('-').trim();
+  return String(id ?? '').trim();
+}
+
+function rowItemIdKey(row: Record<string, unknown>): string {
+  return String(row['id_pedido'] ?? row['idChave'] ?? '').trim();
+}
+
+/**
+ * Linhas do Gerenciador do card: filtra por item_ids_json com fallbacks (id canônico, Cod)
+ * quando a chave literal mudou após realocação de carrada no ERP.
+ */
+function resolveRelevantRowsForCard(
+  rows: Array<Record<string, unknown>>,
+  selectedItemIds: string[] | null,
+  itemCodesJson: string | null | undefined
+): Array<Record<string, unknown>> {
+  if (!selectedItemIds || selectedItemIds.length === 0) {
+    return rows;
+  }
+  const byStrict = rows.filter((r) => selectedItemIds.includes(rowItemIdKey(r)));
+  if (byStrict.length > 0) return byStrict;
+  const selCanon = new Set(selectedItemIds.map((id) => chavePedidoItem(id)));
+  const byCanon = rows.filter((r) => selCanon.has(chavePedidoItem(rowItemIdKey(r))));
+  if (byCanon.length > 0) return byCanon;
+  const codes = parseJsonArray(itemCodesJson);
+  if (codes && codes.length > 0) {
+    const set = new Set(codes.map((c) => String(c).trim()).filter(Boolean));
+    const byCode = rows.filter((r) => set.has(String(r['Cod'] ?? r['cod'] ?? '').trim()));
+    if (byCode.length > 0) return byCode;
+  }
+  return [];
+}
+
 function parsePermissoesJson(value: string | null | undefined): string[] {
   const arr = parseJsonArray(value);
   return arr ?? [];
@@ -498,10 +569,8 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
       const pd = String(o.order_number ?? '').trim();
       const rows = pd ? (pdToRows.get(pd) ?? []) : [];
       const selectedItemIds = parseJsonArray((o as unknown as { item_ids_json?: string | null }).item_ids_json);
-      const relevantRows =
-        selectedItemIds && selectedItemIds.length > 0
-          ? rows.filter((r) => selectedItemIds.includes(String(r['id_pedido'] ?? '').trim()))
-          : rows;
+      const itemCodesJson = (o as unknown as { item_codes_json?: string | null }).item_codes_json;
+      const relevantRows = resolveRelevantRowsForCard(rows, selectedItemIds, itemCodesJson);
       const dataOriginalIso = formatDateRangePtBr(
         relevantRows
           .map((r) => toIsoDate(r['Data de entrega'] ?? r['Data de Entrega'] ?? r['dataParametro']))
@@ -513,19 +582,13 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
           .filter(Boolean) as string[]
       );
 
-      const clienteNome = (() => {
-        const values = relevantRows
-          .map((r) => String(r['Cliente'] ?? r['cliente'] ?? '').trim())
-          .filter(Boolean);
-        return values.length > 0 ? [...new Set(values)][0]! : null;
-      })();
-
-      const vendedorNome = (() => {
-        const values = relevantRows
-          .map((r) => String(r['Vendedor/Representante'] ?? r['vendedor/representante'] ?? '').trim())
-          .filter(Boolean);
-        return values.length > 0 ? [...new Set(values)][0]! : null;
-      })();
+      const clienteNome = pickFirstDistinctFromRows(rows, ['Cliente', 'cliente']);
+      const vendedorNome = pickFirstDistinctFromRows(rows, [
+        'Vendedor/Representante',
+        'vendedor/representante',
+        'Vendedor',
+        'vendedor',
+      ]);
       const carradasInfo = buildCarradasInfo(relevantRows);
 
       const ruLogin = o.usuarioResponsavel?.login ? normalizeLogin(o.usuarioResponsavel.login) : null;
