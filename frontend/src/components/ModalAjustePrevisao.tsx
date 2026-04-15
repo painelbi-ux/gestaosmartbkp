@@ -18,10 +18,15 @@ const ajusteSchema = z.object({
   observacao: z.string().max(1000).optional(),
 });
 
+/** Após salvar com replicação na mesma carrada, lista do Gerenciador para essa rota (atualiza todas as linhas visíveis de uma vez). */
+export type AjustePrevisaoSuccessMeta = {
+  atualizadosMesmaCarrada?: Pedido[];
+};
+
 interface ModalAjustePrevisaoProps {
   pedido: Pedido | null;
   onClose: () => void;
-  onSuccess: (atualizado: Pedido) => void;
+  onSuccess: (atualizado: Pedido, meta?: AjustePrevisaoSuccessMeta) => void;
   onError: (msg: string) => void;
 }
 
@@ -99,7 +104,19 @@ export default function ModalAjustePrevisao({
         observacao: data.observacao || null,
         replicate_carrada: replicateCarrada ? true : undefined,
       });
-      onSuccess(atualizado);
+      let meta: AjustePrevisaoSuccessMeta | undefined;
+      if (replicateCarrada) {
+        const rota = rotaFromPedidoRow(pedido as Record<string, unknown>).trim();
+        if (rota) {
+          try {
+            const res = await listarPedidos({ observacoes: rota, limit: 500, page: 1 });
+            meta = { atualizadosMesmaCarrada: Array.isArray(res.data) ? res.data : [] };
+          } catch {
+            // Ajuste já persistiu; sem a lista a grade só atualiza a linha do item escolhido até o próximo carregamento.
+          }
+        }
+      }
+      onSuccess(atualizado, meta);
       onClose();
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Erro ao ajustar previsão.');

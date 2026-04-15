@@ -146,6 +146,26 @@ function resolveRelevantRowsForCard(
   return [];
 }
 
+/** "PD 47192" vs "47192" — alinhado ao filtro flexível do Gerenciador (evita lista vazia no PATCH). */
+function normalizePdDigitsForCompare(pd: string): string {
+  const s = String(pd ?? '').trim();
+  const digits = s.replace(/\D+/g, '');
+  return digits || s;
+}
+
+function gerenciadorRowMatchesOrderNumber(row: Record<string, unknown>, orderNumber: string): boolean {
+  const rowPd = String(row['PD'] ?? row['pd'] ?? '').trim();
+  const ord = String(orderNumber ?? '').trim();
+  if (!rowPd || !ord) return false;
+  const a = normalizePdDigitsForCompare(rowPd);
+  const b = normalizePdDigitsForCompare(ord);
+  return a.length > 0 && a === b;
+}
+
+function rotaTextFromGerenciadorRow(row: Record<string, unknown>): string {
+  return String(row['Observacoes'] ?? row['Observações'] ?? row['Rota'] ?? row['rota'] ?? '').trim();
+}
+
 function parsePermissoesJson(value: string | null | undefined): string[] {
   const arr = parseJsonArray(value);
   return arr ?? [];
@@ -1118,28 +1138,47 @@ export async function updateOrder(req: Request, res: Response): Promise<void> {
         const dm = String(order.delivery_method ?? '').trim();
 
         let idsPedido: string[] = [];
+        const rowsDoPd = (gerenciadorList as Array<Record<string, unknown>>).filter((row) =>
+          gerenciadorRowMatchesOrderNumber(row, orderNumber)
+        );
+        const itemCodesCard = (order as { item_codes_json?: string | null }).item_codes_json;
 
         if (replicateCarradaRequested) {
-          if (isCarradaRota(dm) && !isExcludedSqlRotaCategory(dm)) {
+          const cardRows = resolveRelevantRowsForCard(
+            rowsDoPd,
+            parseJsonArray((order as { item_ids_json?: string | null }).item_ids_json),
+            itemCodesCard
+          );
+          const rotaAlvo =
+            (cardRows.length > 0 ? rotaTextFromGerenciadorRow(cardRows[0]!) : '') || dm;
+          if (isCarradaRota(rotaAlvo) && !isExcludedSqlRotaCategory(rotaAlvo)) {
             idsPedido = sortedUnique(
-              gerenciadorList
-                .filter((row: Record<string, unknown>) => {
-                  const rota = String(row['Observacoes'] ?? row['Observações'] ?? row['Rota'] ?? row['rota'] ?? '').trim();
-                  return rota === dm;
-                })
-                .map((row: Record<string, unknown>) => String(row['id_pedido'] ?? '').trim())
+              (gerenciadorList as Array<Record<string, unknown>>)
+                .filter((row) => rotaTextFromGerenciadorRow(row) === rotaAlvo)
+                .map((row) => rowItemIdKey(row))
                 .filter(Boolean)
             );
           }
-        } else {
-          const todosDoPedido = gerenciadorList
-            .filter((row: Record<string, unknown>) => String(row['PD'] ?? '').trim() === orderNumber)
-            .map((row: Record<string, unknown>) => String(row['id_pedido'] ?? '').trim())
-            .filter(Boolean);
-          idsPedido =
+        }
+
+        if (idsPedido.length === 0) {
+          const bodyIds =
             Array.isArray(id_pedidos) && id_pedidos.length > 0
-              ? id_pedidos.map((id) => String(id ?? '').trim()).filter(Boolean).filter((id) => todosDoPedido.includes(id))
-              : todosDoPedido;
+              ? id_pedidos.map((x) => String(x ?? '').trim()).filter(Boolean)
+              : null;
+          const selectedIds = bodyIds ?? parseJsonArray((order as { item_ids_json?: string | null }).item_ids_json);
+          const resolved = resolveRelevantRowsForCard(rowsDoPd, selectedIds, itemCodesCard);
+          idsPedido = sortedUnique(resolved.map((r) => rowItemIdKey(r)).filter(Boolean));
+          if (idsPedido.length === 0) {
+            idsPedido = sortedUnique(rowsDoPd.map((r) => rowItemIdKey(r)).filter(Boolean));
+          }
+        }
+
+        if (idsPedido.length === 0) {
+          console.warn('[SycroOrder] updateOrder: nenhum id_pedido para registrar previsão no Gerenciador', {
+            orderId: order.id,
+            orderNumber,
+          });
         }
 
         for (const idPedido of idsPedido) {

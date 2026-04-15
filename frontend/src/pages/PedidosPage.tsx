@@ -1,10 +1,10 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import FiltroPedidos, { type FiltrosPedidosState } from '../components/FiltroPedidos';
 import TabelaPedidos, { SORT_LEVELS_DEFAULT } from '../components/TabelaPedidos';
 import ModalClassificarPedidos from '../components/ModalClassificarPedidos';
 import FiltroDatasPopover from '../components/FiltroDatasPopover';
-import ModalAjustePrevisao from '../components/ModalAjustePrevisao';
+import ModalAjustePrevisao, { type AjustePrevisaoSuccessMeta } from '../components/ModalAjustePrevisao';
 import ModalReprogramacaoLote from '../components/ModalReprogramacaoLote';
 import { useAuth } from '../contexts/AuthContext';
 import { PERMISSOES } from '../config/permissoes';
@@ -13,8 +13,50 @@ import { listarMotivosSugestao } from '../api/motivosSugestao';
 import { downloadPedidosXlsx, downloadPedidosGradeXlsx, parsePedidosXlsxForImport, type LinhaImportacao } from '../utils/exportImportPedidos';
 import ModalImportacao, { type ResultadoImportacao } from '../components/ModalImportacao';
 import { loadFiltrosPedidos, saveFiltrosPedidos } from '../utils/persistFiltros';
+import {
+  analisarInconsistenciaQtdePendenteReal,
+  resumoTooltipInconsistencia,
+  type GrupoInconsistenciaQtdePendente,
+} from '../utils/qtdePendenteInconsistencia';
 
 const PAGE_SIZE = 100;
+/** Limite para varrer todos os registros do filtro atual e detectar inconsistência (evita requisição gigante). */
+const MAX_INCOHERENCE_PEDIDOS = 3000;
+
+function buildListarPedidosQuery(
+  pagina: number,
+  pageLimit: number,
+  f: FiltrosPedidosState,
+  sortLevelsArg: { id: string; dir: 'asc' | 'desc' }[]
+) {
+  return {
+    cliente: f.cliente || undefined,
+    observacoes: f.observacoes || undefined,
+    pd: f.pd || undefined,
+    cod: f.cod || undefined,
+    data_emissao_ini: f.data_emissao_ini || undefined,
+    data_emissao_fim: f.data_emissao_fim || undefined,
+    data_entrega_ini: f.data_entrega_ini || undefined,
+    data_entrega_fim: f.data_entrega_fim || undefined,
+    data_previsao_anterior_ini: f.data_previsao_anterior_ini || undefined,
+    data_previsao_anterior_fim: f.data_previsao_anterior_fim || undefined,
+    data_ini: f.data_previsao_ini || undefined,
+    data_fim: f.data_previsao_fim || undefined,
+    atrasados: f.atrasados || undefined,
+    grupo_produto: f.grupo_produto || undefined,
+    setor_producao: f.setor_producao || undefined,
+    uf: f.uf || undefined,
+    municipio_entrega: f.municipio_entrega || undefined,
+    motivo: f.motivo || undefined,
+    vendedor: f.vendedor || undefined,
+    tipo_f: f.tipo_f || undefined,
+    status: f.status || undefined,
+    metodo: f.metodo || undefined,
+    page: pagina,
+    limit: pageLimit,
+    sort_levels: Array.isArray(sortLevelsArg) && sortLevelsArg.length > 0 ? sortLevelsArg : undefined,
+  };
+}
 
 const filtrosIniciais: FiltrosPedidosState = {
   cliente: '',
@@ -74,56 +116,92 @@ export default function PedidosPage() {
   const [modalClassificarOpen, setModalClassificarOpen] = useState(false);
   const [sortLevelsPersonalizado, setSortLevelsPersonalizado] = useState<{ id: string; dir: 'asc' | 'desc' }[]>(() => [...SORT_LEVELS_DEFAULT]);
   const [mostrarFiltros, setMostrarFiltros] = useState(true);
+  const incoherenceFullRowsRef = useRef<Pedido[] | null>(null);
+  const [incoherenceHasIssue, setIncoherenceHasIssue] = useState(false);
+  const [incoherenceScanBusy, setIncoherenceScanBusy] = useState(false);
+  const [incoherenceGrupos, setIncoherenceGrupos] = useState<GrupoInconsistenciaQtdePendente[]>([]);
+  const [incoherenceViewRows, setIncoherenceViewRows] = useState<Pedido[] | null>(null);
+  const [incoherenceClickBusy, setIncoherenceClickBusy] = useState(false);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const incoherenceTooltip = useMemo(() => {
+    let t = resumoTooltipInconsistencia(incoherenceGrupos);
+    if (total > MAX_INCOHERENCE_PEDIDOS) {
+      t += `\n\nAtenção: o filtro atual retorna mais de ${MAX_INCOHERENCE_PEDIDOS} registros; o farol analisa apenas os primeiros ${PAGE_SIZE} carregados nesta página. Para análise completa, restrinja o filtro (ex.: por PD).`;
+    }
+    return t;
+  }, [incoherenceGrupos, total]);
+
+  const handleIncoherenceIconClick = useCallback(async () => {
+    if (incoherenceViewRows) {
+      setIncoherenceViewRows(null);
+      return;
+    }
+    let rows = incoherenceFullRowsRef.current;
+    if (!rows || rows.length === 0) {
+      if (total <= 0) return;
+      setIncoherenceClickBusy(true);
+      try {
+        const lim = Math.min(total, MAX_INCOHERENCE_PEDIDOS);
+        const r = await listarPedidos(buildListarPedidosQuery(1, lim, filtros, sortLevelsPersonalizado));
+        rows = Array.isArray(r?.data) ? r.data : [];
+      } catch {
+        rows = [];
+      } finally {
+        setIncoherenceClickBusy(false);
+      }
+    }
+    const { linhasAfetadas } = analisarInconsistenciaQtdePendenteReal(rows ?? []);
+    if (linhasAfetadas.length > 0) {
+      setIncoherenceViewRows(linhasAfetadas);
+    }
+  }, [incoherenceViewRows, total, filtros, sortLevelsPersonalizado]);
 
   const carregarPedidos = useCallback(
     async (pagina: number = 1, filtrosOverride?: FiltrosPedidosState, sortLevelsOverride?: { id: string; dir: 'asc' | 'desc' }[]) => {
       const f = filtrosOverride ?? filtros;
       const sortLevelsToUse = sortLevelsOverride ?? sortLevelsPersonalizado;
       setLoading(true);
+      setIncoherenceViewRows(null);
+      setIncoherenceScanBusy(true);
       try {
-        const result = await listarPedidos({
-          cliente: f.cliente || undefined,
-          observacoes: f.observacoes || undefined,
-          pd: f.pd || undefined,
-          cod: f.cod || undefined,
-          data_emissao_ini: f.data_emissao_ini || undefined,
-          data_emissao_fim: f.data_emissao_fim || undefined,
-          data_entrega_ini: f.data_entrega_ini || undefined,
-          data_entrega_fim: f.data_entrega_fim || undefined,
-          data_previsao_anterior_ini: f.data_previsao_anterior_ini || undefined,
-          data_previsao_anterior_fim: f.data_previsao_anterior_fim || undefined,
-          data_ini: f.data_previsao_ini || undefined,
-          data_fim: f.data_previsao_fim || undefined,
-          atrasados: f.atrasados || undefined,
-          grupo_produto: f.grupo_produto || undefined,
-          setor_producao: f.setor_producao || undefined,
-          uf: f.uf || undefined,
-          municipio_entrega: f.municipio_entrega || undefined,
-          motivo: f.motivo || undefined,
-          vendedor: f.vendedor || undefined,
-          tipo_f: f.tipo_f || undefined,
-          status: f.status || undefined,
-          metodo: f.metodo || undefined,
-          page: pagina,
-          limit: PAGE_SIZE,
-          sort_levels: Array.isArray(sortLevelsToUse) && sortLevelsToUse.length > 0 ? sortLevelsToUse : undefined,
-        });
-      const data = Array.isArray(result?.data) ? result.data : (Array.isArray(result) ? result : []);
-      const totalCount = typeof result?.total === 'number' ? result.total : data.length;
-      setPedidos(data);
-      setTotal(totalCount);
-      setPage(pagina);
-      setErroConexaoErp(result?.erroConexao ?? null);
-    } catch {
-      setPedidos([]);
-      setTotal(0);
-      setErroConexaoErp(null);
-    } finally {
-      setLoading(false);
-    }
-  },
+        const query = buildListarPedidosQuery(pagina, PAGE_SIZE, f, sortLevelsToUse);
+        const result = await listarPedidos(query);
+        const data = Array.isArray(result?.data) ? result.data : (Array.isArray(result) ? result : []);
+        const totalCount = typeof result?.total === 'number' ? result.total : data.length;
+        setPedidos(data);
+        setTotal(totalCount);
+        setPage(pagina);
+        setErroConexaoErp(result?.erroConexao ?? null);
+
+        let gruposScan: GrupoInconsistenciaQtdePendente[] = [];
+        if (totalCount === 0) {
+          incoherenceFullRowsRef.current = null;
+          gruposScan = [];
+        } else if (totalCount <= MAX_INCOHERENCE_PEDIDOS) {
+          const fullResult = await listarPedidos(buildListarPedidosQuery(1, totalCount, f, sortLevelsToUse));
+          const allRows = Array.isArray(fullResult?.data) ? fullResult.data : [];
+          incoherenceFullRowsRef.current = allRows;
+          gruposScan = analisarInconsistenciaQtdePendenteReal(allRows).grupos;
+        } else {
+          incoherenceFullRowsRef.current = null;
+          gruposScan = analisarInconsistenciaQtdePendenteReal(data).grupos;
+        }
+        setIncoherenceGrupos(gruposScan);
+        setIncoherenceHasIssue(gruposScan.length > 0);
+      } catch {
+        setPedidos([]);
+        setTotal(0);
+        setErroConexaoErp(null);
+        incoherenceFullRowsRef.current = null;
+        setIncoherenceGrupos([]);
+        setIncoherenceHasIssue(false);
+      } finally {
+        setLoading(false);
+        setIncoherenceScanBusy(false);
+      }
+    },
     [filtros, sortLevelsPersonalizado]
   );
 
@@ -160,11 +238,22 @@ export default function PedidosPage() {
     carregarPedidos(1, filtrosIniciais);
   };
 
-  const handleAjusteSuccess = (atualizado: Pedido) => {
-    setPedidos((prev) =>
-      prev.map((p) => (p.id_pedido === atualizado.id_pedido ? atualizado : p))
-    );
-    setToast('Previsão atualizada com sucesso.');
+  const mergePedidosAposAjuste = (prev: Pedido[], atualizado: Pedido, meta?: AjustePrevisaoSuccessMeta): Pedido[] => {
+    const lista = meta?.atualizadosMesmaCarrada;
+    if (lista && lista.length > 0) {
+      const mapById = new Map(lista.map((p) => [String(p.id_pedido ?? '').trim(), p]));
+      return prev.map((p) => {
+        const id = String(p.id_pedido ?? '').trim();
+        return mapById.get(id) ?? p;
+      });
+    }
+    return prev.map((p) => (p.id_pedido === atualizado.id_pedido ? atualizado : p));
+  };
+
+  const handleAjusteSuccess = (atualizado: Pedido, meta?: AjustePrevisaoSuccessMeta) => {
+    setPedidos((prev) => mergePedidosAposAjuste(prev, atualizado, meta));
+    setIncoherenceViewRows((prev) => (prev && prev.length > 0 ? mergePedidosAposAjuste(prev, atualizado, meta) : prev));
+    setToast(meta?.atualizadosMesmaCarrada?.length ? 'Previsão replicada na carrada e grade atualizada.' : 'Previsão atualizada com sucesso.');
     setTimeout(() => setToast(null), 3000);
   };
 
@@ -544,6 +633,28 @@ export default function PedidosPage() {
         >
           Classificação personalizada
         </button>
+        <button
+          type="button"
+          onClick={() => void handleIncoherenceIconClick()}
+          title={incoherenceTooltip}
+          disabled={loading || incoherenceScanBusy || incoherenceClickBusy}
+          aria-label={
+            incoherenceScanBusy || incoherenceClickBusy
+              ? 'Verificando quantidades pendentes'
+              : incoherenceHasIssue
+                ? 'Inconsistência: soma das quantidades pendentes reais por rota maior que a pendente do item. Clique para filtrar as linhas.'
+                : 'Coerência OK entre soma por rota e quantidade pendente do item.'
+          }
+          className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 text-sm font-bold leading-none text-white shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus-visible:ring-offset-slate-900 ${
+            incoherenceScanBusy || incoherenceClickBusy
+              ? 'border-slate-400 bg-slate-400 focus-visible:ring-slate-400'
+              : incoherenceHasIssue
+                ? 'border-red-700 bg-red-600 hover:bg-red-500 focus-visible:ring-red-500'
+                : 'border-emerald-700 bg-emerald-600 hover:bg-emerald-500 focus-visible:ring-emerald-500'
+          }`}
+        >
+          i
+        </button>
         {podeAjustarPrevisao && selectedIds.size > 0 && (
           <button
             type="button"
@@ -565,8 +676,23 @@ export default function PedidosPage() {
         </div>
       )}
       <div data-main-content className="min-w-0 w-full flex-1 flex flex-col" style={{ width: '100%', minWidth: 0 }}>
+        {incoherenceViewRows && (
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-300/80 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-600/60 dark:bg-amber-950/40 dark:text-amber-100">
+            <p>
+              Exibindo <strong>{incoherenceViewRows.length}</strong> linha(s) em que a soma de <strong>Qtde Pendente Real</strong> por
+              pedido+código ultrapassa a coluna <strong>Pendente</strong> do item (faturamento parcial sem vínculo por rota no ERP).
+            </p>
+            <button
+              type="button"
+              onClick={() => setIncoherenceViewRows(null)}
+              className="shrink-0 rounded-md border border-amber-700/40 bg-white px-2 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-800 dark:text-amber-100 dark:hover:bg-slate-700"
+            >
+              Voltar à grade completa
+            </button>
+          </div>
+        )}
         <TabelaPedidos
-          pedidos={pedidos}
+          pedidos={incoherenceViewRows ?? pedidos}
           loading={loading}
           onAjustar={podeAjustarPrevisao ? setModalPedido : undefined}
           selectedIds={podeAjustarPrevisao ? selectedIds : undefined}
@@ -575,7 +701,7 @@ export default function PedidosPage() {
           onSortLevelsChange={handleSortLevelsChange}
         />
       </div>
-      {total > 0 && (
+      {total > 0 && !incoherenceViewRows && (
         <div className="flex items-center justify-between rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 px-4 py-3 text-sm text-slate-600 dark:text-slate-300">
           <span>
             Exibindo {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} de {total} registros

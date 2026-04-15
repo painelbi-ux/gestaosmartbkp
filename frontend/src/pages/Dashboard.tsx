@@ -5,7 +5,7 @@ import CardsResumoFinanceiro from '../components/CardsResumoFinanceiro';
 import FiltroPedidos, { type FiltrosPedidosState, defaultFiltros } from '../components/FiltroPedidos';
 import TabelaPedidos from '../components/TabelaPedidos';
 import { loadFiltrosDashboard, saveFiltrosDashboard } from '../utils/persistFiltros';
-import ModalAjustePrevisao from '../components/ModalAjustePrevisao';
+import ModalAjustePrevisao, { type AjustePrevisaoSuccessMeta } from '../components/ModalAjustePrevisao';
 import {
   listarPedidos,
   obterResumo,
@@ -130,13 +130,23 @@ export default function Dashboard() {
     saveFiltrosDashboard(filtros);
   }, [filtros]);
 
-  const handleAjusteSuccess = (atualizado: Pedido) => {
-    setPedidos((prev) =>
-      prev.map((p) => (p.id_pedido === atualizado.id_pedido ? atualizado : p))
-    );
+  const handleAjusteSuccess = (atualizado: Pedido, meta?: AjustePrevisaoSuccessMeta) => {
+    const lista = meta?.atualizadosMesmaCarrada;
+    if (lista && lista.length > 0) {
+      const mapById = new Map(lista.map((p) => [String(p.id_pedido ?? '').trim(), p]));
+      setPedidos((prev) =>
+        prev.map((p) => {
+          const id = String(p.id_pedido ?? '').trim();
+          return mapById.get(id) ?? p;
+        })
+      );
+      setToast('Previsão replicada na carrada e grade atualizada.');
+    } else {
+      setPedidos((prev) => prev.map((p) => (p.id_pedido === atualizado.id_pedido ? atualizado : p)));
+      setToast('Previsão atualizada com sucesso.');
+    }
     carregarResumo();
     carregarResumoFinanceiro();
-    setToast('Previsão atualizada com sucesso.');
     setTimeout(() => setToast(null), 3000);
   };
 
