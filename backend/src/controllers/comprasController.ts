@@ -13,6 +13,48 @@ function dataUltimaMovimentacao(): Date {
   return new Date();
 }
 
+/** Lista de vínculos da finalização para a API (JSON gravado ou campos legados). */
+function parseFinalizacaoVinculosApi(
+  jsonStr: string | null | undefined,
+  tipoLegacy: string | null | undefined,
+  idLegacy: number | null | undefined
+): { tipoRegistro: string; idRegistro: number }[] {
+  if (typeof jsonStr === 'string' && jsonStr.trim()) {
+    try {
+      const p = JSON.parse(jsonStr) as unknown;
+      if (Array.isArray(p)) {
+        const out: { tipoRegistro: string; idRegistro: number }[] = [];
+        for (const x of p) {
+          if (!x || typeof x !== 'object') continue;
+          const o = x as Record<string, unknown>;
+          const tr = typeof o.tipoRegistro === 'string' ? o.tipoRegistro.trim().toUpperCase() : '';
+          const idR =
+            typeof o.idRegistro === 'number'
+              ? o.idRegistro
+              : typeof o.idRegistro === 'string'
+                ? parseInt(o.idRegistro, 10)
+                : NaN;
+          if ((tr === 'PEDIDO' || tr === 'COTACAO') && Number.isFinite(idR) && idR > 0) {
+            out.push({ tipoRegistro: tr, idRegistro: idR });
+          }
+        }
+        if (out.length > 0) return out;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (
+    (tipoLegacy === 'PEDIDO' || tipoLegacy === 'COTACAO') &&
+    idLegacy != null &&
+    Number.isFinite(idLegacy) &&
+    idLegacy > 0
+  ) {
+    return [{ tipoRegistro: tipoLegacy, idRegistro: idLegacy }];
+  }
+  return [];
+}
+
 /**
  * GET /api/compras/produtos-coleta
  * Lista produtos do Nomus para o pop-up de criação de coleta de preços.
@@ -317,6 +359,7 @@ export async function getColetasPrecos(_req: Request, res: Response): Promise<vo
           requerVinculoFinalizacao: true,
           finalizacaoTipoRegistro: true,
           finalizacaoIdRegistro: true,
+          finalizacaoVinculosJson: true,
           _count: { select: { itens: true, registros: true } },
           registros: { select: { dados: true } },
           ciencias: { select: { id: true }, take: 1 },
@@ -324,7 +367,7 @@ export async function getColetasPrecos(_req: Request, res: Response): Promise<vo
       }) as ColetaRow[];
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (/dataUltimaMovimentacao|coleta_precos_ciencia|ciencias|requerVinculoFinalizacao|finalizacaoTipoRegistro|finalizacaoIdRegistro|no such table|no such column/i.test(msg)) {
+      if (/dataUltimaMovimentacao|coleta_precos_ciencia|ciencias|requerVinculoFinalizacao|finalizacaoTipoRegistro|finalizacaoIdRegistro|finalizacaoVinculosJson|no such table|no such column/i.test(msg)) {
         coletas = (await prisma.coletaPrecos.findMany({
           orderBy: { createdAt: 'desc' },
           select: {
@@ -410,6 +453,11 @@ export async function getColetasPrecos(_req: Request, res: Response): Promise<vo
         requerVinculoFinalizacao: (c as { requerVinculoFinalizacao?: boolean }).requerVinculoFinalizacao ?? false,
         finalizacaoTipoRegistro: (c as { finalizacaoTipoRegistro?: string | null }).finalizacaoTipoRegistro ?? null,
         finalizacaoIdRegistro: (c as { finalizacaoIdRegistro?: number | null }).finalizacaoIdRegistro ?? null,
+        finalizacaoVinculos: parseFinalizacaoVinculosApi(
+          (c as { finalizacaoVinculosJson?: string | null }).finalizacaoVinculosJson,
+          (c as { finalizacaoTipoRegistro?: string | null }).finalizacaoTipoRegistro ?? null,
+          (c as { finalizacaoIdRegistro?: number | null }).finalizacaoIdRegistro ?? null
+        ),
         codigosProduto,
         descricoesProduto,
         nomesColeta: Array.from(nomesColetaSet),
@@ -755,7 +803,8 @@ async function existeVinculoFinalizacaoNomus(
 /**
  * PATCH /api/compras/coletas/:id/finalizar-cotacao
  * Altera status para "Finalizada". Só permite se status atual for "Em Aprovação".
- * Vínculo obrigatório: coletas novas (requerVinculoFinalizacao) ou qualquer coleta ainda em "Em cotação" / "Em Aprovação" (inclui as anteriores à migration). Body: { tipoRegistro: 'PEDIDO'|'COTACAO', idRegistro: number }.
+ * Vínculo obrigatório: coletas novas (requerVinculoFinalizacao) ou qualquer coleta ainda em "Em cotação" / "Em Aprovação" (inclui as anteriores à migration).
+ * Body: { vinculos: [{ tipoRegistro: 'PEDIDO'|'COTACAO', idRegistro: number }, ...] } ou legado { tipoRegistro, idRegistro }.
  */
 export async function patchFinalizarCotacao(req: Request, res: Response): Promise<void> {
   const id = parseInt(String(req.params.id), 10);
@@ -763,10 +812,10 @@ export async function patchFinalizarCotacao(req: Request, res: Response): Promis
     res.status(400).json({ error: 'ID da coleta inválido.' });
     return;
   }
-  let bodyRaw = req.body as { tipoRegistro?: unknown; idRegistro?: unknown };
+  let bodyRaw = req.body as { tipoRegistro?: unknown; idRegistro?: unknown; vinculos?: unknown };
   if (typeof bodyRaw === 'string') {
     try {
-      bodyRaw = JSON.parse(bodyRaw) as { tipoRegistro?: unknown; idRegistro?: unknown };
+      bodyRaw = JSON.parse(bodyRaw) as { tipoRegistro?: unknown; idRegistro?: unknown; vinculos?: unknown };
     } catch {
       bodyRaw = {};
     }
@@ -808,24 +857,48 @@ export async function patchFinalizarCotacao(req: Request, res: Response): Promis
       coleta.requerVinculoFinalizacao === true ||
       statusAtual === 'Em cotação' ||
       statusAtual === 'Em Aprovação';
-    let tipoRegistro: string | null = null;
-    let idRegistro: number | null = null;
+    const listaVinculos: { tipoRegistro: string; idRegistro: number }[] = [];
     if (requerVinculo) {
-      const tr = typeof bodyRaw.tipoRegistro === 'string' ? bodyRaw.tipoRegistro.trim().toUpperCase() : '';
-      const idR =
-        typeof bodyRaw.idRegistro === 'number'
-          ? bodyRaw.idRegistro
-          : typeof bodyRaw.idRegistro === 'string'
-            ? parseInt(bodyRaw.idRegistro, 10)
-            : NaN;
-      if (tr !== 'PEDIDO' && tr !== 'COTACAO') {
+      const rawArr = bodyRaw.vinculos;
+      if (Array.isArray(rawArr) && rawArr.length > 0) {
+        const seen = new Set<string>();
+        for (const item of rawArr) {
+          if (!item || typeof item !== 'object') continue;
+          const o = item as Record<string, unknown>;
+          const tr = typeof o.tipoRegistro === 'string' ? o.tipoRegistro.trim().toUpperCase() : '';
+          const idR =
+            typeof o.idRegistro === 'number'
+              ? o.idRegistro
+              : typeof o.idRegistro === 'string'
+                ? parseInt(o.idRegistro, 10)
+                : NaN;
+          if (tr !== 'PEDIDO' && tr !== 'COTACAO') continue;
+          if (!Number.isFinite(idR) || idR < 1) continue;
+          const key = `${tr}-${idR}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          listaVinculos.push({ tipoRegistro: tr, idRegistro: idR });
+        }
+      } else {
+        const tr = typeof bodyRaw.tipoRegistro === 'string' ? bodyRaw.tipoRegistro.trim().toUpperCase() : '';
+        const idR =
+          typeof bodyRaw.idRegistro === 'number'
+            ? bodyRaw.idRegistro
+            : typeof bodyRaw.idRegistro === 'string'
+              ? parseInt(bodyRaw.idRegistro, 10)
+              : NaN;
+        if ((tr === 'PEDIDO' || tr === 'COTACAO') && Number.isFinite(idR) && idR >= 1) {
+          listaVinculos.push({ tipoRegistro: tr, idRegistro: idR });
+        }
+      }
+      if (listaVinculos.length === 0) {
         res.status(400).json({
-          error: 'Selecione um pedido de compra ou uma cotação de preços para finalizar esta coleta.',
+          error: 'Selecione um ou mais pedidos de compra ou cotações de preços para finalizar esta coleta.',
         });
         return;
       }
-      if (!Number.isFinite(idR) || idR < 1) {
-        res.status(400).json({ error: 'Identificador do pedido/cotação inválido.' });
+      if (listaVinculos.length > 40) {
+        res.status(400).json({ error: 'No máximo 40 vínculos por finalização.' });
         return;
       }
       if (!isNomusEnabled()) {
@@ -837,23 +910,30 @@ export async function patchFinalizarCotacao(req: Request, res: Response): Promis
         res.status(503).json({ error: 'Conexão Nomus indisponível.' });
         return;
       }
-      const ok = await existeVinculoFinalizacaoNomus(pool, tr, idR);
-      if (!ok) {
-        res.status(400).json({ error: 'Pedido de compra ou cotação não encontrado no Nomus.' });
-        return;
+      for (const v of listaVinculos) {
+        const ok = await existeVinculoFinalizacaoNomus(pool, v.tipoRegistro, v.idRegistro);
+        if (!ok) {
+          res.status(400).json({
+            error: `Pedido de compra ou cotação não encontrado no Nomus (tipo ${v.tipoRegistro}, id ${v.idRegistro}).`,
+          });
+          return;
+        }
       }
-      tipoRegistro = tr;
-      idRegistro = idR;
     }
 
+    const primeiro = listaVinculos[0];
     await prisma.coletaPrecos.update({
       where: { id },
       data: {
         status: 'Finalizada',
         dataFinalizacao: new Date(),
         dataUltimaMovimentacao: dataUltimaMovimentacao(),
-        ...(tipoRegistro != null && idRegistro != null
-          ? { finalizacaoTipoRegistro: tipoRegistro, finalizacaoIdRegistro: idRegistro }
+        ...(listaVinculos.length > 0 && primeiro
+          ? {
+              finalizacaoVinculosJson: JSON.stringify(listaVinculos),
+              finalizacaoTipoRegistro: primeiro.tipoRegistro,
+              finalizacaoIdRegistro: primeiro.idRegistro,
+            }
           : {}),
       },
     });

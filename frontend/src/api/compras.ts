@@ -164,6 +164,8 @@ export interface ColetaPrecosListItem {
   requerVinculoFinalizacao?: boolean;
   finalizacaoTipoRegistro?: string | null;
   finalizacaoIdRegistro?: number | null;
+  /** Vínculos Nomus na finalização (pedido/cotação); pode ter vários. */
+  finalizacaoVinculos?: { tipoRegistro: string; idRegistro: number }[];
 }
 
 /** Coleta que bloqueia criar nova coleta (>72h sem movimentação, sem ciência). */
@@ -670,18 +672,34 @@ export async function listarOpcoesVinculoFinalizacao(
 }
 
 /** Finaliza a cotação (status "Finalizada"). Só quando status é "Em Aprovação". Exige quantidades aprovadas preenchidas.
- *  Coletas novas (`requerVinculoFinalizacao`): envie `vinculo` com pedido de compra ou cotação Nomus. */
+ *  Coletas com vínculo: envie `vinculos` (um ou mais pedidos/cotações Nomus) ou um único `vinculo` legado. */
 export async function finalizarCotacao(
   coletaId: number,
-  vinculo?: { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number } | null
+  vinculo?:
+    | { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number }
+    | { vinculos: { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number }[] }
+    | null
 ): Promise<{ ok: boolean; error?: string }> {
-  const payload =
-    vinculo != null && vinculo.tipoRegistro && Number.isFinite(vinculo.idRegistro) && vinculo.idRegistro > 0
-      ? { tipoRegistro: vinculo.tipoRegistro, idRegistro: vinculo.idRegistro }
-      : undefined;
+  let bodyPayload: Record<string, unknown> = {};
+  if (vinculo != null && 'vinculos' in vinculo && Array.isArray(vinculo.vinculos) && vinculo.vinculos.length > 0) {
+    bodyPayload = {
+      vinculos: vinculo.vinculos.map((v) => ({
+        tipoRegistro: v.tipoRegistro,
+        idRegistro: v.idRegistro,
+      })),
+    };
+  } else if (
+    vinculo != null &&
+    'tipoRegistro' in vinculo &&
+    vinculo.tipoRegistro &&
+    Number.isFinite(vinculo.idRegistro) &&
+    vinculo.idRegistro > 0
+  ) {
+    bodyPayload = { tipoRegistro: vinculo.tipoRegistro, idRegistro: vinculo.idRegistro };
+  }
   const res = await apiFetch(`/api/compras/coletas/${coletaId}/finalizar-cotacao`, {
     method: 'PATCH',
-    ...(payload != null ? { body: payload } : { body: {} }),
+    body: Object.keys(bodyPayload).length > 0 ? bodyPayload : {},
   });
   const text = await res.text();
   let body: { error?: string } = {};

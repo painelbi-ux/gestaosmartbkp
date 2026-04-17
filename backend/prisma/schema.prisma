@@ -140,6 +140,8 @@ model ColetaPrecos {
   finalizacaoTipoRegistro    String?
   /// id pedidocompra.id ou cotacaocompra.id no Nomus.
   finalizacaoIdRegistro      Int?
+  /// JSON: [{ "tipoRegistro": "PEDIDO"|"COTACAO", "idRegistro": number }, ...] — múltiplos vínculos na finalização.
+  finalizacaoVinculosJson    String?
 
   itens       ColetaPrecosItem[]
   registros   ColetaPrecosRegistro[]

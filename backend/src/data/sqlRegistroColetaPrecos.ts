@@ -44,7 +44,8 @@ Select
   o.observacoes As 'Observacoes SC',
   Coalesce(emp.qtdempenhada, 0) As 'Qtde Empenhada',
   nc.opcao As 'Nome Coleta',
-  ds.opcao As 'Dia da Semana'
+  ds.opcao As 'Dia da Semana',
+  coalesce(agpag.quantidade,0) as 'Ag Pag'
 From
   produto p
   Left Join
@@ -88,7 +89,7 @@ FROM (
     LEFT JOIN produto p ON p.id = sep.idProduto
     LEFT JOIN movimentacaoproducao mp ON mp.id = sep.idMovimentacao
     LEFT JOIN tipomovimentacao tm ON tm.id = mp.idTipoMovimentacao 
-    WHERE se.consideraComoSaldoDisponivel = 1
+    WHERE se.consideraComoSaldoDisponivel = 1 and se.id = 2
       AND p.ativo = 1 
       AND p.idTipoProduto IN (5, 6, 10, 13, 14, 16, 21, 22)
 ) AS ultimos_saldos
@@ -699,7 +700,19 @@ a3.idProduto,
     From solicitacaocompra
     Where (solicitacaocompra.idProduto = sc.idProduto) And
       (solicitacaocompra.status In (2, 6)))) And (sc.status In (2, 6))) dtsco
-    On dtsco.id = sco.id 
+    On dtsco.id = sco.id
+    left JOIN
+    (select
+icc.idProduto,
+p.nome,
+sum(icc.qtde) as quantidade
+from itemcotacaocompra icc
+left join cotacaocompra cc on cc.id = icc.idCotacaoCompra
+left join produto p on p.id = icc.idProduto
+where cc.status = 3
+group by
+icc.idProduto,
+p.nome) agpag on agpag.idproduto = p.id
 Where
   (p.idTipoProduto In (5, 13, 14, 6, 10, 16, 21, 22))
 `.trim();

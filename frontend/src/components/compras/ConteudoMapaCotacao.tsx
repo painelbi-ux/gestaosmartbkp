@@ -382,12 +382,13 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
                 <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle" style={{ wordBreak: 'break-word', fontSize: '0.9em' }}>Ultimo Fornecedor</th>
                 <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle" style={{ fontSize: '0.95em' }}>Preço Ant</th>
                 <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle" style={{ fontSize: '0.95em' }}>PC Pend</th>
+                <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle" style={{ fontSize: '0.95em' }}>Ag Pag</th>
               </tr>
             </thead>
             <tbody>
               {produtos.length === 0 && (
                 <tr>
-                  <td colSpan={17 + fornecedores.length} className="border border-slate-300 px-0.5 py-2 text-center text-black">
+                  <td colSpan={18 + fornecedores.length} className="border border-slate-300 px-0.5 py-2 text-center text-black">
                     Nenhum produto na coleta ou nenhum preço cadastrado.
                   </td>
                 </tr>
@@ -403,7 +404,10 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
                 const estoqAtual = getRowValue(row, ['Saldo Estoque', 'Saldo de Estoque', 'saldo estoque']);
                 const dataUltEntrada = getRowValue(row, ['Ultima Entrada', 'ultima entrada']);
                 const precoAnt = getRowValue(row, ['Custo Unitario Compra', 'custo unitario compra']);
-                const pcPend = getRowValue(row, ['PC_Aguardando Liberacao', 'PC Pend', 'pc_aguardando liberacao']);
+                /** Coluna do SQL Nomus `As 'PC'` (itempedidocompra status 3,2,4); não usar PC_Aguardando Liberacao. */
+                const pcPend = getRowValue(row, ['PC', 'pc']);
+                /** SQL Nomus: `coalesce(agpag.quantidade,0) as 'Ag Pag'` */
+                const agPag = getRowValue(row, ['Ag Pag', 'ag pag']);
                 const qtdSolicit = getRowValue(row, ['Qtd Liberada', 'qtd liberada']);
                 const dataNecess = getRowValue(row, ['Data Necessidade', 'data necessidade']);
                 const ultimoFornecedor = String(getRowValue(row, ['Ultimo Fornecedor', 'ultimo fornecedor']) ?? '—');
@@ -449,6 +453,7 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
                     <td className="border border-slate-300 px-0.5 py-0.5 text-left align-top break-words text-black" style={{ wordBreak: 'break-word', fontSize: '0.9em' }}>{apenasNomeFornecedor(ultimoFornecedor) || '—'}</td>
                     <td className="border border-slate-300 px-0.5 py-0.5 text-right whitespace-nowrap align-top text-black" style={{ fontSize: '0.95em' }}>{precoAntStr}</td>
                     <td className="border border-slate-300 px-0.5 py-0.5 text-center whitespace-nowrap align-top text-black" style={{ fontSize: '0.95em' }}>{fmtNum(pcPend)}</td>
+                    <td className="border border-slate-300 px-0.5 py-0.5 text-center whitespace-nowrap align-top text-black" style={{ fontSize: '0.95em' }}>{fmtNum(agPag)}</td>
                   </tr>
                 );
               })}
@@ -468,7 +473,7 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
                       </div>
                     </td>
                   ))}
-                  <td colSpan={13} className="border border-slate-300 px-0.5 py-0.5" />
+                  <td colSpan={14} className="border border-slate-300 px-0.5 py-0.5" />
                 </tr>
               )}
             </tbody>

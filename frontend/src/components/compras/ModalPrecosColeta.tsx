@@ -63,6 +63,7 @@ const COLUNAS_PRECOS: { keys: string[]; label: string; decimals?: number; date?:
   { keys: ['Consumo Medio', 'consumo medio'], label: 'Consumo Medio', decimals: 2 },
   { keys: ['Saldo em Estoque Antes UE', 'saldo em estoque antes ue'], label: 'Saldo em Estoque Antes Ultima Entrada', decimals: 2 },
   { keys: ['Qtde Empenhada', 'qtde empenhada', 'Qtdempenhada'], label: 'Qtde Empenhada', decimals: 2 },
+  { keys: ['Ag Pag', 'ag pag'], label: 'Ag Pag', decimals: 2 },
 ];
 
 function getRowValue(row: Record<string, unknown>, keys: string[]): unknown {
@@ -211,7 +212,8 @@ export default function ModalPrecosColeta({
   const [senhaReabrir, setSenhaReabrir] = useState('');
   const [reabrindo, setReabrindo] = useState(false);
   const [modalVinculoFinalizar, setModalVinculoFinalizar] = useState(false);
-  const [opcaoVinculoSelecionada, setOpcaoVinculoSelecionada] = useState<OptionItem | null>(null);
+  /** Um ou mais pedidos/cotações Nomus para gravar na finalização. */
+  const [vinculosSelecionados, setVinculosSelecionados] = useState<OptionItem[]>([]);
   const [opcoesVinculoLista, setOpcoesVinculoLista] = useState<OptionItem[]>([]);
   const [loadingOpcoesVinculo, setLoadingOpcoesVinculo] = useState(false);
   const [finalizandoComVinculo, setFinalizandoComVinculo] = useState(false);
@@ -247,10 +249,21 @@ export default function ModalPrecosColeta({
   }, []);
 
   const abrirModalFinalizarComVinculo = useCallback(async () => {
-    setOpcaoVinculoSelecionada(null);
+    setVinculosSelecionados([]);
     setModalVinculoFinalizar(true);
     await carregarOpcoesVinculo('');
   }, [carregarOpcoesVinculo]);
+
+  const adicionarVinculoAoFinalizar = useCallback((opt: OptionItem | null) => {
+    if (!opt) return;
+    const meta = opt.meta as { tipoRegistro?: string; idRegistro?: number } | undefined;
+    if (!meta?.tipoRegistro || meta.idRegistro == null || !Number.isFinite(meta.idRegistro)) return;
+    const uk = opt.uniqueKey ?? `${meta.tipoRegistro}-${meta.idRegistro}`;
+    setVinculosSelecionados((prev) => {
+      if (prev.some((p) => (p.uniqueKey ?? '') === uk)) return prev;
+      return [...prev, opt];
+    });
+  }, []);
 
   const [erro, setErro] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -815,33 +828,57 @@ export default function ModalPrecosColeta({
               Vincular à finalização
             </h3>
             <p className="text-sm text-slate-600 dark:text-slate-300">
-              Selecione o <strong className="font-medium">pedido de compra</strong> ou a <strong className="font-medium">cotação de preços</strong> no Nomus que corresponde a esta coleta.
+              Selecione um ou mais <strong className="font-medium">pedidos de compra</strong> e/ou <strong className="font-medium">cotações de preços</strong> no Nomus vinculados a esta coleta. Pesquise e clique para adicionar cada um à lista.
             </p>
             {erro && (
               <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
                 {erro}
               </div>
             )}
+            {vinculosSelecionados.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900/40 p-2">
+                {vinculosSelecionados.map((v) => (
+                  <span
+                    key={v.uniqueKey ?? `${v.id}-${(v.meta as { idRegistro?: number })?.idRegistro}`}
+                    className="inline-flex items-center gap-1 max-w-full rounded-md bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 pl-2 pr-1 py-0.5 text-xs text-slate-800 dark:text-slate-100"
+                  >
+                    <span className="truncate max-w-[min(100%,280px)]" title={v.nome}>
+                      {v.nome}
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded p-0.5 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-600 dark:text-slate-300"
+                      aria-label="Remover"
+                      onClick={() =>
+                        setVinculosSelecionados((prev) => prev.filter((p) => (p.uniqueKey ?? '') !== (v.uniqueKey ?? '')))
+                      }
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <SingleSelectWithSearch
-              label="Pedido ou cotação (nome / fornecedor)"
-              placeholder="Pesquisar e selecionar..."
+              label="Adicionar pedido ou cotação (nome / fornecedor)"
+              placeholder="Pesquisar e clicar para adicionar…"
               options={opcoesVinculoLista}
-              value={opcaoVinculoSelecionada}
-              onChange={setOpcaoVinculoSelecionada}
+              value={null}
+              onChange={adicionarVinculoAoFinalizar}
               labelClass={labelClassFiltro}
               inputClass={inputClassFiltro}
               minWidth="100%"
               onSearchChange={carregarOpcoesVinculo}
               searchLoading={loadingOpcoesVinculo}
               listMaxHeight="220px"
-              clearable
+              clearable={false}
             />
             <div className="flex justify-end gap-2 pt-1">
               <button
                 type="button"
                 onClick={() => {
                   setModalVinculoFinalizar(false);
-                  setOpcaoVinculoSelecionada(null);
+                  setVinculosSelecionados([]);
                 }}
                 disabled={finalizandoComVinculo}
                 className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50"
@@ -851,28 +888,34 @@ export default function ModalPrecosColeta({
               <button
                 type="button"
                 onClick={async () => {
-                  const m = opcaoVinculoSelecionada?.meta as { tipoRegistro?: string; idRegistro?: number } | undefined;
-                  if (!m?.tipoRegistro || !m?.idRegistro) {
-                    setErro('Selecione um pedido de compra ou uma cotação para concluir.');
+                  const vinculos = vinculosSelecionados
+                    .map((item) => {
+                      const m = item.meta as { tipoRegistro?: string; idRegistro?: number } | undefined;
+                      if (!m?.tipoRegistro || m.idRegistro == null) return null;
+                      return {
+                        tipoRegistro: (m.tipoRegistro === 'COTACAO' ? 'COTACAO' : 'PEDIDO') as 'PEDIDO' | 'COTACAO',
+                        idRegistro: m.idRegistro,
+                      };
+                    })
+                    .filter((x): x is { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number } => x != null);
+                  if (vinculos.length === 0) {
+                    setErro('Selecione ao menos um pedido de compra ou uma cotação para concluir.');
                     return;
                   }
                   setFinalizandoComVinculo(true);
                   setErro(null);
-                  const res = await finalizarCotacao(coletaId, {
-                    tipoRegistro: m.tipoRegistro === 'COTACAO' ? 'COTACAO' : 'PEDIDO',
-                    idRegistro: m.idRegistro,
-                  });
+                  const res = await finalizarCotacao(coletaId, { vinculos });
                   setFinalizandoComVinculo(false);
                   if (res.ok) {
                     setModalVinculoFinalizar(false);
-                    setOpcaoVinculoSelecionada(null);
+                    setVinculosSelecionados([]);
                     setStatusLocal('Finalizada');
                     onColetaAlterada?.();
                   } else {
                     setErro(res.error ?? 'Não foi possível finalizar a cotação.');
                   }
                 }}
-                disabled={finalizandoComVinculo || !opcaoVinculoSelecionada}
+                disabled={finalizandoComVinculo || vinculosSelecionados.length === 0}
                 className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50 transition"
               >
                 {finalizandoComVinculo ? 'Finalizando…' : 'Confirmar e finalizar'}
