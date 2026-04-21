@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, type ReactNode } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useOnSincronizado } from '../../hooks/useOnSincronizado';
 import { listarColetasPrecos, obterOpcoesFiltroColetas, type ColetaPrecosListItem } from '../../api/compras';
@@ -197,12 +197,25 @@ function KPICard({
 
 function EvolutionPriceChart({ series }: { series: { key: string; label: string; registros: number; coletas: number }[] }) {
   const [hover, setHover] = useState<number | null>(null);
-  const W = 560;
+  const chartWrapRef = useRef<HTMLDivElement>(null);
+  const [W, setW] = useState(560);
   const H = 200;
   const padL = 44;
   const padR = 16;
   const padT = 16;
   const padB = 36;
+
+  useEffect(() => {
+    const el = chartWrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w != null && w > 0) setW(Math.max(260, Math.floor(w)));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [series.length]);
+
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
   const maxR = Math.max(1, ...series.map((s) => s.registros));
@@ -224,9 +237,9 @@ function EvolutionPriceChart({ series }: { series: { key: string; label: string;
       : '';
 
   return (
-    <div className="relative rounded-xl border border-slate-200 dark:border-slate-700 bg-gradient-to-b from-white to-slate-50/80 dark:from-slate-800 dark:to-slate-900/50 p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <div>
+    <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col rounded-xl border border-slate-200 dark:border-slate-700 bg-gradient-to-b from-white to-slate-50/80 dark:from-slate-800 dark:to-slate-900/50 p-4 shadow-sm">
+      <div className="mb-2 shrink-0 flex items-start justify-between gap-2">
+        <div className="min-w-0">
           <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">Evolução de lançamentos de preço</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             Volume de registros de preço por mês (criação da coleta) — indicador de intensidade da coleta
@@ -234,12 +247,17 @@ function EvolutionPriceChart({ series }: { series: { key: string; label: string;
         </div>
       </div>
       {series.length === 0 ? (
-        <p className="text-sm text-slate-500 dark:text-slate-400 py-12 text-center">Sem dados no período filtrado.</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400 py-12 text-center flex-1 flex items-center justify-center">Sem dados no período filtrado.</p>
       ) : (
-        <div className="relative w-full overflow-x-auto">
+        <div
+          ref={chartWrapRef}
+          className="relative w-full min-h-[200px] flex-1 min-w-0 flex flex-col justify-end"
+        >
           <svg
             viewBox={`0 0 ${W} ${H}`}
-            className="w-full min-h-[200px] max-h-[220px]"
+            width="100%"
+            height="auto"
+            className="block w-full shrink-0"
             role="img"
             aria-label="Gráfico de evolução de registros de preço"
             onMouseLeave={() => setHover(null)}
@@ -315,18 +333,18 @@ function StatusBarsInteractive({
 }) {
   const [hover, setHover] = useState<string | null>(null);
   return (
-    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm">
-      <div className="flex items-center justify-between gap-2 mb-1">
+    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm h-full flex flex-col min-h-[280px] min-w-0">
+      <div className="flex items-center justify-between gap-2 mb-1 shrink-0">
         <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">Distribuição das coletas</h3>
         <Link to="/compras/coletas-precos" className="text-sm font-medium text-primary-600 dark:text-primary-400 hover:underline">
           Abrir coletas
         </Link>
       </div>
-      <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">Proporção por status (passe o mouse para destacar).</p>
+      <p className="text-xs text-slate-500 dark:text-slate-400 mb-4 shrink-0">Proporção por status (passe o mouse para destacar).</p>
       {total === 0 ? (
-        <p className="text-sm text-slate-500 py-6 text-center">Sem coletas no filtro atual.</p>
+        <p className="text-sm text-slate-500 py-6 text-center flex-1 flex items-center justify-center">Sem coletas no filtro atual.</p>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-3 flex-1 min-h-0">
           {STATUS_ORDEM.map((status) => {
             const n = contagem[status] ?? 0;
             const pct = total > 0 ? Math.round((n / total) * 1000) / 10 : 0;
@@ -777,15 +795,17 @@ export default function ComprasDashboardPage() {
         />
       </div>
 
-      <div className="grid lg:grid-cols-5 gap-4 items-stretch">
-        <div className="lg:col-span-3 min-w-0">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-stretch">
+        <div className="min-w-0 w-full lg:row-span-2 min-h-0">
           <EvolutionPriceChart series={serieMensal} />
         </div>
-        <div className="lg:col-span-2 flex flex-col gap-4">
+        <div className="min-w-0">
           <GaugeAprovacao percent={taxaApr} />
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-sm flex-1">
+        </div>
+        <div className="min-w-0 flex flex-col">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-sm h-full flex flex-col min-h-0">
             <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-3">Tempos do processo</h4>
-            <div className="space-y-3 text-sm">
+            <div className="space-y-3 text-sm flex-1">
               <div className="flex justify-between gap-2 border-b border-slate-100 dark:border-slate-700 pb-2">
                 <span className="text-slate-500 dark:text-slate-400">Em aprovação → finalização</span>
                 <span className="font-bold text-primary-600 dark:text-primary-400 tabular-nums">
@@ -800,44 +820,45 @@ export default function ComprasDashboardPage() {
             </div>
           </div>
         </div>
-      </div>
-
-      <div className="grid lg:grid-cols-2 gap-4 items-start">
-        <StatusBarsInteractive contagem={contagem} total={total} />
-        {tempoMedioPorUsuario.length > 0 ? (
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-sm">
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-1">Tempo médio por comprador</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Abertura → finalização (coletas finalizadas). Passe o mouse nas barras.</p>
-            <div className="flex items-end gap-3 overflow-x-auto pb-1" style={{ minHeight: BAR_CHART_HEIGHT + 44 }}>
-              {tempoMedioPorUsuario.map(({ usuario, dias, quantidade }, index) => {
-                const barHeightPx = Math.min(
-                  BAR_CHART_HEIGHT,
-                  Math.max(6, Math.round((dias / maxDiasChart) * BAR_CHART_HEIGHT))
-                );
-                const barColor = BAR_COLORS[index % BAR_COLORS.length];
-                return (
-                  <div key={usuario} className="flex flex-col items-center shrink-0 group" style={{ width: 56 }}>
-                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 tabular-nums mb-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {formatarTempoMedio(dias)}
-                    </span>
-                    <div
-                      className={`w-9 rounded-t flex-shrink-0 ${barColor} transition-transform duration-200 group-hover:scale-105 origin-bottom cursor-default shadow-sm`}
-                      style={{ height: barHeightPx, minHeight: 6 }}
-                      title={`${formatarTempoMedio(dias)} · ${quantidade} coleta${quantidade !== 1 ? 's' : ''}`}
-                    />
-                    <span className="text-[10px] text-slate-600 dark:text-slate-300 font-medium truncate w-full text-center mt-1.5" title={usuario}>
-                      {usuario}
-                    </span>
-                  </div>
-                );
-              })}
+        <div className="min-w-0 flex flex-col min-h-0">
+          <StatusBarsInteractive contagem={contagem} total={total} />
+        </div>
+        <div className="min-w-0 flex flex-col min-h-0">
+          {tempoMedioPorUsuario.length > 0 ? (
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-sm h-full flex flex-col min-h-[280px]">
+              <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-1 shrink-0">Tempo médio por comprador</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 shrink-0">Abertura → finalização (coletas finalizadas). Passe o mouse nas barras.</p>
+              <div className="flex flex-1 items-end gap-3 overflow-x-auto pb-1 min-h-0" style={{ minHeight: BAR_CHART_HEIGHT + 44 }}>
+                {tempoMedioPorUsuario.map(({ usuario, dias, quantidade }, index) => {
+                  const barHeightPx = Math.min(
+                    BAR_CHART_HEIGHT,
+                    Math.max(6, Math.round((dias / maxDiasChart) * BAR_CHART_HEIGHT))
+                  );
+                  const barColor = BAR_COLORS[index % BAR_COLORS.length];
+                  return (
+                    <div key={usuario} className="flex flex-col items-center shrink-0 group" style={{ width: 56 }}>
+                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 tabular-nums mb-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {formatarTempoMedio(dias)}
+                      </span>
+                      <div
+                        className={`w-9 rounded-t flex-shrink-0 ${barColor} transition-transform duration-200 group-hover:scale-105 origin-bottom cursor-default shadow-sm`}
+                        style={{ height: barHeightPx, minHeight: 6 }}
+                        title={`${formatarTempoMedio(dias)} · ${quantidade} coleta${quantidade !== 1 ? 's' : ''}`}
+                      />
+                      <span className="text-[10px] text-slate-600 dark:text-slate-300 font-medium truncate w-full text-center mt-1.5" title={usuario}>
+                        {usuario}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className="rounded-xl border border-dashed border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/30 p-8 text-center text-sm text-slate-500 dark:text-slate-400">
-            Sem ranking por usuário (nenhuma coleta finalizada no filtro).
-          </div>
-        )}
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/30 p-8 text-center text-sm text-slate-500 dark:text-slate-400 h-full flex flex-col items-center justify-center min-h-[280px]">
+              Sem ranking por usuário (nenhuma coleta finalizada no filtro).
+            </div>
+          )}
+        </div>
       </div>
 
       <section>
