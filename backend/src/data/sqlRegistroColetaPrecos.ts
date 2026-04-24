@@ -21,6 +21,7 @@ Select
   Where (a3.idProduto = p.id) And (a3.status = 3) And (a3.lixeira Is Null)), 2),
   0) As 'Qtd Confirmada',
   sco.id As 'Id Solicitação',
+  u.nome As 'Usuario',
   Coalesce(sco.quantidadesolicitada, 0) As 'Qtd Liberada',
   cast(sco.dataNecessidade as date) as 'Data Necessidade',
   Cast(sco.dataEmissao As date) As 'Data Solicitacao',
@@ -664,6 +665,7 @@ GROUP BY idProduto, cod) ssf On ssf.idProduto = p.id
   Left Join
   (Select 
 a3.id,
+a3.idUsuario,
 a3.idProduto,
     (a3.quantidade) - Coalesce(Sum(scipc.qtdeAtendida), 0) As
     quantidadesolicitada,
@@ -713,6 +715,29 @@ where cc.status = 3
 group by
 icc.idProduto,
 p.nome) agpag on agpag.idproduto = p.id
+  left join usuario u on u.id = sco.idUsuario
 Where
   (p.idTipoProduto In (5, 13, 14, 6, 10, 16, 21, 22))
 `.trim();
+
+/**
+ * Consulta usada pelo gestor ao montar a grade (GET precos / Nomus): igual à BASE, mas sem o join
+ * pesado de empenho (BOM/listas). `Qtde Empenhada` vem como 0 — troca latência por precisão nesse campo.
+ * O SQL integral permanece em SQL_REGISTRO_COLETA_BASE / `_paste_nomus.sql`.
+ */
+function sqlRegistroColetaLeveFromBase(base: string): string {
+  const withZero = base.replace(
+    /  Coalesce\(emp\.qtdempenhada, 0\) As 'Qtde Empenhada',\r?\n/,
+    "  0 As 'Qtde Empenhada',\n"
+  );
+  const startMarker = '\n  Left Join\n  (Select pq.idProdutoComponente As idprod,';
+  const endMarker = '  Group By pq.idProdutoComponente) emp On emp.idprod = p.id\n';
+  const i = withZero.indexOf(startMarker);
+  const j = withZero.indexOf(endMarker);
+  if (i === -1 || j === -1 || j < i) {
+    throw new Error('[sqlRegistroColetaPrecos] Falha ao derivar SQL_REGISTRO_COLETA_LEVE (join emp).');
+  }
+  return withZero.slice(0, i) + '\n' + withZero.slice(j + endMarker.length);
+}
+
+export const SQL_REGISTRO_COLETA_LEVE = sqlRegistroColetaLeveFromBase(SQL_REGISTRO_COLETA_BASE);

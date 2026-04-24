@@ -374,6 +374,7 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
                 <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle" style={{ fontSize: '0.95em' }}>Data Solicit.</th>
                 <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle" style={{ fontSize: '0.95em' }}>Data Necess.</th>
                 <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle" style={{ fontSize: '0.95em' }}>Qtd Solicit.</th>
+                <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle" style={{ wordBreak: 'break-word', fontSize: '0.9em' }}>Solicitante da SC</th>
                 <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle bg-amber-200 text-black" style={{ fontSize: '0.95em', color: 'black' }}>Qtd Aprov</th>
                 <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle" style={{ fontSize: '0.95em' }}>Estoq Atual</th>
                 <th className="border border-slate-300 px-0.5 py-0.5 text-center font-semibold align-middle" style={{ fontSize: '0.95em' }}>Qtde Ultm Comp</th>
@@ -388,7 +389,7 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
             <tbody>
               {produtos.length === 0 && (
                 <tr>
-                  <td colSpan={18 + fornecedores.length} className="border border-slate-300 px-0.5 py-2 text-center text-black">
+                  <td colSpan={19 + fornecedores.length} className="border border-slate-300 px-0.5 py-2 text-center text-black">
                     Nenhum produto na coleta ou nenhum preço cadastrado.
                   </td>
                 </tr>
@@ -409,6 +410,7 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
                 /** SQL Nomus: `coalesce(agpag.quantidade,0) as 'Ag Pag'` */
                 const agPag = getRowValue(row, ['Ag Pag', 'ag pag']);
                 const qtdSolicit = getRowValue(row, ['Qtd Liberada', 'qtd liberada']);
+                const solicitanteSc = String(getRowValue(row, ['Usuario', 'usuario']) ?? '').trim();
                 const dataNecess = getRowValue(row, ['Data Necessidade', 'data necessidade']);
                 const ultimoFornecedor = String(getRowValue(row, ['Ultimo Fornecedor', 'ultimo fornecedor']) ?? '—');
                 const qtdeUltComp = getRowValue(row, ['Qtde Ult Compra', 'qtde ult compra']);
@@ -445,6 +447,7 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
                     <td className="border border-slate-300 px-0.5 py-0.5 text-center whitespace-nowrap align-top text-black" style={{ fontSize: '0.95em' }}>{fmtData(dataSolicit)}</td>
                     <td className="border border-slate-300 px-0.5 py-0.5 text-center whitespace-nowrap align-top text-black" style={{ fontSize: '0.95em' }}>{fmtData(dataNecess)}</td>
                     <td className="border border-slate-300 px-0.5 py-0.5 text-center whitespace-nowrap align-top text-black" style={{ fontSize: '0.95em' }}>{fmtNum(qtdSolicit)}</td>
+                    <td className="border border-slate-300 px-0.5 py-0.5 text-center align-top break-words text-black" style={{ wordBreak: 'break-word', fontSize: '0.9em' }}>{solicitanteSc || '—'}</td>
                     <td className="border border-slate-300 px-0.5 py-0.5 text-center whitespace-nowrap align-top bg-amber-200 text-black" style={{ fontSize: '0.95em', color: 'black' }}>{fmtNum(qtdAprov)}</td>
                     <td className="border border-slate-300 px-0.5 py-0.5 text-center whitespace-nowrap align-top text-black" style={{ fontSize: '0.95em' }}>{fmtNum(estoqAtual)}</td>
                     <td className="border border-slate-300 px-0.5 py-0.5 text-center whitespace-nowrap align-top text-black" style={{ fontSize: '0.95em' }}>{fmtNum(qtdeUltComp)}</td>
@@ -473,7 +476,7 @@ export default function ConteudoMapaCotacao({ coleta, onClose }: ConteudoMapaCot
                       </div>
                     </td>
                   ))}
-                  <td colSpan={14} className="border border-slate-300 px-0.5 py-0.5" />
+                  <td colSpan={15} className="border border-slate-300 px-0.5 py-0.5" />
                 </tr>
               )}
             </tbody>

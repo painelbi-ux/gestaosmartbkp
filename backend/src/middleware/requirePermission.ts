@@ -45,21 +45,15 @@ export async function getPermissoesUsuario(login: string): Promise<CodigoPermiss
   const union = [...new Set([...groupPerms])];
 
   const grupoNome = usuario.grupo?.nome ?? '';
-  const allowIntegracaoForGroup = ['Compras', 'Operador Compras'].includes(String(grupoNome));
+  const comprasGrupoComIntegracaoImplicita = ['Compras', 'Operador Compras'].includes(String(grupoNome));
 
-  if (allowIntegracaoForGroup) {
-    // Garante que os grupos Compras/Operador Compras tenham acesso à integração.
+  if (comprasGrupoComIntegracaoImplicita) {
+    // Compatibilidade: esses dois nomes de grupo sempre recebem integração se ainda não estiver no JSON.
     if (!union.includes(PERMISSOES.INTEGRACAO_VER)) union.push(PERMISSOES.INTEGRACAO_VER);
     if (!union.includes(PERMISSOES.INTEGRACAO_EDITAR)) union.push(PERMISSOES.INTEGRACAO_EDITAR);
   }
 
-  // Regra legado: integração só para master.
-  // Exceção: grupos Compras e Operador Compras.
-  if (!allowIntegracaoForGroup) {
-    const semIntegracaoParaNaoMaster = union.filter((p) => !String(p).startsWith('integracao.'));
-    return semIntegracaoParaNaoMaster.filter((p): p is CodigoPermissao => typeof p === 'string');
-  }
-
+  // Demais grupos: integracao.* vem apenas do que está salvo em grupo.permissoes (ex.: Supervisor de Compras).
   return union.filter((p): p is CodigoPermissao => typeof p === 'string');
 }
 

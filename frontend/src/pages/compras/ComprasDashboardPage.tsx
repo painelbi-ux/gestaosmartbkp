@@ -1,7 +1,12 @@
 import { useEffect, useState, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useOnSincronizado } from '../../hooks/useOnSincronizado';
-import { listarColetasPrecos, obterOpcoesFiltroColetas, type ColetaPrecosListItem } from '../../api/compras';
+import {
+  listarColetasPrecos,
+  obterOpcoesFiltroColetas,
+  obterSerieErrosVinculoOperacionalDashboard,
+  type ColetaPrecosListItem,
+} from '../../api/compras';
 import MultiSelectWithSearch from '../../components/MultiSelectWithSearch';
 
 const STATUS_ORDEM = ['Em cotação', 'Em Aprovação', 'Rejeitada', 'Finalizada', 'Enviado para Financeiro'] as const;
@@ -324,6 +329,133 @@ function EvolutionPriceChart({ series }: { series: { key: string; label: string;
   );
 }
 
+function EvolutionErroOperacionalChart({ series }: { series: { key: string; label: string; count: number }[] }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const chartWrapRef = useRef<HTMLDivElement>(null);
+  const [W, setW] = useState(560);
+  const H = 200;
+  const padL = 44;
+  const padR = 16;
+  const padT = 16;
+  const padB = 36;
+
+  useEffect(() => {
+    const el = chartWrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w != null && w > 0) setW(Math.max(260, Math.floor(w)));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [series.length]);
+
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const maxR = Math.max(1, ...series.map((s) => s.count));
+  const n = Math.max(1, series.length);
+  const points = series.map((s, i) => {
+    const x = padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+    const y = padT + innerH - (s.count / maxR) * innerH;
+    return { x, y, ...s };
+  });
+  const pathD =
+    points.length === 0
+      ? ''
+      : points.length === 1
+        ? `M ${points[0].x} ${points[0].y}`
+        : `M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')}`;
+  const areaD =
+    pathD && points.length > 0
+      ? `${pathD} L ${points[points.length - 1].x} ${padT + innerH} L ${points[0].x} ${padT + innerH} Z`
+      : '';
+
+  return (
+    <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col rounded-xl border border-slate-200 dark:border-slate-700 bg-gradient-to-b from-white to-slate-50/80 dark:from-slate-800 dark:to-slate-900/50 p-4 shadow-sm">
+      <div className="mb-2 shrink-0 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">Erros operacionais (vínculo)</h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            Finalizações em que o pedido/cotação foi registrado como erro operacional (data do registro). Respeita o filtro de datas acima quando preenchido; caso contrário, últimos 12 meses.
+          </p>
+        </div>
+      </div>
+      {series.length === 0 ? (
+        <p className="text-sm text-slate-500 dark:text-slate-400 py-12 text-center flex-1 flex items-center justify-center">
+          Nenhum registro de erro operacional no período.
+        </p>
+      ) : (
+        <div ref={chartWrapRef} className="relative w-full min-h-[200px] flex-1 min-w-0 flex flex-col justify-end">
+          <svg
+            viewBox={`0 0 ${W} ${H}`}
+            width="100%"
+            height="auto"
+            className="block w-full shrink-0"
+            role="img"
+            aria-label="Gráfico de erros operacionais de vínculo"
+            onMouseLeave={() => setHover(null)}
+          >
+            <defs>
+              <linearGradient id="evErroFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="rgb(217 119 6)" stopOpacity="0.28" />
+                <stop offset="100%" stopColor="rgb(217 119 6)" stopOpacity="0" />
+              </linearGradient>
+            </defs>
+            {[0, 0.25, 0.5, 0.75, 1].map((t) => {
+              const y = padT + innerH * (1 - t);
+              return (
+                <line key={t} x1={padL} y1={y} x2={padL + innerW} y2={y} stroke="currentColor" strokeOpacity={0.08} className="text-slate-400" />
+              );
+            })}
+            {areaD && <path d={areaD} fill="url(#evErroFill)" />}
+            {pathD && (
+              <path
+                d={pathD}
+                fill="none"
+                stroke="rgb(217 119 6)"
+                strokeWidth={2.5}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="drop-shadow-sm"
+              />
+            )}
+            {points.map((p, i) => (
+              <g key={p.key}>
+                <circle
+                  cx={p.x}
+                  cy={p.y}
+                  r={hover === i ? 8 : 5}
+                  fill="white"
+                  stroke="rgb(217 119 6)"
+                  strokeWidth={2}
+                  className="cursor-pointer transition-all duration-150"
+                  onMouseEnter={() => setHover(i)}
+                />
+                <text
+                  x={p.x}
+                  y={H - 8}
+                  textAnchor="middle"
+                  className="fill-slate-500 dark:fill-slate-400 text-[10px] font-medium"
+                  style={{ fontSize: 10 }}
+                >
+                  {p.label}
+                </text>
+              </g>
+            ))}
+          </svg>
+          {hover != null && points[hover] && (
+            <div className="absolute left-1/2 top-8 -translate-x-1/2 z-10 px-3 py-2 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs shadow-xl pointer-events-none whitespace-nowrap">
+              <strong>{points[hover].label}</strong>
+              <br />
+              {points[hover].count} registro{points[hover].count !== 1 ? 's' : ''}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatusBarsInteractive({
   contagem,
   total,
@@ -483,6 +615,7 @@ export default function ComprasDashboardPage() {
   const [filterCodigo, setFilterCodigo] = useState('');
   const [filterDescricao, setFilterDescricao] = useState('');
   const [opcoesFiltro, setOpcoesFiltro] = useState<{ codigos: string[]; descricoes: string[] }>({ codigos: [], descricoes: [] });
+  const [serieErrosVinculoOperacional, setSerieErrosVinculoOperacional] = useState<{ key: string; label: string; count: number }[]>([]);
 
   useEffect(() => {
     setFilterStatus(statusFromUrl);
@@ -532,16 +665,23 @@ export default function ComprasDashboardPage() {
     setLoading(true);
     setErro(null);
     try {
-      const res = await listarColetasPrecos();
+      const [res, errosRes] = await Promise.all([
+        listarColetasPrecos(),
+        obterSerieErrosVinculoOperacionalDashboard({
+          dataInicio: filterDataInicio || undefined,
+          dataFim: filterDataFim || undefined,
+        }),
+      ]);
       setColetas(Array.isArray(res.data) ? res.data : []);
       if (res.error) setErro(res.error);
+      setSerieErrosVinculoOperacional(errosRes.series ?? []);
     } catch (e) {
       setErro(e instanceof Error ? e.message : 'Erro ao carregar coletas.');
       setColetas([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filterDataInicio, filterDataFim]);
 
   useEffect(() => {
     carregar();
@@ -859,6 +999,10 @@ export default function ComprasDashboardPage() {
             </div>
           )}
         </div>
+      </div>
+
+      <div className="min-w-0 w-full">
+        <EvolutionErroOperacionalChart series={serieErrosVinculoOperacional} />
       </div>
 
       <section>

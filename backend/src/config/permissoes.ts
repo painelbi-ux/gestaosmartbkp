@@ -10,6 +10,8 @@ export const PERMISSOES = {
   HEATMAP_VER: 'heatmap.ver',
   COMPRAS_VER: 'compras.ver',
   COMPRAS_EDITAR: 'compras.editar',
+  /** Lista na finalização da coleta pedidos já recebidos (status 1) e cotações nos últimos 180 dias. */
+  COMPRAS_VINCULO_FINALIZACAO_AMPLIADO: 'compras.vinculo_finalizacao.ampliado',
   PRECIFICACAO_VER: 'precificacao.ver',
   PRECIFICACAO_GERAR: 'precificacao.gerar',
   RELATORIOS_VER: 'relatorios.ver',
@@ -71,6 +73,7 @@ export const TODAS_PERMISSOES: CodigoPermissao[] = [
   PERMISSOES.HEATMAP_VER,
   PERMISSOES.COMPRAS_VER,
   PERMISSOES.COMPRAS_EDITAR,
+  PERMISSOES.COMPRAS_VINCULO_FINALIZACAO_AMPLIADO,
   PERMISSOES.PRECIFICACAO_VER,
   PERMISSOES.PRECIFICACAO_GERAR,
   PERMISSOES.RELATORIOS_VER,
@@ -127,6 +130,8 @@ export const LABELS_PERMISSOES: Record<CodigoPermissao, string> = {
   [PERMISSOES.HEATMAP_VER]: 'Ver Heatmap',
   [PERMISSOES.COMPRAS_VER]: 'Ver Compras (Coletas de preços)',
   [PERMISSOES.COMPRAS_EDITAR]: 'Todas as funcionalidades (Compras)',
+  [PERMISSOES.COMPRAS_VINCULO_FINALIZACAO_AMPLIADO]:
+    'Compras: vincular finalização a pedidos já recebidos / lista ampliada (últimos 180 dias)',
   [PERMISSOES.PRECIFICACAO_VER]: 'Visualizar Precificação',
   [PERMISSOES.PRECIFICACAO_GERAR]: 'Gerar precificação',
   [PERMISSOES.RELATORIOS_VER]: 'Ver Relatórios',

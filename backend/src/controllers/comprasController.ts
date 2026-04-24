@@ -1,9 +1,17 @@
 import type { Request, Response } from 'express';
 import { resolve } from 'path';
 import bcrypt from 'bcryptjs';
-import { listarProdutosColeta, buscarRegistroColetaNomus, listarFornecedoresAtivos, listarCondicoesPagamentoNomus, listarFormasPagamentoNomus } from '../data/comprasRepository.js';
+import {
+  listarProdutosColeta,
+  buscarRegistroColetaNomus,
+  listarFornecedoresAtivos,
+  listarCondicoesPagamentoNomus,
+  listarFormasPagamentoNomus,
+} from '../data/comprasRepository.js';
 import { prisma } from '../config/prisma.js';
 import { getNomusPool, isNomusEnabled } from '../config/nomusDb.js';
+import { getPermissoesUsuario } from '../middleware/requirePermission.js';
+import { PERMISSOES } from '../config/permissoes.js';
 
 const MAX_FORNECEDORES_POR_COTACAO = 5;
 /** Horas sem movimentação após as quais o usuário fica bloqueado para criar nova coleta até dar ciência. */
@@ -696,22 +704,18 @@ export async function patchReabrirColeta(req: Request, res: Response): Promise<v
   }
 }
 
-/**
- * GET /api/compras/coletas/opcoes-vinculo-finalizacao?q=
- * Lista pedidos de compra e cotações no Nomus para vincular à finalização da coleta (busca no nome e fornecedor).
- */
-export async function getOpcoesVinculoFinalizacao(req: Request, res: Response): Promise<void> {
-  if (!isNomusEnabled()) {
-    res.status(503).json({ data: [], error: 'NOMUS_DB_URL não configurado' });
-    return;
-  }
-  const pool = getNomusPool();
-  if (!pool) {
-    res.status(503).json({ data: [], error: 'Conexão Nomus indisponível' });
-    return;
-  }
-  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-  const sqlBase = `
+/** Data mínima (YYYY-MM-DD) para filtro Nomus: hoje menos 180 dias (início do dia local do servidor). */
+function dataMinimaEmissao180Dias(): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - 180);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+const SQL_VINCULO_FINALIZACAO_PADRAO = `
 SELECT * FROM (
 SELECT
     pc.id,
@@ -734,53 +738,194 @@ SELECT
 FROM cotacaocompra c
 LEFT JOIN coletaprecoscotacao cc ON cc.idCotacaoCompra = c.id
 LEFT JOIN pessoa p ON p.id = cc.idFornecedor
-WHERE c.status IN (1,2,4)
+WHERE c.status IN (1,2,3,4)
 ) t
 `.trim();
+
+/** Lista ampliada (pedidos status 1–4 + cotações + janela 180 dias): só para fluxo “erro operacional” (permissão ampliado). */
+const SQL_VINCULO_FINALIZACAO_AMPLIADO = `
+SELECT * FROM (
+SELECT
+    pc.id,
+    pc.nome,
+    p.nome AS nomeFornecedor,
+    pc.dataEmissao,
+    'PEDIDO' AS tipoRegistro
+FROM itempedidocompra ipc
+LEFT JOIN pedidocompra pc ON pc.id = ipc.idPedidoCompra
+LEFT JOIN pessoa p ON p.id = pc.idFornecedor
+WHERE ipc.status IN (1,2,3,4) AND pc.dataEmissao >= ?
+GROUP BY pc.id, pc.nome, p.nome, pc.dataEmissao
+UNION ALL
+SELECT
+    c.id,
+    c.nome,
+    p.nome AS nomeFornecedor,
+    c.dataEmissao,
+    'COTACAO' AS tipoRegistro
+FROM cotacaocompra c
+LEFT JOIN coletaprecoscotacao cc ON cc.idCotacaoCompra = c.id
+LEFT JOIN pessoa p ON p.id = cc.idFornecedor
+WHERE c.status IN (1,2,3,4) AND c.dataEmissao >= ?
+) t
+`.trim();
+
+type OpcaoVinculoRow = {
+  id: number;
+  nome: string;
+  nomeFornecedor: string | null;
+  dataEmissao: string | null;
+  tipoRegistro: string;
+};
+
+function mapRowsToOpcoesVinculo(list: Record<string, unknown>[]): OpcaoVinculoRow[] {
+  const seen = new Set<string>();
+  const data: OpcaoVinculoRow[] = [];
+  for (const r of list) {
+    const idRaw = r.id ?? r.ID;
+    const idNum = typeof idRaw === 'number' ? idRaw : Number(idRaw);
+    if (!Number.isFinite(idNum) || idNum < 1) continue;
+    const tipo = String(r.tipoRegistro ?? r.tiporegistro ?? '').trim();
+    if (tipo !== 'PEDIDO' && tipo !== 'COTACAO') continue;
+    const key = `${tipo}-${idNum}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const nome = r.nome != null ? String(r.nome) : '';
+    const nomeFornecedor = r.nomeFornecedor != null ? String(r.nomeFornecedor) : null;
+    let dataEmissao: string | null = null;
+    const de = r.dataEmissao ?? r.dataemissao;
+    if (de instanceof Date) {
+      dataEmissao = de.toISOString().slice(0, 10);
+    } else if (de != null) {
+      dataEmissao = String(de).slice(0, 32);
+    }
+    data.push({ id: idNum, nome, nomeFornecedor, dataEmissao, tipoRegistro: tipo });
+  }
+  return data;
+}
+
+async function executarConsultaOpcoesVinculo(
+  pool: NonNullable<ReturnType<typeof getNomusPool>>,
+  sqlBase: string,
+  baseParams: unknown[],
+  q: string,
+  limit: number
+): Promise<OpcaoVinculoRow[]> {
+  let sql = sqlBase;
+  const params: unknown[] = [...baseParams];
+  if (q) {
+    const like = `%${q}%`;
+    sql += ` WHERE (t.nome LIKE ? OR IFNULL(t.nomeFornecedor,'') LIKE ? OR CONCAT(IFNULL(t.nome,''), ' ', IFNULL(t.nomeFornecedor,'')) LIKE ?)`;
+    params.push(like, like, like);
+  }
+  sql += ` ORDER BY t.dataEmissao DESC LIMIT ${limit}`;
+  const [rows] = await pool.query(sql, params);
+  const list = (Array.isArray(rows) ? rows : []) as Record<string, unknown>[];
+  return mapRowsToOpcoesVinculo(list);
+}
+
+/**
+ * GET /api/compras/coletas/opcoes-vinculo-finalizacao?q=
+ * Lista pedidos/cotações Nomus para vincular à finalização (SQL padrão para todos os usuários autorizados a compras).
+ */
+export async function getOpcoesVinculoFinalizacao(req: Request, res: Response): Promise<void> {
+  if (!isNomusEnabled()) {
+    res.status(503).json({ data: [], error: 'NOMUS_DB_URL não configurado' });
+    return;
+  }
+  const pool = getNomusPool();
+  if (!pool) {
+    res.status(503).json({ data: [], error: 'Conexão Nomus indisponível' });
+    return;
+  }
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   try {
-    let sql = sqlBase;
-    const params: unknown[] = [];
-    if (q) {
-      const like = `%${q}%`;
-      sql += ` WHERE (t.nome LIKE ? OR IFNULL(t.nomeFornecedor,'') LIKE ? OR CONCAT(IFNULL(t.nome,''), ' ', IFNULL(t.nomeFornecedor,'')) LIKE ?)`;
-      params.push(like, like, like);
-    }
-    sql += ` ORDER BY t.dataEmissao DESC LIMIT 200`;
-    const [rows] = await pool.query(sql, params);
-    const list = (Array.isArray(rows) ? rows : []) as Record<string, unknown>[];
-    const seen = new Set<string>();
-    const data: {
-      id: number;
-      nome: string;
-      nomeFornecedor: string | null;
-      dataEmissao: string | null;
-      tipoRegistro: string;
-    }[] = [];
-    for (const r of list) {
-      const idRaw = r.id ?? r.ID;
-      const idNum = typeof idRaw === 'number' ? idRaw : Number(idRaw);
-      if (!Number.isFinite(idNum) || idNum < 1) continue;
-      const tipo = String(r.tipoRegistro ?? r.tiporegistro ?? '').trim();
-      if (tipo !== 'PEDIDO' && tipo !== 'COTACAO') continue;
-      const key = `${tipo}-${idNum}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const nome = r.nome != null ? String(r.nome) : '';
-      const nomeFornecedor = r.nomeFornecedor != null ? String(r.nomeFornecedor) : null;
-      let dataEmissao: string | null = null;
-      const de = r.dataEmissao ?? r.dataemissao;
-      if (de instanceof Date) {
-        dataEmissao = de.toISOString().slice(0, 10);
-      } else if (de != null) {
-        dataEmissao = String(de).slice(0, 32);
-      }
-      data.push({ id: idNum, nome, nomeFornecedor, dataEmissao, tipoRegistro: tipo });
-    }
+    const data = await executarConsultaOpcoesVinculo(pool, SQL_VINCULO_FINALIZACAO_PADRAO, [], q, 200);
     res.json({ data });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[comprasController] getOpcoesVinculoFinalizacao:', msg);
     res.status(503).json({ data: [], error: msg });
+  }
+}
+
+/**
+ * GET /api/compras/coletas/opcoes-vinculo-erro-operacional?q=
+ * Lista ampliada (status + 180 dias) para checklist no fluxo de erro operacional. Exige permissão ampliado.
+ */
+export async function getOpcoesVinculoErroOperacional(req: Request, res: Response): Promise<void> {
+  if (!isNomusEnabled()) {
+    res.status(503).json({ data: [], error: 'NOMUS_DB_URL não configurado' });
+    return;
+  }
+  const pool = getNomusPool();
+  if (!pool) {
+    res.status(503).json({ data: [], error: 'Conexão Nomus indisponível' });
+    return;
+  }
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  try {
+    const dataMin = dataMinimaEmissao180Dias();
+    const data = await executarConsultaOpcoesVinculo(pool, SQL_VINCULO_FINALIZACAO_AMPLIADO, [dataMin, dataMin], q, 500);
+    res.json({ data });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[comprasController] getOpcoesVinculoErroOperacional:', msg);
+    res.status(503).json({ data: [], error: msg });
+  }
+}
+
+/**
+ * GET /api/compras/dashboard/erros-vinculo-operacional
+ * Série mensal de finalizações registradas como erro operacional (data do registro).
+ * Query opcional: dataInicio, dataFim (YYYY-MM-DD). Sem parâmetros: últimos 12 meses.
+ */
+export async function getDashboardErrosVinculoOperacional(req: Request, res: Response): Promise<void> {
+  const di = typeof req.query.dataInicio === 'string' ? req.query.dataInicio.trim() : '';
+  const df = typeof req.query.dataFim === 'string' ? req.query.dataFim.trim() : '';
+  try {
+    let inicio: Date;
+    let fim: Date;
+    if (di && /^\d{4}-\d{2}-\d{2}$/.test(di)) {
+      inicio = new Date(`${di}T00:00:00.000`);
+    } else {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      d.setMonth(d.getMonth() - 12);
+      inicio = d;
+    }
+    if (df && /^\d{4}-\d{2}-\d{2}$/.test(df)) {
+      fim = new Date(`${df}T23:59:59.999`);
+    } else {
+      fim = new Date();
+      fim.setHours(23, 59, 59, 999);
+    }
+    if (Number.isNaN(inicio.getTime()) || Number.isNaN(fim.getTime()) || inicio > fim) {
+      res.status(400).json({ error: 'Intervalo de datas inválido.' });
+      return;
+    }
+
+    const rows = await prisma.coletaPrecosVinculoErroOperacional.findMany({
+      where: { createdAt: { gte: inicio, lte: fim } },
+      select: { createdAt: true },
+    });
+    const map = new Map<string, number>();
+    for (const r of rows) {
+      const d = r.createdAt;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    const sorted = Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    const series = sorted.map(([key, count]) => ({
+      key,
+      label: new Date(`${key}-01T12:00:00`).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }),
+      count,
+    }));
+    res.json({ series });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[comprasController] getDashboardErrosVinculoOperacional:', msg);
+    res.status(503).json({ series: [], error: msg });
   }
 }
 
@@ -804,7 +949,8 @@ async function existeVinculoFinalizacaoNomus(
  * PATCH /api/compras/coletas/:id/finalizar-cotacao
  * Altera status para "Finalizada". Só permite se status atual for "Em Aprovação".
  * Vínculo obrigatório: coletas novas (requerVinculoFinalizacao) ou qualquer coleta ainda em "Em cotação" / "Em Aprovação" (inclui as anteriores à migration).
- * Body: { vinculos: [{ tipoRegistro: 'PEDIDO'|'COTACAO', idRegistro: number }, ...] } ou legado { tipoRegistro, idRegistro }.
+ * Body: { vinculos: [...] } ou legado { tipoRegistro, idRegistro }.
+ * Opcional (exige permissão `compras.vinculo_finalizacao.ampliado` e senha): { erroOperacional: true, senha } — grava auditoria de erro operacional.
  */
 export async function patchFinalizarCotacao(req: Request, res: Response): Promise<void> {
   const id = parseInt(String(req.params.id), 10);
@@ -812,10 +958,22 @@ export async function patchFinalizarCotacao(req: Request, res: Response): Promis
     res.status(400).json({ error: 'ID da coleta inválido.' });
     return;
   }
-  let bodyRaw = req.body as { tipoRegistro?: unknown; idRegistro?: unknown; vinculos?: unknown };
+  let bodyRaw = req.body as {
+    tipoRegistro?: unknown;
+    idRegistro?: unknown;
+    vinculos?: unknown;
+    erroOperacional?: unknown;
+    senha?: unknown;
+  };
   if (typeof bodyRaw === 'string') {
     try {
-      bodyRaw = JSON.parse(bodyRaw) as { tipoRegistro?: unknown; idRegistro?: unknown; vinculos?: unknown };
+      bodyRaw = JSON.parse(bodyRaw) as {
+        tipoRegistro?: unknown;
+        idRegistro?: unknown;
+        vinculos?: unknown;
+        erroOperacional?: unknown;
+        senha?: unknown;
+      };
     } catch {
       bodyRaw = {};
     }
@@ -921,22 +1079,79 @@ export async function patchFinalizarCotacao(req: Request, res: Response): Promis
       }
     }
 
+    const flagErroOperacional =
+      bodyRaw.erroOperacional === true ||
+      bodyRaw.erroOperacional === 'true' ||
+      bodyRaw.erroOperacional === 1;
+
+    if (flagErroOperacional) {
+      if (listaVinculos.length === 0) {
+        res.status(400).json({
+          error: 'Para registrar erro operacional é obrigatório vincular ao menos um pedido ou cotação.',
+        });
+        return;
+      }
+      const login = req.user?.login;
+      if (!login) {
+        res.status(401).json({ error: 'Não autorizado.' });
+        return;
+      }
+      const perms = await getPermissoesUsuario(login);
+      if (!perms.includes(PERMISSOES.COMPRAS_VINCULO_FINALIZACAO_AMPLIADO)) {
+        res.status(403).json({
+          error: 'Sem permissão para finalizar com registro de erro operacional.',
+        });
+        return;
+      }
+      const senha = typeof bodyRaw.senha === 'string' ? bodyRaw.senha.trim() : '';
+      if (!senha) {
+        res.status(400).json({ error: 'Informe sua senha para registrar o vínculo como erro operacional.' });
+        return;
+      }
+      const usuario = await prisma.usuario.findUnique({ where: { login } });
+      if (!usuario) {
+        res.status(401).json({ error: 'Usuário não encontrado.' });
+        return;
+      }
+      const senhaOk = await bcrypt.compare(senha, usuario.senhaHash);
+      if (!senhaOk) {
+        res.status(401).json({ error: 'Senha incorreta.' });
+        return;
+      }
+    }
+
     const primeiro = listaVinculos[0];
-    await prisma.coletaPrecos.update({
-      where: { id },
-      data: {
-        status: 'Finalizada',
-        dataFinalizacao: new Date(),
-        dataUltimaMovimentacao: dataUltimaMovimentacao(),
-        ...(listaVinculos.length > 0 && primeiro
-          ? {
-              finalizacaoVinculosJson: JSON.stringify(listaVinculos),
-              finalizacaoTipoRegistro: primeiro.tipoRegistro,
-              finalizacaoIdRegistro: primeiro.idRegistro,
-            }
-          : {}),
-      },
-    });
+    const dataUpdate = {
+      status: 'Finalizada' as const,
+      dataFinalizacao: new Date(),
+      dataUltimaMovimentacao: dataUltimaMovimentacao(),
+      ...(listaVinculos.length > 0 && primeiro
+        ? {
+            finalizacaoVinculosJson: JSON.stringify(listaVinculos),
+            finalizacaoTipoRegistro: primeiro.tipoRegistro,
+            finalizacaoIdRegistro: primeiro.idRegistro,
+          }
+        : {}),
+    };
+
+    const loginAud = req.user?.login ?? '';
+    if (flagErroOperacional && listaVinculos.length > 0) {
+      await prisma.$transaction([
+        prisma.coletaPrecos.update({ where: { id }, data: dataUpdate }),
+        prisma.coletaPrecosVinculoErroOperacional.create({
+          data: {
+            coletaPrecosId: id,
+            usuario: loginAud,
+            vinculosJson: JSON.stringify(listaVinculos),
+          },
+        }),
+      ]);
+    } else {
+      await prisma.coletaPrecos.update({
+        where: { id },
+        data: dataUpdate,
+      });
+    }
     res.json({ ok: true, status: 'Finalizada' });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

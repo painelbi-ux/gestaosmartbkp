@@ -147,8 +147,25 @@ model ColetaPrecos {
   registros   ColetaPrecosRegistro[]
   cotacoes    ColetaPrecosCotacao[]
   ciencias    ColetaPrecosCiencia[]
+  /// Finalizações registradas como erro operacional (vínculo ampliado + senha).
+  vinculosErroOperacional ColetaPrecosVinculoErroOperacional[]
 
   @@map("coleta_precos")
+}
+
+/// Registro de finalização com vínculo tratado como erro operacional (auditoria / dashboard).
+model ColetaPrecosVinculoErroOperacional {
+  id             Int      @id @default(autoincrement())
+  coletaPrecosId Int
+  usuario        String // login de quem confirmou com senha
+  vinculosJson   String // mesmo formato de finalizacaoVinculosJson
+  createdAt      DateTime @default(now())
+
+  coletaPrecos ColetaPrecos @relation(fields: [coletaPrecosId], references: [id], onDelete: Cascade)
+
+  @@index([coletaPrecosId])
+  @@index([createdAt])
+  @@map("coleta_precos_vinculo_erro_operacional")
 }
 
 // Ciência dada pelo usuário para coleta com mais de 72h em aberto (desbloqueia criar nova coleta)

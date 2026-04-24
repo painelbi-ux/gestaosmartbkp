@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --config vite.config.ts",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "export:dfc-plano": "node scripts/export-plano-contas-dfc.cjs",
+    "build:dfc-estrutura": "node scripts/build-estrutura-dfc-json.cjs"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

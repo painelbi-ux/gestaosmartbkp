@@ -10,12 +10,15 @@ import {
   cancelarTodosItensColeta,
   atualizarObservacoesColeta,
   listarOpcoesVinculoFinalizacao,
+  listarOpcoesVinculoErroOperacional,
   type OpcaoVinculoFinalizacaoItem,
 } from '../../api/compras';
 import type { FornecedorColetaItem } from '../../api/compras';
 import ModalCadastrarPrecos from './ModalCadastrarPrecos';
 import ModalCriarColetaPrecos from './ModalCriarColetaPrecos';
 import SingleSelectWithSearch, { type OptionItem } from '../SingleSelectWithSearch';
+import { useAuth } from '../../contexts/AuthContext';
+import { PERMISSOES } from '../../config/permissoes';
 
 export interface ModalPrecosColetaProps {
   coletaId: number;
@@ -143,6 +146,16 @@ function mapOpcoesVinculoParaSelect(rows: OpcaoVinculoFinalizacaoItem[]): Option
   }));
 }
 
+function chaveVinculoErroOpParaPayload(key: string): { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number } | null {
+  const i = key.lastIndexOf('-');
+  if (i <= 0) return null;
+  const tipo = key.slice(0, i).toUpperCase();
+  const idRegistro = parseInt(key.slice(i + 1), 10);
+  if (tipo !== 'PEDIDO' && tipo !== 'COTACAO') return null;
+  if (!Number.isFinite(idRegistro) || idRegistro < 1) return null;
+  return { tipoRegistro: tipo as 'PEDIDO' | 'COTACAO', idRegistro };
+}
+
 export default function ModalPrecosColeta({
   coletaId,
   coletaLabel,
@@ -217,6 +230,16 @@ export default function ModalPrecosColeta({
   const [opcoesVinculoLista, setOpcoesVinculoLista] = useState<OptionItem[]>([]);
   const [loadingOpcoesVinculo, setLoadingOpcoesVinculo] = useState(false);
   const [finalizandoComVinculo, setFinalizandoComVinculo] = useState(false);
+  /** Passo 2: checklist ampliada (Nomus) + senha antes de finalizar com erro operacional. */
+  const [modalSqlErroOperacional, setModalSqlErroOperacional] = useState(false);
+  const [linhasOpcoesErroOperacional, setLinhasOpcoesErroOperacional] = useState<OpcaoVinculoFinalizacaoItem[]>([]);
+  const [carregandoChecklistErroOp, setCarregandoChecklistErroOp] = useState(false);
+  const [erroChecklistErroOp, setErroChecklistErroOp] = useState<string | null>(null);
+  const [filtroLocalChecklistErroOp, setFiltroLocalChecklistErroOp] = useState('');
+  const [chavesSelecionadasErroOp, setChavesSelecionadasErroOp] = useState<string[]>([]);
+  const [senhaErroOperacional, setSenhaErroOperacional] = useState('');
+  const { hasPermission } = useAuth();
+  const podeRegistrarErroOperacionalVinculo = hasPermission(PERMISSOES.COMPRAS_VINCULO_FINALIZACAO_AMPLIADO);
   const dataRefAprovacao = dataEnvioAprovacao ?? dataEnvioAprovacaoLocal;
   const [tempoAprovacaoDisplay, setTempoAprovacaoDisplay] = useState('');
   useEffect(() => {
@@ -275,6 +298,17 @@ export default function ModalPrecosColeta({
   } | null>(null);
 
   const [solicitacoesPorProduto, setSolicitacoesPorProduto] = useState<Record<number, number[]>>({});
+
+  const linhasChecklistFiltradas = useMemo(() => {
+    const t = filtroLocalChecklistErroOp.trim().toLowerCase();
+    if (!t) return linhasOpcoesErroOperacional;
+    return linhasOpcoesErroOperacional.filter((row) => {
+      const nome = (row.nome ?? '').toLowerCase();
+      const forn = (row.nomeFornecedor ?? '').toLowerCase();
+      const de = (row.dataEmissao ?? '').toLowerCase();
+      return nome.includes(t) || forn.includes(t) || de.includes(t);
+    });
+  }, [linhasOpcoesErroOperacional, filtroLocalChecklistErroOp]);
 
   const carregar = useCallback(async () => {
     setLoading(true);
@@ -813,9 +847,10 @@ export default function ModalPrecosColeta({
       )}
 
       {modalVinculoFinalizar && (
+        <>
         <div
           className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60"
-          onClick={() => !finalizandoComVinculo && setModalVinculoFinalizar(false)}
+          onClick={() => !finalizandoComVinculo && !modalSqlErroOperacional && setModalVinculoFinalizar(false)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="modal-vinculo-finalizar-title"
@@ -830,6 +865,11 @@ export default function ModalPrecosColeta({
             <p className="text-sm text-slate-600 dark:text-slate-300">
               Selecione um ou mais <strong className="font-medium">pedidos de compra</strong> e/ou <strong className="font-medium">cotações de preços</strong> no Nomus vinculados a esta coleta. Pesquise e clique para adicionar cada um à lista.
             </p>
+            {podeRegistrarErroOperacionalVinculo && (
+              <p className="text-xs text-amber-800 dark:text-amber-200/90 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/90 dark:bg-amber-900/25 px-2.5 py-2">
+                Se o vínculo for excepcional (fora do fluxo usual), use <strong className="font-medium">Finalizar com erro operacional</strong>: abrirá uma lista ampliada de pedidos e cotações no Nomus para marcar os vínculos e, em seguida, sua senha. O registro alimentará o indicador no dashboard de compras.
+              </p>
+            )}
             {erro && (
               <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
                 {erro}
@@ -873,11 +913,17 @@ export default function ModalPrecosColeta({
               listMaxHeight="220px"
               clearable={false}
             />
-            <div className="flex justify-end gap-2 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
               <button
                 type="button"
                 onClick={() => {
                   setModalVinculoFinalizar(false);
+                  setModalSqlErroOperacional(false);
+                  setLinhasOpcoesErroOperacional([]);
+                  setErroChecklistErroOp(null);
+                  setFiltroLocalChecklistErroOp('');
+                  setChavesSelecionadasErroOp([]);
+                  setSenhaErroOperacional('');
                   setVinculosSelecionados([]);
                 }}
                 disabled={finalizandoComVinculo}
@@ -885,44 +931,240 @@ export default function ModalPrecosColeta({
               >
                 Cancelar
               </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  const vinculos = vinculosSelecionados
-                    .map((item) => {
-                      const m = item.meta as { tipoRegistro?: string; idRegistro?: number } | undefined;
-                      if (!m?.tipoRegistro || m.idRegistro == null) return null;
-                      return {
-                        tipoRegistro: (m.tipoRegistro === 'COTACAO' ? 'COTACAO' : 'PEDIDO') as 'PEDIDO' | 'COTACAO',
-                        idRegistro: m.idRegistro,
-                      };
-                    })
-                    .filter((x): x is { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number } => x != null);
-                  if (vinculos.length === 0) {
-                    setErro('Selecione ao menos um pedido de compra ou uma cotação para concluir.');
-                    return;
-                  }
-                  setFinalizandoComVinculo(true);
-                  setErro(null);
-                  const res = await finalizarCotacao(coletaId, { vinculos });
-                  setFinalizandoComVinculo(false);
-                  if (res.ok) {
-                    setModalVinculoFinalizar(false);
-                    setVinculosSelecionados([]);
-                    setStatusLocal('Finalizada');
-                    onColetaAlterada?.();
-                  } else {
-                    setErro(res.error ?? 'Não foi possível finalizar a cotação.');
-                  }
-                }}
-                disabled={finalizandoComVinculo || vinculosSelecionados.length === 0}
-                className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50 transition"
-              >
-                {finalizandoComVinculo ? 'Finalizando…' : 'Confirmar e finalizar'}
-              </button>
+              <div className="flex flex-wrap gap-2 justify-end">
+                {podeRegistrarErroOperacionalVinculo && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErro(null);
+                      setErroChecklistErroOp(null);
+                      setSenhaErroOperacional('');
+                      setChavesSelecionadasErroOp([]);
+                      setFiltroLocalChecklistErroOp('');
+                      setLinhasOpcoesErroOperacional([]);
+                      setModalSqlErroOperacional(true);
+                      setCarregandoChecklistErroOp(true);
+                      void (async () => {
+                        const r = await listarOpcoesVinculoErroOperacional('');
+                        setCarregandoChecklistErroOp(false);
+                        if (r.error) setErroChecklistErroOp(r.error);
+                        else setLinhasOpcoesErroOperacional(r.data);
+                      })();
+                    }}
+                    disabled={finalizandoComVinculo}
+                    className="px-4 py-2 rounded-lg border border-amber-600 dark:border-amber-500 bg-amber-50 dark:bg-amber-900/30 text-amber-900 dark:text-amber-100 text-sm font-medium hover:bg-amber-100 dark:hover:bg-amber-900/45 disabled:opacity-50 transition"
+                  >
+                    Finalizar com erro operacional
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const vinculos = vinculosSelecionados
+                      .map((item) => {
+                        const m = item.meta as { tipoRegistro?: string; idRegistro?: number } | undefined;
+                        if (!m?.tipoRegistro || m.idRegistro == null) return null;
+                        return {
+                          tipoRegistro: (m.tipoRegistro === 'COTACAO' ? 'COTACAO' : 'PEDIDO') as 'PEDIDO' | 'COTACAO',
+                          idRegistro: m.idRegistro,
+                        };
+                      })
+                      .filter((x): x is { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number } => x != null);
+                    if (vinculos.length === 0) {
+                      setErro('Selecione ao menos um pedido de compra ou uma cotação para concluir.');
+                      return;
+                    }
+                    setFinalizandoComVinculo(true);
+                    setErro(null);
+                    const res = await finalizarCotacao(coletaId, { vinculos });
+                    setFinalizandoComVinculo(false);
+                    if (res.ok) {
+                      setModalVinculoFinalizar(false);
+                      setModalSqlErroOperacional(false);
+                      setLinhasOpcoesErroOperacional([]);
+                      setErroChecklistErroOp(null);
+                      setChavesSelecionadasErroOp([]);
+                      setSenhaErroOperacional('');
+                      setVinculosSelecionados([]);
+                      setStatusLocal('Finalizada');
+                      onColetaAlterada?.();
+                    } else {
+                      setErro(res.error ?? 'Não foi possível finalizar a cotação.');
+                    }
+                  }}
+                  disabled={finalizandoComVinculo || vinculosSelecionados.length === 0}
+                  className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50 transition"
+                >
+                  {finalizandoComVinculo ? 'Finalizando…' : 'Confirmar e finalizar'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
+        {modalSqlErroOperacional && (
+          <div
+            className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/60"
+            onClick={() => !finalizandoComVinculo && setModalSqlErroOperacional(false)}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-checklist-erro-operacional-title"
+          >
+            <div
+              className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-xl w-full max-w-4xl max-h-[90vh] p-4 flex flex-col gap-3"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 id="modal-checklist-erro-operacional-title" className="text-lg font-semibold text-slate-800 dark:text-slate-100">
+                Confirmar erro operacional
+              </h3>
+              <p className="text-sm text-slate-600 dark:text-slate-300">
+                Lista ampliada de pedidos e cotações no Nomus (últimos 180 dias e status alargados). Marque um ou mais vínculos e informe sua senha para finalizar com registro de{' '}
+                <strong className="font-medium">erro operacional</strong> no dashboard.
+              </p>
+              <label className="block text-xs text-slate-500 dark:text-slate-400">
+                Filtrar na lista
+                <input
+                  type="search"
+                  value={filtroLocalChecklistErroOp}
+                  onChange={(e) => setFiltroLocalChecklistErroOp(e.target.value)}
+                  placeholder="Nome, fornecedor ou data…"
+                  className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm"
+                  disabled={finalizandoComVinculo || carregandoChecklistErroOp}
+                />
+              </label>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {chavesSelecionadasErroOp.length} selecionado(s) · {linhasChecklistFiltradas.length} linha(s) exibida(s)
+              </p>
+              <div className="min-h-[160px] max-h-[42vh] overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-600 divide-y divide-slate-200 dark:divide-slate-600">
+                {carregandoChecklistErroOp ? (
+                  <p className="p-4 text-sm text-slate-500">Carregando lista…</p>
+                ) : linhasChecklistFiltradas.length === 0 ? (
+                  <p className="p-4 text-sm text-slate-500">Nenhum registro para exibir. Ajuste o filtro ou verifique o Nomus.</p>
+                ) : (
+                  linhasChecklistFiltradas.map((row) => {
+                    const k = `${row.tipoRegistro}-${row.id}`;
+                    const checked = chavesSelecionadasErroOp.includes(k);
+                    return (
+                      <label
+                        key={k}
+                        className="flex items-start gap-3 px-3 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-900/50 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setChavesSelecionadasErroOp((prev) =>
+                              prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]
+                            );
+                          }}
+                          className="mt-1 rounded border-slate-300 dark:border-slate-600"
+                          disabled={finalizandoComVinculo}
+                        />
+                        <span className="text-sm text-slate-800 dark:text-slate-100 min-w-0">
+                          <span className="font-medium">{row.nome}</span>
+                          <span className="text-slate-500 dark:text-slate-400">
+                            {' '}
+                            · {row.tipoRegistro === 'PEDIDO' ? 'Pedido' : 'Cotação'} #{row.id}
+                          </span>
+                          {(row.nomeFornecedor || row.dataEmissao) && (
+                            <span className="block text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                              {[row.nomeFornecedor, row.dataEmissao].filter(Boolean).join(' · ')}
+                            </span>
+                          )}
+                        </span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+              {erroChecklistErroOp && (
+                <div className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-2 text-sm text-red-800 dark:text-red-200">
+                  {erroChecklistErroOp}
+                </div>
+              )}
+              <label className="block text-sm text-slate-600 dark:text-slate-300">
+                Senha
+                <input
+                  type="password"
+                  value={senhaErroOperacional}
+                  onChange={(e) => setSenhaErroOperacional(e.target.value)}
+                  placeholder="Sua senha de login"
+                  className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 px-3 py-2 text-sm"
+                  disabled={finalizandoComVinculo}
+                  autoComplete="current-password"
+                />
+              </label>
+              {erro && (
+                <div className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-2 text-sm text-red-800 dark:text-red-200">
+                  {erro}
+                </div>
+              )}
+              <div className="flex flex-wrap justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalSqlErroOperacional(false);
+                    setSenhaErroOperacional('');
+                    setErro(null);
+                    setErroChecklistErroOp(null);
+                    setChavesSelecionadasErroOp([]);
+                    setFiltroLocalChecklistErroOp('');
+                    setLinhasOpcoesErroOperacional([]);
+                  }}
+                  disabled={finalizandoComVinculo}
+                  className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50"
+                >
+                  Voltar
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const vinculos = chavesSelecionadasErroOp
+                      .map((key) => chaveVinculoErroOpParaPayload(key))
+                      .filter((x): x is { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number } => x != null);
+                    if (vinculos.length === 0) {
+                      setErro('Marque ao menos um pedido de compra ou uma cotação na lista acima.');
+                      return;
+                    }
+                    if (!senhaErroOperacional.trim()) return;
+                    setFinalizandoComVinculo(true);
+                    setErro(null);
+                    const res = await finalizarCotacao(coletaId, {
+                      vinculos,
+                      erroOperacional: true,
+                      senha: senhaErroOperacional.trim(),
+                    });
+                    setFinalizandoComVinculo(false);
+                    if (res.ok) {
+                      setModalSqlErroOperacional(false);
+                      setLinhasOpcoesErroOperacional([]);
+                      setErroChecklistErroOp(null);
+                      setChavesSelecionadasErroOp([]);
+                      setFiltroLocalChecklistErroOp('');
+                      setSenhaErroOperacional('');
+                      setModalVinculoFinalizar(false);
+                      setVinculosSelecionados([]);
+                      setStatusLocal('Finalizada');
+                      onColetaAlterada?.();
+                    } else {
+                      setErro(res.error ?? 'Não foi possível finalizar com registro de erro operacional.');
+                    }
+                  }}
+                  disabled={
+                    !senhaErroOperacional.trim() ||
+                    finalizandoComVinculo ||
+                    chavesSelecionadasErroOp.length === 0 ||
+                    carregandoChecklistErroOp ||
+                    !!erroChecklistErroOp
+                  }
+                  className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium disabled:opacity-50 transition"
+                >
+                  {finalizandoComVinculo ? 'Finalizando…' : 'Confirmar com senha e finalizar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        </>
       )}
     </div>
   );

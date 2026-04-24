@@ -2,7 +2,7 @@ import { Router, type RequestHandler } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/requirePermission.js';
 import { PERMISSOES } from '../config/permissoes.js';
-import { getProdutosColeta, getColetasPrecos, getColetasPrecosDebug, getOpcoesFiltroColetas, getOpcoesVinculoFinalizacao, getColetasBloqueantes, postCienciaColeta, postConfirmarColeta, getFornecedores, getCondicoesPagamento, getFormasPagamento, putColetaFornecedores, getPrecosColeta, getPrecosCotacao, postPrecosCotacao, patchObservacoesColeta, patchEnviarAprovacao, patchCancelarCotacao, patchReabrirColeta, patchFinalizarCotacao, patchRegistroQtdeAprovada, patchEnviarFinanceiro, deleteColetaPrecos, deleteColetaItem, deleteColetaTodosItens, postColetaItens } from '../controllers/comprasController.js';
+import { getProdutosColeta, getColetasPrecos, getColetasPrecosDebug, getOpcoesFiltroColetas, getOpcoesVinculoFinalizacao, getOpcoesVinculoErroOperacional, getDashboardErrosVinculoOperacional, getColetasBloqueantes, postCienciaColeta, postConfirmarColeta, getFornecedores, getCondicoesPagamento, getFormasPagamento, putColetaFornecedores, getPrecosColeta, getPrecosCotacao, postPrecosCotacao, patchObservacoesColeta, patchEnviarAprovacao, patchCancelarCotacao, patchReabrirColeta, patchFinalizarCotacao, patchRegistroQtdeAprovada, patchEnviarFinanceiro, deleteColetaPrecos, deleteColetaItem, deleteColetaTodosItens, postColetaItens } from '../controllers/comprasController.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -40,6 +40,11 @@ router.get(
   async503(getOpcoesVinculoFinalizacao)
 );
 router.get(
+  '/coletas/opcoes-vinculo-erro-operacional',
+  requirePermission(PERMISSOES.COMPRAS_VINCULO_FINALIZACAO_AMPLIADO),
+  async503(getOpcoesVinculoErroOperacional)
+);
+router.get(
   '/coletas/debug',
   requirePermission(PERMISSOES.COMPRAS_VER),
   async503(getColetasPrecosDebug)
@@ -48,6 +53,12 @@ router.get(
   '/coletas',
   requirePermission(PERMISSOES.COMPRAS_VER),
   async503(getColetasPrecos)
+);
+
+router.get(
+  '/dashboard/erros-vinculo-operacional',
+  requirePermission(PERMISSOES.COMPRAS_VER),
+  async503(getDashboardErrosVinculoOperacional)
 );
 
 router.get(

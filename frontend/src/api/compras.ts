@@ -671,14 +671,42 @@ export async function listarOpcoesVinculoFinalizacao(
   return { data: Array.isArray(body.data) ? body.data : [] };
 }
 
+/**
+ * Lista ampliada de pedidos/cotações (SQL erro operacional / últimos 180 dias). Exige permissão `compras.vinculo_finalizacao.ampliado`.
+ */
+export async function listarOpcoesVinculoErroOperacional(
+  q: string
+): Promise<{ data: OpcaoVinculoFinalizacaoItem[]; error?: string }> {
+  const qs = new URLSearchParams();
+  if (q.trim()) qs.set('q', q.trim());
+  const res = await apiFetch(`/api/compras/coletas/opcoes-vinculo-erro-operacional?${qs.toString()}`);
+  const text = await res.text();
+  let body: { data?: OpcaoVinculoFinalizacaoItem[]; error?: string } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as { data?: OpcaoVinculoFinalizacaoItem[]; error?: string };
+    } catch {
+      body = { error: text || res.statusText };
+    }
+  }
+  if (!res.ok) return { data: [], error: body.error ?? res.statusText };
+  return { data: Array.isArray(body.data) ? body.data : [] };
+}
+
+export type FinalizarCotacaoVinculoPayload =
+  | { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number; erroOperacional?: boolean; senha?: string }
+  | {
+      vinculos: { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number }[];
+      erroOperacional?: boolean;
+      senha?: string;
+    };
+
 /** Finaliza a cotação (status "Finalizada"). Só quando status é "Em Aprovação". Exige quantidades aprovadas preenchidas.
- *  Coletas com vínculo: envie `vinculos` (um ou mais pedidos/cotações Nomus) ou um único `vinculo` legado. */
+ *  Coletas com vínculo: envie `vinculos` (um ou mais pedidos/cotações Nomus) ou um único `vinculo` legado.
+ *  Com permissão `compras.vinculo_finalizacao.ampliado`: `erroOperacional: true` + `senha` registra auditoria e exige validação no servidor. */
 export async function finalizarCotacao(
   coletaId: number,
-  vinculo?:
-    | { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number }
-    | { vinculos: { tipoRegistro: 'PEDIDO' | 'COTACAO'; idRegistro: number }[] }
-    | null
+  vinculo?: FinalizarCotacaoVinculoPayload | null
 ): Promise<{ ok: boolean; error?: string }> {
   let bodyPayload: Record<string, unknown> = {};
   if (vinculo != null && 'vinculos' in vinculo && Array.isArray(vinculo.vinculos) && vinculo.vinculos.length > 0) {
@@ -697,6 +725,10 @@ export async function finalizarCotacao(
   ) {
     bodyPayload = { tipoRegistro: vinculo.tipoRegistro, idRegistro: vinculo.idRegistro };
   }
+  if (vinculo != null && vinculo.erroOperacional === true) {
+    bodyPayload.erroOperacional = true;
+    if (typeof vinculo.senha === 'string' && vinculo.senha.trim()) bodyPayload.senha = vinculo.senha.trim();
+  }
   const res = await apiFetch(`/api/compras/coletas/${coletaId}/finalizar-cotacao`, {
     method: 'PATCH',
     body: Object.keys(bodyPayload).length > 0 ? bodyPayload : {},
@@ -712,6 +744,41 @@ export async function finalizarCotacao(
   }
   if (!res.ok) return { ok: false, error: body.error ?? res.statusText };
   return { ok: true };
+}
+
+/** Série mensal de vínculos de finalização registrados como erro operacional (dashboard Compras). */
+export async function obterSerieErrosVinculoOperacionalDashboard(params?: {
+  dataInicio?: string;
+  dataFim?: string;
+}): Promise<{ series: { key: string; label: string; count: number }[]; error?: string }> {
+  const q = new URLSearchParams();
+  if (params?.dataInicio) q.set('dataInicio', params.dataInicio);
+  if (params?.dataFim) q.set('dataFim', params.dataFim);
+  const qs = q.toString();
+  const res = await apiFetch(`/api/compras/dashboard/erros-vinculo-operacional${qs ? `?${qs}` : ''}`);
+  const text = await res.text();
+  let body: { series?: unknown; error?: string } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as { series?: unknown; error?: string };
+    } catch {
+      body = { error: text || res.statusText };
+    }
+  }
+  if (!res.ok) return { series: [], error: body.error ?? res.statusText };
+  const raw = body.series;
+  if (!Array.isArray(raw)) return { series: [] };
+  const series: { key: string; label: string; count: number }[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== 'object') continue;
+    const o = row as Record<string, unknown>;
+    const key = typeof o.key === 'string' ? o.key : '';
+    const label = typeof o.label === 'string' ? o.label : key;
+    const c = o.count;
+    const count = typeof c === 'number' && Number.isFinite(c) ? c : typeof c === 'string' ? parseInt(c, 10) : 0;
+    if (key) series.push({ key, label, count: Number.isFinite(count) ? count : 0 });
+  }
+  return { series };
 }
 
 /** Envia a coleta para o financeiro. Só quando status é "Em Aprovação". */
