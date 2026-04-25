@@ -49,6 +49,7 @@ const ENGENHARIA_SUBMENUS: { to: string; label: string }[] = [
 const FINANCEIRO_SUBMENUS: { to: string; label: string }[] = [
   { to: '/financeiro/resumo', label: 'Resumo Financeiro' },
   { to: '/financeiro/dfc', label: 'DFC' },
+  { to: '/financeiro/painel-financeiro-comercial', label: 'Painel Financeiro-Comercial' },
 ];
 
 const INTEGRACAO_SUBMENUS: { to: string; label: string }[] = [
@@ -80,6 +81,7 @@ const PATH_LABELS: Record<string, string> = {
   '/financeiro': 'Financeiro',
   '/financeiro/resumo': 'Resumo Financeiro',
   '/financeiro/dfc': 'DFC',
+  '/financeiro/painel-financeiro-comercial': 'Painel Financeiro-Comercial',
   '/relatorios': 'Relatórios',
   '/integracao': 'Integração',
   '/integracao/alteracao-data-entrega-compra': 'Alteração Data Entrega',

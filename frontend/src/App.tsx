@@ -18,6 +18,7 @@ import ComprasDashboardPage from './pages/compras/ComprasDashboardPage';
 import PrecificacaoPage from './pages/PrecificacaoPage';
 import ResumoFinanceiroPage from './pages/financeiro/ResumoFinanceiroPage';
 import DfcPage from './pages/financeiro/DfcPage';
+import PainelFinanceiroComercialPage from './pages/financeiro/PainelFinanceiroComercialPage';
 import SycroOrderPage from './pages/pedidos/SycroOrderPage';
 import MRPPage from './pages/pedidos/MRPPage';
 import DashboardMRPPage from './pages/pedidos/DashboardMRPPage';
@@ -113,6 +114,10 @@ export default function App() {
           <Route path="financeiro" element={<ResumoFinanceiroPage />} />
           <Route path="financeiro/resumo" element={<ResumoFinanceiroPage />} />
           <Route path="financeiro/dfc" element={<DfcPage />} />
+          <Route
+            path="financeiro/painel-financeiro-comercial"
+            element={<PainelFinanceiroComercialPage />}
+          />
           <Route path="relatorios" element={<RelatoriosPage />} />
           <Route path="integracao" element={<IntegracaoPage />} />
           <Route path="integracao/alteracao-data-entrega-compra" element={<AlteracaoDataEntregaCompraPage />} />

@@ -141,11 +141,11 @@ export const RESUMO_ARVORE_RAIZ: { classificacao: string; titulo: string; predom
     { classificacao: '1', titulo: 'RECEITAS', predominante: 'OPERACIONAL' },
     {
       classificacao: '2',
-      titulo: 'RECEITAS NÃO OPERACIONAIS',
+      titulo: 'Receitas Não Operacionais',
       predominante: 'OPERACIONAL',
       nota: 'Misto: aportes/captações/distribuição e títulos → financ.; venda imobilizado e rendimento de aplicação → invest.',
     },
-    { classificacao: '3', titulo: 'CUSTO (CMV/CPV)', predominante: 'OPERACIONAL' },
+    { classificacao: '3', titulo: 'Custos', predominante: 'OPERACIONAL' },
     { classificacao: '4', titulo: 'DESPESAS OPERACIONAIS', predominante: 'OPERACIONAL' },
     { classificacao: '5', titulo: 'DESPESAS TRIBUTÁRIAS', predominante: 'OPERACIONAL' },
     {

@@ -23,6 +23,7 @@ import mrpRoutes from './routes/mrpRoutes.js';
 import mppRoutes from './routes/mppRoutes.js';
 import pcRoutes from './routes/pcRoutes.js';
 import programacaoSetorialRoutes from './routes/programacaoSetorialRoutes.js';
+import financeiroRoutes from './routes/financeiroRoutes.js';
 import { csrfProtect } from './middleware/csrf.js';
 
 const app = express();
@@ -145,6 +146,7 @@ app.use('/api/mrp', mrpRoutes);
 app.use('/api/mpp', mppRoutes);
 app.use('/api/pc', pcRoutes);
 app.use('/api/programacao-setorial', programacaoSetorialRoutes);
+app.use('/api/financeiro', financeiroRoutes);
 
 // Header em todas as respostas para conferir na outra máquina se está rodando o build novo
 export const BUILD_ID = 'pedidos-no-csrf-v1';

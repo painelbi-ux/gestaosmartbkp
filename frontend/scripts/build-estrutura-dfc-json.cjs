@@ -145,6 +145,68 @@ function assignPathKeys(node, basePath) {
   (node.children || []).forEach((ch, i) => assignPathKeys(ch, `${basePath}/${i}`));
 }
 
+/** Contas analíticas de transferência (plano Nomus) — raiz master OUTRAS na DFC. */
+const IDS_TRANSFER_DFC = [166, 135, 165];
+
+function stripTransferAnalytics(node) {
+  if (!node.children) return;
+  node.children = node.children.filter((ch) => {
+    if (ch.tipo === 'A' && ch.id != null && IDS_TRANSFER_DFC.includes(ch.id)) return false;
+    stripTransferAnalytics(ch);
+    return true;
+  });
+}
+
+function removeEmptySyntheticBranches(node) {
+  if (!node.children) return;
+  for (const ch of node.children) {
+    removeEmptySyntheticBranches(ch);
+  }
+  node.children = node.children.filter(
+    (ch) => !(ch.tipo === 'S' && (!ch.children || ch.children.length === 0))
+  );
+}
+
+/** 4ª raiz da DFC (nível master), com transferências como analíticas. */
+function injectOutrasMovimentacoesRoot(roots) {
+  const planoPath = path.join(__dirname, '../src/pages/financeiro/dfc/planoContasAtivoDfc.json');
+  if (!fs.existsSync(planoPath)) {
+    console.warn('planoContasAtivoDfc.json não encontrado; skip Outras Movimentações.');
+    return;
+  }
+  const plano = JSON.parse(fs.readFileSync(planoPath, 'utf8'));
+  const inv = roots[2];
+  if (inv && inv.macro === 'INVESTIMENTOS') {
+    inv.children = (inv.children || []).filter((ch) => !/^Outras Moviment/i.test(ch.nome || ''));
+  }
+  for (let i = roots.length - 1; i >= 0; i--) {
+    const r = roots[i];
+    if (r.macro === 'OUTRAS' && /^Outras Moviment/i.test(r.nome || '')) roots.splice(i, 1);
+  }
+  const byId = Object.fromEntries(
+    plano.filter((c) => IDS_TRANSFER_DFC.includes(c.id)).map((c) => [c.id, c])
+  );
+  const children = IDS_TRANSFER_DFC.map((id) => {
+    const c = byId[id];
+    if (!c) return null;
+    return {
+      id: c.id,
+      nome: c.nome,
+      tipo: 'A',
+      macro: 'OUTRAS',
+      codigo: c.classificacao,
+      children: [],
+    };
+  }).filter(Boolean);
+  roots.push({
+    nome: 'Outras Movimentações',
+    tipo: 'S',
+    macro: 'OUTRAS',
+    codigo: '',
+    children,
+  });
+}
+
 const xlsxPath = path.join(DESK, FILE);
 if (!fs.existsSync(xlsxPath)) {
   console.error('Arquivo não encontrado:', xlsxPath);
@@ -153,6 +215,9 @@ if (!fs.existsSync(xlsxPath)) {
 const wb = XLSX.readFile(xlsxPath);
 const rows = XLSX.utils.sheet_to_json(wb.Sheets['Planilha2'] || wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
 const roots = buildTree(rows);
+roots.forEach((r) => stripTransferAnalytics(r));
+roots.forEach((r) => removeEmptySyntheticBranches(r));
+injectOutrasMovimentacoesRoot(roots);
 roots.forEach((r, i) => assignPathKeys(r, `M${i}`));
 fs.writeFileSync(OUT, JSON.stringify({ versao: 1, geradoEm: new Date().toISOString(), roots }, null, 0));
 console.log('OK →', OUT, 'macro roots', roots.map((r) => r.nome));
