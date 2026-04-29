@@ -21,6 +21,7 @@ import DfcPage from './pages/financeiro/DfcPage';
 import PainelFinanceiroComercialPage from './pages/financeiro/PainelFinanceiroComercialPage';
 import SycroOrderPage from './pages/pedidos/SycroOrderPage';
 import MRPPage from './pages/pedidos/MRPPage';
+import MRPManagerPage from './pages/pedidos/MRPManagerPage';
 import DashboardMRPPage from './pages/pedidos/DashboardMRPPage';
 import MPPPage from './pages/pedidos/MPPPage';
 import PCPedidoCompraPage from './pages/pedidos/PCPedidoCompraPage';
@@ -100,7 +101,8 @@ export default function App() {
           <Route index element={<InicioPage />} />
           <Route path="pedidos" element={<ErrorBoundary><PedidosPage /></ErrorBoundary>} />
           <Route path="pedidos/sycroorder" element={<ErrorBoundary><SycroOrderPage /></ErrorBoundary>} />
-          <Route path="pedidos/mrp" element={<ErrorBoundary><MRPPage /></ErrorBoundary>} />
+          <Route path="pedidos/mrp" element={<ErrorBoundary><MRPManagerPage /></ErrorBoundary>} />
+          <Route path="pedidos/mrp/:id" element={<ErrorBoundary><MRPPage /></ErrorBoundary>} />
           <Route path="pedidos/mrp-dashboard" element={<ErrorBoundary><DashboardMRPPage /></ErrorBoundary>} />
           <Route path="pedidos/pc" element={<ErrorBoundary><PCPedidoCompraPage /></ErrorBoundary>} />
           <Route path="pedidos/mpp" element={<ErrorBoundary><MPPPage /></ErrorBoundary>} />

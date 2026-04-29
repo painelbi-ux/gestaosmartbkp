@@ -9,10 +9,10 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
-  getMrp,
-  getMrpHorizonte,
-  getMrpMppQtdeTotalPorComponente,
+  getMrpRun,
+  getMrpRunRows,
   type MrpHorizonteLinha,
   type MrpHorizonteResponse,
   type MrpRow,
@@ -485,6 +485,9 @@ function HorizonteLoadingOverlay() {
 }
 
 export default function MRPPage() {
+  const { id: runIdParam } = useParams();
+  const runId = Number(runIdParam);
+  const navigate = useNavigate();
   const { hasPermission } = useAuth();
   const podeExportarXlsx =
     hasPermission(PERMISSOES.PCP_EXPORTAR_XLSX) ||
@@ -527,76 +530,64 @@ export default function MRPPage() {
     () => mrpMppQtdeCache?.totais ?? {}
   );
   const [mppQtdeLimitHit, setMppQtdeLimitHit] = useState(() => mrpMppQtdeCache?.limitHit ?? false);
+  const [runMeta, setRunMeta] = useState<{
+    nome: string;
+    processed_at?: string | null;
+    scenario_type: string;
+    scenario_file_name?: string | null;
+    processed_by_login?: string | null;
+    observacoes?: string | null;
+  } | null>(null);
 
   const carregar = useCallback(async () => {
+    if (!Number.isFinite(runId)) {
+      setErro('ID de MRP inválido.');
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setErro(null);
-    const [mrpOutcome, mppOutcome] = await Promise.allSettled([
-      getMrp(),
-      getMrpMppQtdeTotalPorComponente(),
+    const [metaOutcome, rowsOutcome] = await Promise.allSettled([
+      getMrpRun(runId),
+      getMrpRunRows(runId),
     ]);
-    if (mrpOutcome.status === 'fulfilled') {
-      const rows = Array.isArray(mrpOutcome.value.data) ? mrpOutcome.value.data : [];
+    if (rowsOutcome.status === 'fulfilled') {
+      const rows = Array.isArray(rowsOutcome.value.data) ? rowsOutcome.value.data : [];
       setData(rows);
       mrpCache = { data: rows };
     } else {
       setData([]);
       mrpCache = null;
-      setErro(
-        mrpOutcome.reason instanceof Error
-          ? mrpOutcome.reason.message
-          : 'Erro ao carregar MRP.'
-      );
+      setErro(rowsOutcome.reason instanceof Error ? rowsOutcome.reason.message : 'Erro ao carregar snapshot MRP.');
     }
-    if (mppOutcome.status === 'fulfilled') {
-      const m = mppOutcome.value;
-      const totais = m.totais && typeof m.totais === 'object' ? { ...m.totais } : {};
-      setMppQtdePorCodigo(totais);
-      const hit = Boolean(m.limitHit);
-      setMppQtdeLimitHit(hit);
-      mrpMppQtdeCache = { totais, limitHit: hit };
+    if (metaOutcome.status === 'fulfilled') {
+      const m = metaOutcome.value.data;
+      setRunMeta({
+        nome: m.nome,
+        processed_at: m.processed_at,
+        scenario_type: m.scenario_type,
+        scenario_file_name: m.scenario_file_name,
+        processed_by_login: m.processed_by_login,
+        observacoes: m.observacoes,
+      });
     } else {
-      setMppQtdePorCodigo({});
-      setMppQtdeLimitHit(false);
-      mrpMppQtdeCache = { totais: {}, limitHit: false };
+      setRunMeta(null);
     }
+    setMppQtdePorCodigo({});
+    setMppQtdeLimitHit(false);
+    mrpMppQtdeCache = { totais: {}, limitHit: false };
     setLoading(false);
-  }, []);
+  }, [runId]);
 
   const carregarHorizonte = useCallback(async () => {
-    const fim = filterHorizonteFim.trim();
-    if (!fim) {
-      setHorizonteErro('Informe a data final do Horizonte de Produção.');
-      return;
-    }
-    setHorizonteLoading(true);
-    setHorizonteErro(null);
-    try {
-      const h = await getMrpHorizonte(fim);
-      setHorizonte(h);
-    } catch (e) {
-      setHorizonte(null);
-      setHorizonteErro(e instanceof Error ? e.message : 'Erro ao carregar horizonte.');
-    } finally {
-      setHorizonteLoading(false);
-    }
+    setHorizonteLoading(false);
+    setHorizonte(null);
+    setHorizonteErro('No snapshot, os dados são somente leitura e não recalculam em tempo real.');
   }, [filterHorizonteFim]);
 
   useEffect(() => {
-    if (mrpCache) {
-      setData(mrpCache.data);
-      setLoading(false);
-      setErro(null);
-    } else {
-      void carregar();
-    }
-    if (mrpMppQtdeCache) {
-      setMppQtdePorCodigo(mrpMppQtdeCache.totais);
-      setMppQtdeLimitHit(mrpMppQtdeCache.limitHit);
-    }
-    // Montagem única: não refazer GET ao trocar de aba (igual MPP).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    void carregar();
+  }, [carregar]);
 
   useEffect(() => {
     mrpUiPersistido.filterCodigo = filterCodigo;
@@ -863,7 +854,27 @@ export default function MRPPage() {
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-4 gap-3">
-        <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-200">MRP</h1>
+        <div className="flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => navigate('/pedidos/mrp')}
+            className="self-start text-xs text-primary-600 hover:underline"
+          >
+            ← Voltar para lista de MRPs
+          </button>
+          <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-200">
+            {runMeta?.nome ? `MRP Snapshot — ${runMeta.nome}` : 'MRP Snapshot'}
+          </h1>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Processado em: {runMeta?.processed_at ? formatIsoParaBr(String(runMeta.processed_at).slice(0, 10)) : '—'} • Cenário:{' '}
+            {runMeta?.scenario_type === 'SIMULADO' ? 'Simulado' : 'Real'}
+            {runMeta?.scenario_file_name ? ` • Arquivo: ${runMeta.scenario_file_name}` : ''}
+            {runMeta?.processed_by_login ? ` • Usuário: ${runMeta.processed_by_login}` : ''}
+          </p>
+          {runMeta?.observacoes ? (
+            <p className="text-xs text-slate-500 dark:text-slate-400">Observações: {runMeta.observacoes}</p>
+          ) : null}
+        </div>
         <div className="flex items-center gap-2 shrink-0">
           <div className="relative" ref={painelColunasRef}>
             <button
@@ -945,7 +956,7 @@ export default function MRPPage() {
           )}
           <button
             type="button"
-            onClick={carregar}
+            onClick={() => void carregar()}
             className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
           >
             Atualizar
@@ -1030,11 +1041,10 @@ export default function MRPPage() {
           />
           <button
             type="button"
-            onClick={() => void carregarHorizonte()}
-            disabled={horizonteLoading}
-            className="shrink-0 text-sm px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition"
+            onClick={() => setHorizonteErro('No snapshot, os dados são somente leitura e não recalculam em tempo real.')}
+            className="shrink-0 text-sm px-4 py-2 rounded-lg bg-slate-500 text-white font-medium transition"
           >
-            {horizonteLoading ? 'Carregando horizonte…' : 'Carregar horizonte'}
+            Snapshot imutável
           </button>
           <button type="button" onClick={limparFiltros} className={MRP_BTN_PRIMARY_CLASS} title="Limpar todos os filtros">
             Limpar filtros

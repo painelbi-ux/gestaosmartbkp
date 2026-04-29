@@ -78,8 +78,63 @@ model Usuario {
   sycroOrderHistory     SycroOrderHistory[]
   sycroOrderNotifications SycroOrderNotification[]
   sycroOrderOrderReads    SycroOrderOrderRead[]
+  mrpRunsCriados MrpRun[] @relation("MrpRunCreatedBy")
+  mrpRunsProcessados MrpRun[] @relation("MrpRunProcessedBy")
 
   @@map("usuario")
+}
+
+/// Execução/versionamento de MRP para auditoria de decisões.
+model MrpRun {
+  id                   Int      @id @default(autoincrement())
+  uid                  String   @unique @default(cuid())
+  nome                 String
+  observacoes          String?
+  scenario_type        String   // REAL | SIMULADO
+  scenario_file_name   String?
+  /// JSON normalizado do cenário simulado (linhas do arquivo importado)
+  scenario_payload_json String?
+  status               String   @default("AGUARDANDO_PROCESSAMENTO") // AGUARDANDO_PROCESSAMENTO | PROCESSANDO | PROCESSADO | ERRO
+  error_message        String?
+  created_at           DateTime @default(now())
+  processed_at         DateTime?
+  created_by_user_id   Int?
+  processed_by_user_id Int?
+  created_by_login     String?
+  processed_by_login   String?
+
+  createdBy  Usuario? @relation("MrpRunCreatedBy", fields: [created_by_user_id], references: [id], onDelete: SetNull)
+  processedBy Usuario? @relation("MrpRunProcessedBy", fields: [processed_by_user_id], references: [id], onDelete: SetNull)
+  rows       MrpSnapshotRow[]
+
+  @@index([status])
+  @@index([created_at])
+  @@index([processed_at])
+  @@index([created_by_user_id])
+  @@index([processed_by_user_id])
+  @@map("mrp_run")
+}
+
+/// Snapshot imutável de cada linha do relatório MRP processado.
+model MrpSnapshotRow {
+  id              Int      @id @default(autoincrement())
+  run_id          Int
+  row_json        String
+  codigo          String?
+  componente      String?
+  coleta          String?
+  item_critico    String?
+  data_necessidade String?
+  data_ruptura    String?
+  created_at      DateTime @default(now())
+
+  run MrpRun @relation(fields: [run_id], references: [id], onDelete: Cascade)
+
+  @@index([run_id])
+  @@index([codigo])
+  @@index([data_necessidade])
+  @@index([data_ruptura])
+  @@map("mrp_snapshot_row")
 }
 
 // Configuração persistida (ex.: Evolution WhatsApp – instância e número para envio)

@@ -77,3 +77,70 @@ export async function getMrpHorizonte(horizonteFim: string): Promise<MrpHorizont
   }
   return res.json() as Promise<MrpHorizonteResponse>;
 }
+
+export type MrpScenarioType = 'REAL' | 'SIMULADO';
+export type MrpRunStatus =
+  | 'AGUARDANDO_PROCESSAMENTO'
+  | 'PROCESSANDO'
+  | 'PROCESSADO'
+  | 'ERRO';
+
+export interface MrpRun {
+  id: number;
+  uid: string;
+  nome: string;
+  observacoes?: string | null;
+  scenario_type: MrpScenarioType;
+  scenario_file_name?: string | null;
+  status: MrpRunStatus;
+  created_at: string;
+  processed_at?: string | null;
+  created_by_login?: string | null;
+  processed_by_login?: string | null;
+  error_message?: string | null;
+  snapshot_rows_count?: number;
+}
+
+export interface MrpScenarioRowPayload {
+  id_pedido: string;
+  previsao_nova: string;
+}
+
+export async function listMrpRuns(): Promise<{ data: MrpRun[] }> {
+  return apiJson<{ data: MrpRun[] }>('/api/mrp/runs');
+}
+
+export async function createMrpRun(payload: {
+  nome: string;
+  observacoes?: string;
+  scenario_type: MrpScenarioType;
+  scenario_file_name?: string;
+  scenario_rows?: MrpScenarioRowPayload[];
+  process_now?: boolean;
+}): Promise<{ data: MrpRun }> {
+  return apiJson<{ data: MrpRun }>('/api/mrp/runs', {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export async function processMrpRun(id: number): Promise<{ data: MrpRun }> {
+  return apiJson<{ data: MrpRun }>(`/api/mrp/runs/${id}/process`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+export async function deleteMrpRun(id: number): Promise<{ success: boolean }> {
+  return apiJson<{ success: boolean }>(`/api/mrp/runs/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function getMrpRun(id: number): Promise<{ data: MrpRun }> {
+  return apiJson<{ data: MrpRun }>(`/api/mrp/runs/${id}`);
+}
+
+export async function getMrpRunRows(id: number): Promise<{ data: MrpRow[] }> {
+  return apiJson<{ data: MrpRow[] }>(`/api/mrp/runs/${id}/rows`);
+}
