@@ -11,6 +11,16 @@ import {
   mergeDfcDetalheOrdenadoMany,
 } from '../data/dfcLancamentoLpRepository.js';
 import { queryDfcReceitasAgrupado, queryDfcReceitasDetalhe } from '../data/dfcReceitasRepository.js';
+import {
+  obterPainelComercialDashboard,
+  obterItensPedidoPainelComercial,
+} from '../data/painelComercialRepository.js';
+import {
+  getPoliticaComercialPainelPersistida,
+  mergePoliticaComercialParcial,
+  savePoliticaComercialPainel,
+} from '../data/politicaComercialPainelRepository.js';
+import { DEFAULT_POLITICA_COMERCIAL } from '../services/painelComercialConformidade.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH_RE = /^\d{4}-\d{2}$/;
@@ -211,4 +221,93 @@ export async function getDfcAgendamentosDetalhe(req: Request, res: Response): Pr
     dataFim,
     idEmpresa,
   });
+}
+
+/**
+ * GET /api/financeiro/painel-comercial?dataInicio&dataFim&empresaId=todos|1|2 (YYYY-MM-DD)
+ * Conformidade comercial agregada por PD (Nomus).
+ */
+export async function getPainelComercial(req: Request, res: Response): Promise<void> {
+  const dataInicio = String(req.query.dataInicio ?? '').trim();
+  const dataFim = String(req.query.dataFim ?? '').trim();
+  const empresaIdRaw = String(req.query.empresaId ?? 'todos').trim().toLowerCase();
+  const empresaId =
+    empresaIdRaw === '1' || empresaIdRaw === '2'
+      ? (Number(empresaIdRaw) as 1 | 2)
+      : empresaIdRaw === 'todos' || empresaIdRaw === ''
+        ? undefined
+        : null;
+
+  if (!DATE_RE.test(dataInicio) || !DATE_RE.test(dataFim)) {
+    res.status(400).json({ error: 'Informe dataInicio e dataFim no formato YYYY-MM-DD.' });
+    return;
+  }
+  if (empresaId === null) {
+    res.status(400).json({ error: 'empresaId inválido. Use todos, 1 (Só Aço) ou 2 (Só Móveis).' });
+    return;
+  }
+
+  const dIni = parseDate(dataInicio);
+  const dFim = parseDate(dataFim);
+  if (!dIni || !dFim || dFim < dIni) {
+    res.status(400).json({ error: 'Intervalo de datas inválido.' });
+    return;
+  }
+
+  const diff = diffDaysInclusive(dIni, dFim);
+  if (diff > 400) {
+    res.status(400).json({ error: 'Intervalo máximo: 400 dias.' });
+    return;
+  }
+
+  const body = await obterPainelComercialDashboard(dataInicio, dataFim, empresaId);
+  if (body.erro) {
+    res.status(503).json({ error: body.erro });
+    return;
+  }
+  res.json(body);
+}
+
+/**
+ * GET /api/financeiro/painel-comercial/politica
+ * Política comercial persistida para o painel (parcelas, entrada, limites de extração de dias).
+ */
+export async function getPoliticaComercialPainel(req: Request, res: Response): Promise<void> {
+  void req;
+  const politica = await getPoliticaComercialPainelPersistida();
+  res.json({ politica, padraoSistema: DEFAULT_POLITICA_COMERCIAL });
+}
+
+/**
+ * PUT /api/financeiro/painel-comercial/politica
+ * Body: objeto parcial ou completo (mesmo formato de `politica` no GET).
+ */
+export async function putPoliticaComercialPainel(req: Request, res: Response): Promise<void> {
+  const merged = mergePoliticaComercialParcial(req.body);
+  try {
+    await savePoliticaComercialPainel(merged);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(400).json({ error: msg });
+    return;
+  }
+  res.json({ politica: merged });
+}
+
+/**
+ * GET /api/financeiro/painel-comercial/itens-pedido?pdId= (id numérico do pedido no Nomus)
+ */
+export async function getPainelComercialItensPedido(req: Request, res: Response): Promise<void> {
+  const raw = String(req.query.pdId ?? '').trim();
+  const pdId = Number.parseInt(raw, 10);
+  if (!Number.isFinite(pdId) || pdId <= 0) {
+    res.status(400).json({ error: 'Informe pdId (inteiro positivo).' });
+    return;
+  }
+  const body = await obterItensPedidoPainelComercial(pdId);
+  if (body.erro) {
+    res.status(503).json({ error: body.erro, itens: [] });
+    return;
+  }
+  res.json(body);
 }

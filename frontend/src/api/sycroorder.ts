@@ -18,6 +18,8 @@ export interface SycroOrderOrder {
     rota: string;
     previsao_atual: string | null;
     codigos: string[];
+    /** false = card cobre todos os itens da carrada; não exibir "Cód.:" na capa */
+    exibir_codigos?: boolean;
   }>;
   /** TAG de disponibilidade (Comunicação PD) */
   tag_disponivel?: boolean;

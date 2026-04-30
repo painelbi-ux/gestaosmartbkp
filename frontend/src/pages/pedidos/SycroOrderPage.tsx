@@ -1059,7 +1059,9 @@ export default function SycroOrderPage() {
                                   <p key={`${o.id}-${c.rota}`} className="text-xs text-slate-600 dark:text-slate-400">
                                     {c.rota}
                                     {c.previsao_atual ? ` • Prev.: ${formatDate(c.previsao_atual)}` : ''}
-                                    {c.codigos.length > 0 ? ` • Cód.: ${c.codigos.join(', ')}` : ''}
+                                    {c.codigos.length > 0 && c.exibir_codigos !== false
+                                      ? ` • Cód.: ${c.codigos.join(', ')}`
+                                      : ''}
                                   </p>
                                 ))}
                               </div>

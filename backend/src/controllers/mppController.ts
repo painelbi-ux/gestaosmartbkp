@@ -53,7 +53,7 @@ function getMppEstoqueSetoresSql(): string {
 }
 
 /** Saldo setores (2,19,20) por código produto = nome no ERP; falha → mapa vazio. */
-async function obterEstoqueSetoresPorCodigoProduto(pool: Pool): Promise<Map<string, number>> {
+export async function obterEstoqueSetoresPorCodigoProduto(pool: Pool): Promise<Map<string, number>> {
   const map = new Map<string, number>();
   try {
     const sql = getMppEstoqueSetoresSql();

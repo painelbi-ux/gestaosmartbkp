@@ -6,7 +6,7 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "cross-env APP_PORT=4000 tsx watch src/server.ts",
-    "build": "tsc && node -e \"require('fs').mkdirSync('dist/data',{recursive:true}); require('fs').copyFileSync('src/data/sqlBasePedidosNomus.sql','dist/data/sqlBasePedidosNomus.sql')\"",
+    "build": "tsc && node -e \"const fs=require('fs');fs.mkdirSync('dist/data',{recursive:true});['sqlBasePedidosNomus.sql','sqlPainelComercialNomus.sql','sqlPainelComercialItensPorPedido.sql','bomListaMateriaisAcabado.sql'].forEach(f=>fs.copyFileSync('src/data/'+f,'dist/data/'+f))\"",
     "build:frontend": "cd ../frontend && npm run build && cd ../backend && node scripts/copy-frontend.cjs",
     "start": "node dist/server.js",
     "migrate": "prisma migrate deploy",

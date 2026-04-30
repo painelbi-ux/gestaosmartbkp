@@ -9,6 +9,7 @@ import {
   getMrpHorizonte,
   getMrpMppQtdeTotalPorComponente,
   getMrpRun,
+  getMrpRunHorizonte,
   getMrpRunRows,
   listMrpRuns,
   processMrpRun,
@@ -24,6 +25,7 @@ router.get('/runs', listMrpRuns);
 router.post('/runs', createMrpRun);
 router.post('/runs/:id/process', processMrpRun);
 router.delete('/runs/:id', deleteMrpRun);
+router.get('/runs/:id/horizonte', getMrpRunHorizonte);
 router.get('/runs/:id/rows', getMrpRunRows);
 router.get('/runs/:id', getMrpRun);
 router.get('/', getMrp);

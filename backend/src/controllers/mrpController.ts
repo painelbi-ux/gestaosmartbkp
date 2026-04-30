@@ -15,6 +15,7 @@ import {
   persistMrpSnapshotRows,
   type MrpScenarioRow,
 } from '../services/mrpSnapshotService.js';
+import { computarHorizonteCenarioSimulado } from '../services/mrpHorizonteCenarioSimuladoService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_FILE = 'mrpQuery.sql';
@@ -115,6 +116,63 @@ export async function getMrpHorizonte(req: Request, res: Response): Promise<void
   }
 }
 
+/**
+ * GET /api/mrp/runs/:id/horizonte?horizonte_fim=YYYY-MM-DD
+ * Horizonte restrito ao cenário simulado (consumo = BOM × qtd do arquivo na data de Nova previsão).
+ */
+export async function getMrpRunHorizonte(req: Request, res: Response): Promise<void> {
+  const pool = getNomusPool();
+  if (!pool || !isNomusEnabled()) {
+    res.status(503).json({ error: 'ERP (Nomus) não configurado.' });
+    return;
+  }
+
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    res.status(400).json({ error: 'ID inválido.' });
+    return;
+  }
+
+  const fim = typeof req.query.horizonte_fim === 'string' ? req.query.horizonte_fim.trim() : '';
+  if (!fim) {
+    res.status(400).json({ error: 'Informe horizonte_fim (YYYY-MM-DD).' });
+    return;
+  }
+
+  try {
+    const run = await prisma.mrpRun.findUnique({ where: { id } });
+    if (!run) {
+      res.status(404).json({ error: 'MRP não encontrado.' });
+      return;
+    }
+    if (run.scenario_type !== 'SIMULADO') {
+      res.status(400).json({
+        error: 'Horizonte do cenário simulado só está disponível para MRP do tipo Simulado.',
+      });
+      return;
+    }
+    if (run.status !== 'PROCESSADO') {
+      res.status(400).json({
+        error: 'Processe o MRP antes de carregar o horizonte do cenário simulado.',
+      });
+      return;
+    }
+    const scenarioRows = parseScenarioRows(
+      run.scenario_payload_json ? JSON.parse(run.scenario_payload_json) : []
+    );
+    const result = await computarHorizonteCenarioSimulado(pool, fim, scenarioRows);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json(result.data);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[mrpController] getMrpRunHorizonte:', msg);
+    res.status(503).json({ error: 'Erro ao montar horizonte do cenário simulado.', detail: msg });
+  }
+}
+
 type MrpRunStatus =
   | 'AGUARDANDO_PROCESSAMENTO'
   | 'PROCESSANDO'
@@ -139,7 +197,21 @@ function parseScenarioRows(raw: unknown): MrpScenarioRow[] {
     const id_pedido = String(rec.id_pedido ?? '').trim();
     const previsao_nova = String(rec.previsao_nova ?? '').trim();
     if (!id_pedido || !previsao_nova) continue;
-    rows.push({ id_pedido, previsao_nova });
+    const codRaw = rec.cod_produto ?? rec.codProduto;
+    const cod_produto =
+      codRaw != null && String(codRaw).trim() ? String(codRaw).trim() : undefined;
+    let qtde_pendente: number | undefined;
+    const qtRaw = rec.qtde_pendente ?? rec.qtdePendente;
+    if (qtRaw != null && qtRaw !== '') {
+      const n = Number(qtRaw);
+      if (Number.isFinite(n)) qtde_pendente = n;
+    }
+    rows.push({
+      id_pedido,
+      previsao_nova,
+      cod_produto: cod_produto ?? undefined,
+      qtde_pendente,
+    });
   }
   return rows;
 }
@@ -256,21 +328,16 @@ export async function createMrpRun(req: Request, res: Response): Promise<void> {
     scenario_type,
     scenario_file_name,
     scenario_rows,
-    process_now,
   } = (req.body ?? {}) as {
     nome?: string;
     observacoes?: string;
     scenario_type?: string;
     scenario_file_name?: string;
     scenario_rows?: unknown;
-    process_now?: boolean;
   };
 
   const nomeTrim = String(nome ?? '').trim();
-  if (!nomeTrim) {
-    res.status(400).json({ error: 'Nome/Descrição do MRP é obrigatório.' });
-    return;
-  }
+  const nomeAuto = `MRP ${new Date().toLocaleDateString('pt-BR')}`;
   const tipo = String(scenario_type ?? 'REAL').trim().toUpperCase();
   if (tipo !== 'REAL' && tipo !== 'SIMULADO') {
     res.status(400).json({ error: 'scenario_type deve ser REAL ou SIMULADO.' });
@@ -289,7 +356,7 @@ export async function createMrpRun(req: Request, res: Response): Promise<void> {
     });
     const created = await prisma.mrpRun.create({
       data: {
-        nome: nomeTrim,
+        nome: nomeTrim || nomeAuto,
         observacoes: observacoes != null && String(observacoes).trim() ? String(observacoes).trim() : null,
         scenario_type: tipo,
         scenario_file_name: scenario_file_name ? String(scenario_file_name).trim() : null,
@@ -299,10 +366,6 @@ export async function createMrpRun(req: Request, res: Response): Promise<void> {
         created_by_login: usuario?.login ?? login,
       },
     });
-
-    if (process_now === true) {
-      await processMrpRunInternal(created.id, login);
-    }
 
     const reloaded = await prisma.mrpRun.findUnique({
       where: { id: created.id },

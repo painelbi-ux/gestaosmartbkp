@@ -30,12 +30,20 @@ function getMrpSql(): string {
 export type MrpScenarioRow = {
   id_pedido: string;
   previsao_nova: string;
+  /** Código do produto (coluna Cod) — reforça o vínculo com o pai no ERP. */
+  cod_produto?: string | null;
+  /** Quantidade pendente no arquivo (ex.: Qtde Pendente Real); senão o backend busca no ERP. */
+  qtde_pendente?: number | null;
 };
 
 function normalizePdDigits(pd: string): string {
   const s = String(pd ?? '').trim();
   const digits = s.replace(/\D+/g, '');
   return digits || s;
+}
+
+function normalizeIdChave(value: string): string {
+  return String(value ?? '').trim();
 }
 
 function normalizeIsoDate(value: unknown): string | null {
@@ -72,10 +80,10 @@ export async function buildMrpSnapshotRows(args: {
   if (args.scenarioType === 'SIMULADO') {
     scenarioMap = new Map();
     for (const s of args.scenarioRows ?? []) {
-      const pd = normalizePdDigits(String(s.id_pedido ?? ''));
+      const idChave = normalizeIdChave(String(s.id_pedido ?? ''));
       const dt = normalizeIsoDate(s.previsao_nova);
-      if (!pd || !dt) continue;
-      scenarioMap.set(pd, dt);
+      if (!idChave || !dt) continue;
+      scenarioMap.set(idChave, dt);
     }
   }
 
@@ -84,9 +92,13 @@ export async function buildMrpSnapshotRows(args: {
   for (const src of rows) {
     const row = { ...src } as Record<string, unknown>;
     if (scenarioMap && scenarioMap.size > 0) {
-      const pdRaw = String(row.PD ?? row.pd ?? row.id_pedido ?? '').trim();
-      const pdNorm = normalizePdDigits(pdRaw);
-      const dt = scenarioMap.get(pdNorm);
+      const idChave = normalizeIdChave(String(row.idChave ?? row.id_pedido ?? ''));
+      let dt = scenarioMap.get(idChave);
+      if (!dt) {
+        const pdRaw = String(row.PD ?? row.pd ?? '').trim();
+        const pdNorm = normalizePdDigits(pdRaw);
+        dt = scenarioMap.get(pdNorm);
+      }
       if (dt) {
         tryApplyScenarioDate(row, dt);
       }

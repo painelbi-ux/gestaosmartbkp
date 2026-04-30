@@ -276,10 +276,15 @@ function formatDateRangePtBr(isoDates: string[]): string | null {
   return `${sorted[0]} a ${sorted[sorted.length - 1]}`;
 }
 
+/** Mesma chave de rota/carrada usada em `buildCarradasInfo` (Observações / Rota do Gerenciador). */
+function rotaDisplayKeyFromRow(r: Record<string, unknown>): string {
+  return String(r['Observacoes'] ?? r['Observações'] ?? r['Rota'] ?? r['rota'] ?? '').trim() || 'Sem rota';
+}
+
 function buildCarradasInfo(rows: Array<Record<string, unknown>>): Array<{ rota: string; previsao_atual: string | null; codigos: string[] }> {
   const byRota = new Map<string, { previsoes: string[]; codigos: string[] }>();
   for (const r of rows) {
-    const rota = String(r['Observacoes'] ?? r['Observações'] ?? r['Rota'] ?? r['rota'] ?? '').trim() || 'Sem rota';
+    const rota = rotaDisplayKeyFromRow(r);
     const previsao = toIsoDate(r['previsao_entrega_atualizada'] ?? r['previsao_entrega']);
     const cod = String(r['Cod'] ?? r['cod'] ?? '').trim();
     const cur = byRota.get(rota) ?? { previsoes: [], codigos: [] };
@@ -294,6 +299,28 @@ function buildCarradasInfo(rows: Array<Record<string, unknown>>): Array<{ rota: 
       codigos: sortedUnique(v.codigos),
     }))
     .sort((a, b) => a.rota.localeCompare(b.rota, 'pt-BR'));
+}
+
+/**
+ * Capa do card: só mostrar códigos quando o card não cobre todos os itens do pedido naquela carrada/rota.
+ * Se o card referencia todos os itens da mesma carrada, `exibir_codigos` fica false.
+ */
+function buildCarradasInfoForCard(
+  allPedidoRows: Array<Record<string, unknown>>,
+  relevantRows: Array<Record<string, unknown>>
+): Array<{ rota: string; previsao_atual: string | null; codigos: string[]; exibir_codigos: boolean }> {
+  const base = buildCarradasInfo(relevantRows);
+  return base.map((c) => {
+    const fullIds = new Set(
+      allPedidoRows.filter((r) => rotaDisplayKeyFromRow(r) === c.rota).map(rowItemIdKey).filter(Boolean)
+    );
+    const relIds = new Set(
+      relevantRows.filter((r) => rotaDisplayKeyFromRow(r) === c.rota).map(rowItemIdKey).filter(Boolean)
+    );
+    const cobreTodaCarrada =
+      fullIds.size > 0 && fullIds.size === relIds.size && [...relIds].every((id) => fullIds.has(id));
+    return { ...c, exibir_codigos: !cobreTodaCarrada };
+  });
 }
 
 const STATUS_FINAIS_PERMITIDOS = new Set(['Atendido totalmente', 'Atendido com corte', 'Cancelado']);
@@ -609,7 +636,7 @@ export async function getOrders(req: Request, res: Response): Promise<void> {
         'Vendedor',
         'vendedor',
       ]);
-      const carradasInfo = buildCarradasInfo(relevantRows);
+      const carradasInfo = buildCarradasInfoForCard(rows, relevantRows);
 
       const ruLogin = o.usuarioResponsavel?.login ? normalizeLogin(o.usuarioResponsavel.login) : null;
       return {

@@ -322,35 +322,50 @@ export async function downloadPedidosGradeXlsx(
   URL.revokeObjectURL(url);
 }
 
+export type DownloadPedidosXlsxOptions = {
+  /** Remove as colunas finais Motivo e Observação (ex.: modelo de cenário simulado MRP). */
+  omitMotivoObservacao?: boolean;
+};
+
 /** Exporta pedidos para XLSX: colunas conforme config (ocultar/exibir), Igual? com fórmula, Motivo com lista. */
 export async function downloadPedidosXlsx(
   pedidos: Pedido[],
   filename = 'pedidos.xlsx',
-  motivosLista: string[] = []
+  motivosLista: string[] = [],
+  options?: DownloadPedidosXlsxOptions
 ): Promise<void> {
+  const headers =
+    options?.omitMotivoObservacao === true
+      ? HEADERS.filter((h) => h !== 'Motivo' && h !== 'Observação')
+      : [...HEADERS];
+  const colIgualIdx = headers.indexOf('Igual?');
+  const colNovaPrevisaoIdx = headers.indexOf('Nova previsão');
+  const colPrevisaoAtualIdx = headers.indexOf('Previsão atual');
+  const colMotivoIdx = headers.indexOf('Motivo');
+
   const rows = pedidosToSheetRows(pedidos);
   const wb = new Workbook();
   const wsPedidos = wb.addWorksheet('Pedidos', { views: [{ state: 'frozen', ySplit: 1 }] });
 
   const tableRows: (string | number | Date)[][] = rows.map((r) =>
-    HEADERS.map((h) => (r as Record<string, string | number | Date>)[h] ?? '')
+    headers.map((h) => (r as Record<string, string | number | Date>)[h] ?? '')
   );
 
   const lastRow = tableRows.length + 1;
-  const ref = `A1:${colLetter(HEADERS.length - 1)}${lastRow}`;
+  const ref = `A1:${colLetter(headers.length - 1)}${lastRow}`;
 
   wsPedidos.addTable({
     name: 'TabelaPedidos',
     ref,
     headerRow: true,
     style: { theme: 'TableStyleMedium2', showRowStripes: true },
-    columns: HEADERS.map((name) => ({ name, filterButton: true })),
+    columns: headers.map((name) => ({ name, filterButton: true })),
     rows: tableRows,
   });
 
   // Ocultar colunas conforme config (por nome do cabeçalho)
-  for (let colIdx = 0; colIdx < HEADERS.length; colIdx++) {
-    const key = HEADERS[colIdx];
+  for (let colIdx = 0; colIdx < headers.length; colIdx++) {
+    const key = headers[colIdx];
     const configEntry = EXPORT_COLUMNS_CONFIG.find((c) => c.key === key);
     if (configEntry?.hidden) {
       wsPedidos.getColumn(colIdx + 1).hidden = true;
@@ -358,17 +373,19 @@ export async function downloadPedidosXlsx(
   }
 
   // Fórmula Igual?: Nova previsão = Previsão atual
-  const colNovaPrevisao = colLetter(COL_NOVA_PREVISAO);
-  const colPrevisaoAtual = colLetter(COL_PREVISAO_ATUAL);
+  const colNovaPrevisaoLet = colLetter(colNovaPrevisaoIdx);
+  const colPrevisaoAtualLet = colLetter(colPrevisaoAtualIdx);
   for (let r = 2; r <= lastRow; r++) {
-    wsPedidos.getCell(r, COL_IGUAL + 1).value = { formula: `${colNovaPrevisao}${r}=${colPrevisaoAtual}${r}` };
+    wsPedidos.getCell(r, colIgualIdx + 1).value = {
+      formula: `${colNovaPrevisaoLet}${r}=${colPrevisaoAtualLet}${r}`,
+    };
   }
 
   // Formato por célula: data dd/MM/yyyy (sem hora), Valor contábil, Qtde geral; largura 14 para colunas de data
   const isValorColumn = (k: string) =>
     VALOR_COLUMN_KEYS.has(k) || /valor/i.test(k);
-  for (let colIdx = 0; colIdx < HEADERS.length; colIdx++) {
-    const key = HEADERS[colIdx];
+  for (let colIdx = 0; colIdx < headers.length; colIdx++) {
+    const key = headers[colIdx];
     const colNum = colIdx + 1;
     let numFmt: string | undefined;
     if (DATE_COLUMN_KEYS.has(key)) {
@@ -386,14 +403,14 @@ export async function downloadPedidosXlsx(
     }
   }
 
-  if (motivosLista.length > 0) {
+  if (motivosLista.length > 0 && colMotivoIdx >= 0) {
     const wsMotivos = wb.addWorksheet('Motivos');
     motivosLista.forEach((m, i) => {
       wsMotivos.getCell(i + 1, 1).value = m;
     });
     const listRef = `Motivos!$A$1:$A$${motivosLista.length}`;
     for (let r = 2; r <= lastRow; r++) {
-      const cell = wsPedidos.getCell(r, COL_MOTIVO + 1);
+      const cell = wsPedidos.getCell(r, colMotivoIdx + 1);
       cell.dataValidation = {
         type: 'list',
         allowBlank: true,
@@ -414,6 +431,10 @@ export async function downloadPedidosXlsx(
 
 export interface LinhaImportacao {
   id_pedido: string;
+  /** Código do produto (coluna Cod do export). */
+  cod?: string;
+  /** Qtde pendente informada no arquivo (Qtde Pendente Real / Pendente). */
+  qtde_pendente?: number;
   /** Número do pedido (PD) quando presente no arquivo — usado para bloquear importação se pedido está no Sycro. */
   pd?: string;
   nova_previsao: string;
@@ -476,6 +497,19 @@ export function parsePedidosXlsxForImport(file: File): Promise<LinhaImportacao[]
           const id = row['id_pedido'] ?? row['idChave'] ?? '';
           const pdRaw = row['PD'] ?? row['pd'] ?? '';
           const pdStr: string = typeof pdRaw === 'string' ? pdRaw.trim() : String(pdRaw ?? '').trim();
+          const codRaw = row['Cod'] ?? row['cod'] ?? '';
+          const codStr = typeof codRaw === 'string' ? codRaw.trim() : String(codRaw ?? '').trim();
+          const qtdePendRaw =
+            row['Qtde Pendente Real'] ??
+            row['Qtde pendente real'] ??
+            row['Pendente'] ??
+            row['pendente'] ??
+            '';
+          let qtde_pendente: number | undefined;
+          if (qtdePendRaw !== '' && qtdePendRaw != null) {
+            const n = typeof qtdePendRaw === 'number' ? qtdePendRaw : Number(String(qtdePendRaw).replace(',', '.'));
+            if (Number.isFinite(n)) qtde_pendente = n;
+          }
           const novaRaw = row['Nova previsão'] ?? row['Nova previsao'] ?? row['nova_previsao'] ?? row['Previsão atual'] ?? '';
           const atualRaw = row['Previsão anterior'] ?? row['Previsão atual'] ?? row['Previsão'] ?? row['Previsao'] ?? row['previsao'] ?? '';
           const motivoRaw = row['Motivo'] ?? row['motivo'] ?? '';
@@ -497,6 +531,8 @@ export function parsePedidosXlsxForImport(file: File): Promise<LinhaImportacao[]
             linhas.push({
               id_pedido: String(id).trim(),
               pd: pdStr || undefined,
+              cod: codStr || undefined,
+              qtde_pendente,
               nova_previsao: nova,
               motivo: motivoStr,
               observacao: observacaoStr || undefined,

@@ -11,6 +11,8 @@ import {
 import { createPortal } from 'react-dom';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
+  getMrpHorizonte,
+  getMrpRunHorizonte,
   getMrpRun,
   getMrpRunRows,
   type MrpHorizonteLinha,
@@ -190,6 +192,7 @@ type MrpUiPersistido = {
   horizonte: MrpHorizonteResponse | null;
   horizonteErro: string | null;
   colunasVisiveisMap: Record<string, boolean>;
+  colunaFixadaKey: string;
 };
 
 function mrpUiEstadoInicial(): MrpUiPersistido {
@@ -207,6 +210,7 @@ function mrpUiEstadoInicial(): MrpUiPersistido {
     horizonte: null,
     horizonteErro: null,
     colunasVisiveisMap: colunasVisibilidadeInicial(),
+    colunaFixadaKey: '',
   };
 }
 
@@ -308,6 +312,7 @@ const MrpTableBodyRow = memo(
     temHorizonteNaGrade,
     colunasVisiveisLista,
     empenhoMppNum,
+    colunaFixadaKey,
   }: {
     row: MrpRow;
     linhaH: MrpHorizonteLinha | undefined;
@@ -316,6 +321,7 @@ const MrpTableBodyRow = memo(
     temHorizonteNaGrade: boolean;
     colunasVisiveisLista: ColunaMRPVisivel[];
     empenhoMppNum: number | undefined;
+    colunaFixadaKey: string;
   }) {
     const horizonteCalc = useMemo(() => {
       if (!linhaH?.dias?.length) return null;
@@ -357,8 +363,16 @@ const MrpTableBodyRow = memo(
             key={col.key}
             className={
               col.key === 'statusHorizonte'
-                ? classNameCelulaStatusHorizonte(statusHorizonteTxt)
-                : `py-2 px-4 ${col.tdClassName ?? 'whitespace-nowrap'}`
+                ? `${classNameCelulaStatusHorizonte(statusHorizonteTxt)} ${
+                    col.key === colunaFixadaKey
+                      ? 'sticky left-0 z-[8] shadow-[2px_0_0_0_rgba(148,163,184,0.35)]'
+                      : ''
+                  }`
+                : `py-2 px-4 ${col.tdClassName ?? 'whitespace-nowrap'} ${
+                    col.key === colunaFixadaKey
+                      ? 'sticky left-0 z-[8] bg-white dark:bg-slate-800 shadow-[2px_0_0_0_rgba(148,163,184,0.35)]'
+                      : ''
+                  }`
             }
             title={
               col.key === 'dataRuptura' && isoDataRuptura
@@ -524,6 +538,8 @@ export default function MRPPage() {
   const [colunasVisiveisMap, setColunasVisiveisMap] = useState(() => ({
     ...mrpUiPersistido.colunasVisiveisMap,
   }));
+  const [colunaFixadaKey, setColunaFixadaKey] = useState<string>(() => mrpUiPersistido.colunaFixadaKey ?? '');
+  const [buscaColuna, setBuscaColuna] = useState('');
   const [painelColunasAberto, setPainelColunasAberto] = useState(false);
   const painelColunasRef = useRef<HTMLDivElement>(null);
   const [mppQtdePorCodigo, setMppQtdePorCodigo] = useState<Record<string, number>>(
@@ -580,10 +596,34 @@ export default function MRPPage() {
   }, [runId]);
 
   const carregarHorizonte = useCallback(async () => {
-    setHorizonteLoading(false);
-    setHorizonte(null);
-    setHorizonteErro('No snapshot, os dados são somente leitura e não recalculam em tempo real.');
-  }, [filterHorizonteFim]);
+    const fim = filterHorizonteFim.trim();
+    if (!fim) {
+      setHorizonteErro('Informe a data final do Horizonte de Produção.');
+      return;
+    }
+    if (!Number.isFinite(runId)) {
+      setHorizonteErro('ID de MRP inválido.');
+      return;
+    }
+    if (runMeta == null) {
+      setHorizonteErro('Aguarde o carregamento dos dados do MRP.');
+      return;
+    }
+    setHorizonteLoading(true);
+    setHorizonteErro(null);
+    try {
+      const h =
+        runMeta?.scenario_type === 'SIMULADO'
+          ? await getMrpRunHorizonte(runId, fim)
+          : await getMrpHorizonte(fim);
+      setHorizonte(h);
+    } catch (e) {
+      setHorizonte(null);
+      setHorizonteErro(e instanceof Error ? e.message : 'Erro ao carregar horizonte.');
+    } finally {
+      setHorizonteLoading(false);
+    }
+  }, [filterHorizonteFim, runId, runMeta?.scenario_type]);
 
   useEffect(() => {
     void carregar();
@@ -603,6 +643,7 @@ export default function MRPPage() {
     mrpUiPersistido.horizonte = horizonte;
     mrpUiPersistido.horizonteErro = horizonteErro;
     mrpUiPersistido.colunasVisiveisMap = colunasVisiveisMap;
+    mrpUiPersistido.colunaFixadaKey = colunaFixadaKey;
   }, [
     filterCodigo,
     filterComponente,
@@ -617,6 +658,7 @@ export default function MRPPage() {
     horizonte,
     horizonteErro,
     colunasVisiveisMap,
+    colunaFixadaKey,
   ]);
 
   useEffect(() => {
@@ -633,12 +675,18 @@ export default function MRPPage() {
   const temHorizonteNaGrade = Boolean(horizonte && horizonte.datas.length > 0);
 
   const colunasVisiveisLista = useMemo(
-    () =>
-      COLUNAS.filter((c) => {
+    () => {
+      const base = COLUNAS.filter((c) => {
         if (colunaSoComHorizonte(c.key) && !temHorizonteNaGrade) return false;
         return colunasVisiveisMap[c.key] !== false;
-      }),
-    [colunasVisiveisMap, temHorizonteNaGrade]
+      });
+      if (!colunaFixadaKey) return base;
+      const idx = base.findIndex((c) => c.key === colunaFixadaKey);
+      if (idx <= 0) return base;
+      const pinned = base[idx]!;
+      return [pinned, ...base.slice(0, idx), ...base.slice(idx + 1)];
+    },
+    [colunasVisiveisMap, temHorizonteNaGrade, colunaFixadaKey]
   );
 
   const alternarColunaFixa = (key: string) => {
@@ -647,13 +695,27 @@ export default function MRPPage() {
       if (atual) {
         const restantes = COLUNAS.filter((c) => c.key !== key && prev[c.key] !== false).length;
         if (restantes === 0) return prev;
+        if (colunaFixadaKey === key) setColunaFixadaKey('');
       }
       return { ...prev, [key]: !atual };
     });
   };
 
+  const travarOuDestravarColuna = (key: string) => {
+    setColunaFixadaKey((prev) => (prev === key ? '' : key));
+  };
+
   const marcarTodasColunasFixas = () => {
     setColunasVisiveisMap(colunasVisibilidadeInicial());
+  };
+
+  const ocultarTodasColunasFixas = () => {
+    const next: Record<string, boolean> = {};
+    for (const c of COLUNAS) next[c.key] = false;
+    const primeira = COLUNAS[0]?.key;
+    if (primeira) next[primeira] = true;
+    setColunasVisiveisMap(next);
+    setColunaFixadaKey('');
   };
 
   /** Uma linha de horizonte por código (precisa existir antes do filtro por status/ruptura). */
@@ -897,30 +959,61 @@ export default function MRPPage() {
                 <p className="text-[11px] text-slate-400 dark:text-slate-500 mb-2">
                   Não afeta as colunas de datas do horizonte.
                 </p>
+                <input
+                  type="text"
+                  value={buscaColuna}
+                  onChange={(e) => setBuscaColuna(e.target.value)}
+                  placeholder="Buscar coluna..."
+                  className="w-full mb-2 rounded-lg border border-slate-300 dark:border-slate-600 px-2 py-1.5 text-xs bg-white dark:bg-slate-700"
+                />
                 <ul className="space-y-0.5">
-                  {COLUNAS.filter(
-                    (c) => !colunaSoComHorizonte(c.key) || temHorizonteNaGrade
-                  ).map((c) => (
+                  {COLUNAS.filter((c) => !colunaSoComHorizonte(c.key) || temHorizonteNaGrade)
+                    .filter((c) => c.label.toLowerCase().includes(buscaColuna.trim().toLowerCase()))
+                    .map((c) => (
                     <li key={c.key}>
-                      <label className="flex items-center gap-2 py-1.5 px-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700/80 cursor-pointer text-sm text-slate-700 dark:text-slate-200">
-                        <input
-                          type="checkbox"
-                          className="rounded border-slate-400 text-primary-600 focus:ring-primary-500"
-                          checked={colunasVisiveisMap[c.key] !== false}
-                          onChange={() => alternarColunaFixa(c.key)}
-                        />
-                        <span>{c.label}</span>
-                      </label>
+                      <div className="flex items-center justify-between gap-1 py-1 px-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700/80 text-sm text-slate-700 dark:text-slate-200">
+                        <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
+                          <input
+                            type="checkbox"
+                            className="rounded border-slate-400 text-primary-600 focus:ring-primary-500"
+                            checked={colunasVisiveisMap[c.key] !== false}
+                            onChange={() => alternarColunaFixa(c.key)}
+                          />
+                          <span className="truncate">{c.label}</span>
+                        </label>
+                        <button
+                          type="button"
+                          title={colunaFixadaKey === c.key ? 'Destravar coluna' : 'Travar coluna à esquerda'}
+                          onClick={() => travarOuDestravarColuna(c.key)}
+                          disabled={colunasVisiveisMap[c.key] === false}
+                          className={`rounded px-1.5 py-0.5 text-[10px] border ${
+                            colunaFixadaKey === c.key
+                              ? 'border-amber-600 text-amber-700 dark:text-amber-300'
+                              : 'border-slate-300 text-slate-500 dark:text-slate-300'
+                          } disabled:opacity-40`}
+                        >
+                          {colunaFixadaKey === c.key ? 'Travada' : 'Travar'}
+                        </button>
+                      </div>
                     </li>
                   ))}
                 </ul>
-                <button
-                  type="button"
-                  onClick={marcarTodasColunasFixas}
-                  className="mt-2 w-full text-xs py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50"
-                >
-                  Marcar todas
-                </button>
+                <div className="mt-2 grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={marcarTodasColunasFixas}
+                    className="w-full text-xs py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50"
+                  >
+                    Marcar todas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={ocultarTodasColunasFixas}
+                    className="w-full text-xs py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50"
+                  >
+                    Ocultar quase todas
+                  </button>
+                </div>
               </div>
             ) : null}
           </div>
@@ -954,17 +1047,27 @@ export default function MRPPage() {
               {exportLoading ? 'Exportando…' : 'Excel'}
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => void carregar()}
-            className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
-          >
-            Atualizar
-          </button>
         </div>
       </div>
 
       <div className="mb-4">
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          {colunasVisiveisLista.map((c) => (
+            <button
+              key={`chip-${c.key}`}
+              type="button"
+              onClick={() => alternarColunaFixa(c.key)}
+              className={`rounded-full border px-2 py-0.5 text-xs ${
+                c.key === colunaFixadaKey
+                  ? 'border-amber-600 text-amber-700 dark:text-amber-300'
+                  : 'border-slate-300 text-slate-600 dark:text-slate-300'
+              }`}
+              title={`Ocultar coluna ${c.label}`}
+            >
+              {c.label} ×
+            </button>
+          ))}
+        </div>
         <div className="flex flex-wrap items-end gap-3 p-4 bg-white dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
           <div className="shrink-0 min-w-[140px]">
             <label className={MRP_FILTER_LABEL_CLASS}>Código</label>
@@ -1041,10 +1144,11 @@ export default function MRPPage() {
           />
           <button
             type="button"
-            onClick={() => setHorizonteErro('No snapshot, os dados são somente leitura e não recalculam em tempo real.')}
-            className="shrink-0 text-sm px-4 py-2 rounded-lg bg-slate-500 text-white font-medium transition"
+            onClick={() => void carregarHorizonte()}
+            disabled={horizonteLoading}
+            className="shrink-0 text-sm px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition"
           >
-            Snapshot imutável
+            {horizonteLoading ? 'Carregando horizonte…' : 'Carregar horizonte'}
           </button>
           <button type="button" onClick={limparFiltros} className={MRP_BTN_PRIMARY_CLASS} title="Limpar todos os filtros">
             Limpar filtros
@@ -1057,6 +1161,14 @@ export default function MRPPage() {
         )}
         {horizonteErro && (
           <p className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-300">{horizonteErro}</p>
+        )}
+        {runMeta?.scenario_type === 'SIMULADO' && (
+          <p className="mt-2 text-xs text-slate-600 dark:text-slate-300 max-w-3xl">
+            Cenário simulado: o horizonte considera apenas linhas do arquivo com data na coluna Nova previsão; a
+            quantidade vem da planilha quando informada (caso contrário, pendente no ERP para o mesmo pedido/produto).
+            O consumo é calculado pela lista de materiais desses produtos na data de entrega do arquivo, sem resumo
+            MPP global.
+          </p>
         )}
         {mppQtdeLimitHit && (
           <p className="mt-2 text-xs font-medium text-amber-800 dark:text-amber-200">
@@ -1098,6 +1210,10 @@ export default function MRPPage() {
                     }
                     className={`py-3 px-4 font-semibold border border-primary-500/40 align-middle ${
                       col.thClassName ?? 'whitespace-nowrap'
+                    } ${
+                      col.key === colunaFixadaKey
+                        ? 'sticky left-0 z-[35] bg-primary-700 shadow-[2px_0_0_0_rgba(148,163,184,0.35)]'
+                        : ''
                     }`}
                   >
                     {col.thContent ?? col.label}
@@ -1173,6 +1289,7 @@ export default function MRPPage() {
                       temHorizonteNaGrade={temHorizonteNaGrade}
                       colunasVisiveisLista={colunasVisiveisLista}
                       empenhoMppNum={empenhoMpp}
+                      colunaFixadaKey={colunaFixadaKey}
                     />
                   );
                 })
