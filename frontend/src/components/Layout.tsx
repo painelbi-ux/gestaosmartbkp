@@ -28,8 +28,7 @@ const PCP_SUBMENUS: { to: string; label: string }[] = [
   { to: '/pedidos', label: 'Gerenciador de Pedidos' },
   { to: '/pedidos/mrp-dashboard', label: 'Dashboard MRP' },
   { to: '/pedidos/mrp', label: 'MRP' },
-  { to: '/pedidos/pc', label: 'PC' },
-  { to: '/pedidos/mpp', label: 'MPP' },
+  { to: '/pedidos/mrp-produtos-em-processo', label: 'MRP - Produtos em Processo' },
   { to: '/pedidos/programacao-setorial', label: 'Programação Setorial' },
 ];
 
@@ -69,7 +68,7 @@ const PATH_LABELS: Record<string, string> = {
   '/pedidos/sycroorder': 'Comunicação PD',
   '/pedidos/mrp-dashboard': 'Dashboard MRP',
   '/pedidos/mrp': 'MRP',
-  '/pedidos/pc': 'PC',
+  '/pedidos/mrp-produtos-em-processo': 'MRP - Produtos em Processo',
   '/pedidos/mpp': 'MPP',
   '/pedidos/programacao-setorial': 'Programação Setorial',
   '/heatmap': 'Heatmap',

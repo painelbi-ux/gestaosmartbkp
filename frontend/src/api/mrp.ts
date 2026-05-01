@@ -79,12 +79,11 @@ export async function getMrpHorizonte(horizonteFim: string): Promise<MrpHorizont
 }
 
 /** Horizonte restrito ao arquivo + BOM (somente MRP snapshot cenário Simulado). */
-export async function getMrpRunHorizonte(runId: number, horizonteFim: string): Promise<MrpHorizonteResponse> {
-  const qs = new URLSearchParams({ horizonte_fim: horizonteFim.trim() });
-  const res = await apiFetch(`/api/mrp/runs/${runId}/horizonte?${qs}`);
+export async function getMrpRunHorizonte(runId: number): Promise<MrpHorizonteResponse> {
+  const res = await apiFetch(`/api/mrp/runs/${runId}/horizonte`);
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string; detail?: string };
-    throw new Error([body.error, body.detail].filter(Boolean).join(' — ') || 'Erro ao carregar horizonte do cenário');
+    throw new Error([body.error, body.detail].filter(Boolean).join(' — ') || 'Erro ao carregar horizonte salvo');
   }
   return res.json() as Promise<MrpHorizonteResponse>;
 }
@@ -103,6 +102,7 @@ export interface MrpRun {
   observacoes?: string | null;
   scenario_type: MrpScenarioType;
   scenario_file_name?: string | null;
+  horizonte_fim?: string | null;
   status: MrpRunStatus;
   created_at: string;
   processed_at?: string | null;
@@ -128,6 +128,7 @@ export async function createMrpRun(payload: {
   observacoes?: string;
   scenario_type: MrpScenarioType;
   scenario_file_name?: string;
+  horizonte_fim: string;
   scenario_rows?: MrpScenarioRowPayload[];
   process_now?: boolean;
 }): Promise<{ data: MrpRun }> {

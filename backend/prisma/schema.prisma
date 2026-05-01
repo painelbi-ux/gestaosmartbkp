@@ -92,6 +92,8 @@ model MrpRun {
   observacoes          String?
   scenario_type        String   // REAL | SIMULADO
   scenario_file_name   String?
+  horizonte_fim        String?
+  horizonte_json       String?
   /// JSON normalizado do cenário simulado (linhas do arquivo importado)
   scenario_payload_json String?
   status               String   @default("AGUARDANDO_PROCESSAMENTO") // AGUARDANDO_PROCESSAMENTO | PROCESSANDO | PROCESSADO | ERRO

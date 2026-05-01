@@ -121,21 +121,9 @@ export async function getMrpHorizonte(req: Request, res: Response): Promise<void
  * Horizonte restrito ao cenário simulado (consumo = BOM × qtd do arquivo na data de Nova previsão).
  */
 export async function getMrpRunHorizonte(req: Request, res: Response): Promise<void> {
-  const pool = getNomusPool();
-  if (!pool || !isNomusEnabled()) {
-    res.status(503).json({ error: 'ERP (Nomus) não configurado.' });
-    return;
-  }
-
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) {
     res.status(400).json({ error: 'ID inválido.' });
-    return;
-  }
-
-  const fim = typeof req.query.horizonte_fim === 'string' ? req.query.horizonte_fim.trim() : '';
-  if (!fim) {
-    res.status(400).json({ error: 'Informe horizonte_fim (YYYY-MM-DD).' });
     return;
   }
 
@@ -145,31 +133,21 @@ export async function getMrpRunHorizonte(req: Request, res: Response): Promise<v
       res.status(404).json({ error: 'MRP não encontrado.' });
       return;
     }
-    if (run.scenario_type !== 'SIMULADO') {
-      res.status(400).json({
-        error: 'Horizonte do cenário simulado só está disponível para MRP do tipo Simulado.',
-      });
-      return;
-    }
     if (run.status !== 'PROCESSADO') {
       res.status(400).json({
-        error: 'Processe o MRP antes de carregar o horizonte do cenário simulado.',
+        error: 'Processe o MRP antes de consultar o horizonte salvo.',
       });
       return;
     }
-    const scenarioRows = parseScenarioRows(
-      run.scenario_payload_json ? JSON.parse(run.scenario_payload_json) : []
-    );
-    const result = await computarHorizonteCenarioSimulado(pool, fim, scenarioRows);
-    if (!result.ok) {
-      res.status(400).json({ error: result.error });
+    if (!run.horizonte_json) {
+      res.status(404).json({ error: 'Horizonte não foi salvo no processamento deste MRP.' });
       return;
     }
-    res.json(result.data);
+    res.json(JSON.parse(run.horizonte_json));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[mrpController] getMrpRunHorizonte:', msg);
-    res.status(503).json({ error: 'Erro ao montar horizonte do cenário simulado.', detail: msg });
+    res.status(503).json({ error: 'Erro ao carregar horizonte salvo do MRP.', detail: msg });
   }
 }
 
@@ -186,6 +164,10 @@ function isMrpRunStatus(value: string): value is MrpRunStatus {
     value === 'PROCESSADO' ||
     value === 'ERRO'
   );
+}
+
+function isIsoDateOnly(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
 function parseScenarioRows(raw: unknown): MrpScenarioRow[] {
@@ -223,6 +205,7 @@ function runToResponse(run: {
   observacoes: string | null;
   scenario_type: string;
   scenario_file_name: string | null;
+  horizonte_fim?: string | null;
   status: string;
   created_at: Date;
   processed_at: Date | null;
@@ -238,6 +221,7 @@ function runToResponse(run: {
     observacoes: run.observacoes,
     scenario_type: run.scenario_type,
     scenario_file_name: run.scenario_file_name,
+    horizonte_fim: run.horizonte_fim ?? null,
     status: run.status,
     created_at: run.created_at,
     processed_at: run.processed_at,
@@ -252,6 +236,13 @@ async function processMrpRunInternal(runId: number, login: string): Promise<void
   const run = await prisma.mrpRun.findUnique({ where: { id: runId } });
   if (!run) throw new Error('MRP não encontrado.');
   if (run.status === 'PROCESSADO') return;
+  if (!run.horizonte_fim || !isIsoDateOnly(run.horizonte_fim)) {
+    throw new Error('Data final do horizonte não informada para este MRP.');
+  }
+  const pool = getNomusPool();
+  if (!pool || !isNomusEnabled()) {
+    throw new Error('ERP (Nomus) não configurado.');
+  }
 
   const usuario = await prisma.usuario.findUnique({
     where: { login },
@@ -274,6 +265,13 @@ async function processMrpRunInternal(runId: number, login: string): Promise<void
       scenarioType: run.scenario_type === 'SIMULADO' ? 'SIMULADO' : 'REAL',
       scenarioRows,
     });
+    const horizonteResult =
+      run.scenario_type === 'SIMULADO'
+        ? await computarHorizonteCenarioSimulado(pool, run.horizonte_fim, scenarioRows)
+        : await computarHorizonteProducao(pool, run.horizonte_fim);
+    if (!horizonteResult.ok) {
+      throw new Error(horizonteResult.error);
+    }
     await prisma.$transaction(async (tx) => {
       await tx.mrpSnapshotRow.deleteMany({ where: { run_id: runId } });
       await tx.mrpRun.update({
@@ -291,6 +289,7 @@ async function processMrpRunInternal(runId: number, login: string): Promise<void
         status: 'PROCESSADO',
         processed_at: new Date(),
         error_message: null,
+        horizonte_json: JSON.stringify(horizonteResult.data),
       },
     });
   } catch (err) {
@@ -327,12 +326,14 @@ export async function createMrpRun(req: Request, res: Response): Promise<void> {
     observacoes,
     scenario_type,
     scenario_file_name,
+    horizonte_fim,
     scenario_rows,
   } = (req.body ?? {}) as {
     nome?: string;
     observacoes?: string;
     scenario_type?: string;
     scenario_file_name?: string;
+    horizonte_fim?: string;
     scenario_rows?: unknown;
   };
 
@@ -341,6 +342,11 @@ export async function createMrpRun(req: Request, res: Response): Promise<void> {
   const tipo = String(scenario_type ?? 'REAL').trim().toUpperCase();
   if (tipo !== 'REAL' && tipo !== 'SIMULADO') {
     res.status(400).json({ error: 'scenario_type deve ser REAL ou SIMULADO.' });
+    return;
+  }
+  const horizonteFim = String(horizonte_fim ?? '').trim();
+  if (!horizonteFim || !isIsoDateOnly(horizonteFim)) {
+    res.status(400).json({ error: 'Informe a data do horizonte no formato YYYY-MM-DD.' });
     return;
   }
   const rows = parseScenarioRows(scenario_rows);
@@ -360,6 +366,7 @@ export async function createMrpRun(req: Request, res: Response): Promise<void> {
         observacoes: observacoes != null && String(observacoes).trim() ? String(observacoes).trim() : null,
         scenario_type: tipo,
         scenario_file_name: scenario_file_name ? String(scenario_file_name).trim() : null,
+        horizonte_fim: horizonteFim,
         scenario_payload_json: tipo === 'SIMULADO' ? JSON.stringify(rows) : null,
         status: 'AGUARDANDO_PROCESSAMENTO',
         created_by_user_id: usuario?.id ?? null,

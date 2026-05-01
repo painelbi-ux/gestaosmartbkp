@@ -20,6 +20,7 @@ import motivosAlteracaoDataEntregaCompraRoutes from './routes/motivosAlteracaoDa
 import engenhariaRoutes from './routes/engenhariaRoutes.js';
 import sycroorderRoutes from './routes/sycroorderRoutes.js';
 import mrpRoutes from './routes/mrpRoutes.js';
+import mrpProdutosProcessoRoutes from './routes/mrpProdutosProcessoRoutes.js';
 import mppRoutes from './routes/mppRoutes.js';
 import pcRoutes from './routes/pcRoutes.js';
 import programacaoSetorialRoutes from './routes/programacaoSetorialRoutes.js';
@@ -143,6 +144,7 @@ app.use('/api/integracao/motivos-alteracao-data-entrega-compra', motivosAlteraca
 app.use('/api/engenharia', engenhariaRoutes);
 app.use('/api/sycroorder', sycroorderRoutes);
 app.use('/api/mrp', mrpRoutes);
+app.use('/api/mrp-produtos-processo', mrpProdutosProcessoRoutes);
 app.use('/api/mpp', mppRoutes);
 app.use('/api/pc', pcRoutes);
 app.use('/api/programacao-setorial', programacaoSetorialRoutes);

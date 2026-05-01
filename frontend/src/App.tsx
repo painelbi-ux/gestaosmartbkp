@@ -22,9 +22,9 @@ import PainelFinanceiroComercialPage from './pages/financeiro/PainelFinanceiroCo
 import SycroOrderPage from './pages/pedidos/SycroOrderPage';
 import MRPPage from './pages/pedidos/MRPPage';
 import MRPManagerPage from './pages/pedidos/MRPManagerPage';
+import MRPProdutosEmProcessoPage from './pages/pedidos/MRPProdutosEmProcessoPage';
 import DashboardMRPPage from './pages/pedidos/DashboardMRPPage';
 import MPPPage from './pages/pedidos/MPPPage';
-import PCPedidoCompraPage from './pages/pedidos/PCPedidoCompraPage';
 import ProgramacaoSetorialPainelPage from './pages/pedidos/ProgramacaoSetorialPainelPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { getStoredToken, SESSION_CLEARED_EVENT } from './api/client';
@@ -103,8 +103,8 @@ export default function App() {
           <Route path="pedidos/sycroorder" element={<ErrorBoundary><SycroOrderPage /></ErrorBoundary>} />
           <Route path="pedidos/mrp" element={<ErrorBoundary><MRPManagerPage /></ErrorBoundary>} />
           <Route path="pedidos/mrp/:id" element={<ErrorBoundary><MRPPage /></ErrorBoundary>} />
+          <Route path="pedidos/mrp-produtos-em-processo" element={<ErrorBoundary><MRPProdutosEmProcessoPage /></ErrorBoundary>} />
           <Route path="pedidos/mrp-dashboard" element={<ErrorBoundary><DashboardMRPPage /></ErrorBoundary>} />
-          <Route path="pedidos/pc" element={<ErrorBoundary><PCPedidoCompraPage /></ErrorBoundary>} />
           <Route path="pedidos/mpp" element={<ErrorBoundary><MPPPage /></ErrorBoundary>} />
           <Route path="pedidos/programacao-setorial" element={<ErrorBoundary><ProgramacaoSetorialPainelPage /></ErrorBoundary>} />
           <Route path="heatmap" element={<HeatmapPage />} />

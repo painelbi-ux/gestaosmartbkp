@@ -72,9 +72,10 @@ function BlocoDatas({
 interface FiltroDatasMRPPopoverProps {
   valores: FiltroDatasMRPState;
   onChange: (updates: Partial<FiltroDatasMRPState>) => void;
+  mostrarHorizonte?: boolean;
 }
 
-export default function FiltroDatasMRPPopover({ valores, onChange }: FiltroDatasMRPPopoverProps) {
+export default function FiltroDatasMRPPopover({ valores, onChange, mostrarHorizonte = true }: FiltroDatasMRPPopoverProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -93,7 +94,7 @@ export default function FiltroDatasMRPPopover({ valores, onChange }: FiltroDatas
     v.filterDataNecessidadeFim ||
     v.filterDataRupturaIni ||
     v.filterDataRupturaFim ||
-    v.filterHorizonteFim;
+    (mostrarHorizonte && v.filterHorizonteFim);
 
   return (
     <div className="relative shrink-0" ref={ref}>
@@ -136,23 +137,27 @@ export default function FiltroDatasMRPPopover({ valores, onChange }: FiltroDatas
               onDataIniChange={(val) => onChange({ filterDataRupturaIni: val })}
               onDataFimChange={(val) => onChange({ filterDataRupturaFim: val })}
             />
-            <hr className="border-slate-200 dark:border-slate-600" />
-            <div>
-              <p className="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-2 mb-2.5">
-                <CalendarIcon />
-                Horizonte de produção
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
-                Data final usada ao carregar o horizonte na grade.
-              </p>
-              <label className={labelClass}>Até</label>
-              <input
-                type="date"
-                value={v.filterHorizonteFim}
-                onChange={(e) => onChange({ filterHorizonteFim: e.target.value })}
-                className={inputClass}
-              />
-            </div>
+            {mostrarHorizonte && (
+              <>
+                <hr className="border-slate-200 dark:border-slate-600" />
+                <div>
+                  <p className="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-2 mb-2.5">
+                    <CalendarIcon />
+                    Horizonte de produção
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
+                    Data final usada ao carregar o horizonte na grade.
+                  </p>
+                  <label className={labelClass}>Até</label>
+                  <input
+                    type="date"
+                    value={v.filterHorizonteFim}
+                    onChange={(e) => onChange({ filterHorizonteFim: e.target.value })}
+                    className={inputClass}
+                  />
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

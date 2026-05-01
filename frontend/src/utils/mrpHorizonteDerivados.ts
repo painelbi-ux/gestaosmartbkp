@@ -126,7 +126,7 @@ export function parseDataMRP(val: unknown): string | null {
   if (!raw) return null;
   const s = raw.slice(0, 10);
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  const br = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(raw);
+  const br = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(raw);
   if (br) {
     const d = br[1].padStart(2, '0');
     const m = br[2].padStart(2, '0');

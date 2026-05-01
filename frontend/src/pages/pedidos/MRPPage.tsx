@@ -8,10 +8,8 @@ import {
   memo,
   type ReactNode,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  getMrpHorizonte,
   getMrpRunHorizonte,
   getMrpRun,
   getMrpRunRows,
@@ -36,10 +34,10 @@ import {
 } from '../../utils/mrpHorizonteDerivados';
 
 /** Cache da última carga: ao voltar na aba MRP, restaura sem nova requisição. Só recarrega ao clicar em Atualizar. */
-let mrpCache: { data: MrpRow[] } | null = null;
+let mrpCache: { runId: number; data: MrpRow[] } | null = null;
 
 /** Soma MPP «Qtde total componente (no dia)» por código (sem filtro de datas), alinhado ao Empenho Total. */
-let mrpMppQtdeCache: { totais: Record<string, number>; limitHit: boolean } | null = null;
+let mrpMppQtdeCache: { runId: number; totais: Record<string, number>; limitHit: boolean } | null = null;
 
 const COLUNAS: {
   key: keyof MrpRow;
@@ -141,12 +139,6 @@ function colunaSoComHorizonte(key: keyof MrpRow): boolean {
   return CHAVES_COLUNAS_SO_HORIZONTE.includes(key);
 }
 
-function colunasVisibilidadeInicial(): Record<string, boolean> {
-  const r: Record<string, boolean> = {};
-  for (const c of COLUNAS) r[c.key] = true;
-  return r;
-}
-
 /** Mesmas classes base do `FiltroPedidos` (Gerenciador de Pedidos). */
 const MRP_FILTER_INPUT_CLASS =
   'w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-600 focus:border-transparent min-h-[2.5rem]';
@@ -191,8 +183,7 @@ type MrpUiPersistido = {
   filterHorizonteFim: string;
   horizonte: MrpHorizonteResponse | null;
   horizonteErro: string | null;
-  colunasVisiveisMap: Record<string, boolean>;
-  colunaFixadaKey: string;
+  colunasOcultas: string[];
 };
 
 function mrpUiEstadoInicial(): MrpUiPersistido {
@@ -209,8 +200,7 @@ function mrpUiEstadoInicial(): MrpUiPersistido {
     filterHorizonteFim: '',
     horizonte: null,
     horizonteErro: null,
-    colunasVisiveisMap: colunasVisibilidadeInicial(),
-    colunaFixadaKey: '',
+    colunasOcultas: [],
   };
 }
 
@@ -298,6 +288,15 @@ type MrpDerivadosHorizonteEmpenho = {
 };
 
 type ColunaMRPVisivel = (typeof COLUNAS)[number];
+type SortDirecao = 'asc' | 'desc';
+type SortState = {
+  key: keyof MrpRow;
+  direction: SortDirecao;
+} | null;
+type ExcelFilterDraft = {
+  search: string;
+  selected: string[];
+};
 
 /**
  * Linha da grade isolada + memo: evita re-render de milhares de células quando o pai atualiza por filtros.
@@ -312,7 +311,6 @@ const MrpTableBodyRow = memo(
     temHorizonteNaGrade,
     colunasVisiveisLista,
     empenhoMppNum,
-    colunaFixadaKey,
   }: {
     row: MrpRow;
     linhaH: MrpHorizonteLinha | undefined;
@@ -321,7 +319,6 @@ const MrpTableBodyRow = memo(
     temHorizonteNaGrade: boolean;
     colunasVisiveisLista: ColunaMRPVisivel[];
     empenhoMppNum: number | undefined;
-    colunaFixadaKey: string;
   }) {
     const horizonteCalc = useMemo(() => {
       if (!linhaH?.dias?.length) return null;
@@ -363,16 +360,8 @@ const MrpTableBodyRow = memo(
             key={col.key}
             className={
               col.key === 'statusHorizonte'
-                ? `${classNameCelulaStatusHorizonte(statusHorizonteTxt)} ${
-                    col.key === colunaFixadaKey
-                      ? 'sticky left-0 z-[8] shadow-[2px_0_0_0_rgba(148,163,184,0.35)]'
-                      : ''
-                  }`
-                : `py-2 px-4 ${col.tdClassName ?? 'whitespace-nowrap'} ${
-                    col.key === colunaFixadaKey
-                      ? 'sticky left-0 z-[8] bg-white dark:bg-slate-800 shadow-[2px_0_0_0_rgba(148,163,184,0.35)]'
-                      : ''
-                  }`
+                ? classNameCelulaStatusHorizonte(statusHorizonteTxt)
+                : `py-2 px-4 ${col.tdClassName ?? 'whitespace-nowrap'}`
             }
             title={
               col.key === 'dataRuptura' && isoDataRuptura
@@ -475,43 +464,34 @@ const MrpTableBodyRow = memo(
     prev.empenhoMppNum === next.empenhoMppNum
 );
 
-/** Overlay do horizonte: mesmo vocabulário visual do carregamento principal da página MRP. */
-function HorizonteLoadingOverlay() {
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/35 dark:bg-slate-950/45 backdrop-blur-sm px-4"
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-    >
-      <div className="flex flex-col items-center gap-5 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-10 py-8 shadow-lg">
-        <div className="relative w-12 h-12 shrink-0">
-          <div className="absolute inset-0 rounded-full border-4 border-primary-200 dark:border-primary-800" />
-          <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-primary-600 animate-spin" />
-        </div>
-        <p className="text-base font-medium text-slate-700 dark:text-slate-200 animate-pulse text-center">
-          Calculando MRP
-        </p>
-      </div>
-    </div>,
-    document.body
-  );
-}
+type MRPPageProps = {
+  runId?: number;
+  onClose?: () => void;
+  embedded?: boolean;
+};
 
-export default function MRPPage() {
+type MrpFeedbackModal = {
+  titulo: string;
+  mensagem: string;
+  tom: 'info' | 'error';
+};
+
+export default function MRPPage({ runId: runIdProp, onClose, embedded = false }: MRPPageProps = {}) {
   const { id: runIdParam } = useParams();
-  const runId = Number(runIdParam);
+  const runId = runIdProp ?? Number(runIdParam);
   const navigate = useNavigate();
+  const cachedRows = mrpCache?.runId === runId ? mrpCache.data : null;
   const { hasPermission } = useAuth();
   const podeExportarXlsx =
     hasPermission(PERMISSOES.PCP_EXPORTAR_XLSX) ||
     hasPermission(PERMISSOES.PCP_TOTAL) ||
     hasPermission(PERMISSOES.PEDIDOS_EDITAR);
 
-  const [data, setData] = useState<MrpRow[]>(() => mrpCache?.data ?? []);
-  const [loading, setLoading] = useState(() => !mrpCache);
+  const [data, setData] = useState<MrpRow[]>(() => cachedRows ?? []);
+  const [loading, setLoading] = useState(() => !cachedRows);
   const [erro, setErro] = useState<string | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
+  const [feedbackModal, setFeedbackModal] = useState<MrpFeedbackModal | null>(null);
   const [filterCodigo, setFilterCodigo] = useState(() => mrpUiPersistido.filterCodigo);
   const [filterComponente, setFilterComponente] = useState(() => mrpUiPersistido.filterComponente);
   const [filterColeta, setFilterColeta] = useState(() => mrpUiPersistido.filterColeta);
@@ -531,29 +511,42 @@ export default function MRPPage() {
   const [filterDataRupturaFim, setFilterDataRupturaFim] = useState(
     () => mrpUiPersistido.filterDataRupturaFim ?? ''
   );
+  const [colunaFiltroAberta, setColunaFiltroAberta] = useState<keyof MrpRow | null>(null);
+  const [colunasOcultas, setColunasOcultas] = useState<string[]>(() => mrpUiPersistido.colunasOcultas ?? []);
+  const [colunasOcultasOpen, setColunasOcultasOpen] = useState(false);
+  const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
+  const [excelFilterDrafts, setExcelFilterDrafts] = useState<Record<string, ExcelFilterDraft>>({});
+  const [sortState, setSortState] = useState<SortState>(null);
   const [filterHorizonteFim, setFilterHorizonteFim] = useState(() => mrpUiPersistido.filterHorizonteFim);
   const [horizonte, setHorizonte] = useState<MrpHorizonteResponse | null>(() => mrpUiPersistido.horizonte);
   const [horizonteLoading, setHorizonteLoading] = useState(false);
   const [horizonteErro, setHorizonteErro] = useState<string | null>(() => mrpUiPersistido.horizonteErro);
-  const [colunasVisiveisMap, setColunasVisiveisMap] = useState(() => ({
-    ...mrpUiPersistido.colunasVisiveisMap,
-  }));
-  const [colunaFixadaKey, setColunaFixadaKey] = useState<string>(() => mrpUiPersistido.colunaFixadaKey ?? '');
-  const [buscaColuna, setBuscaColuna] = useState('');
-  const [painelColunasAberto, setPainelColunasAberto] = useState(false);
-  const painelColunasRef = useRef<HTMLDivElement>(null);
+  const horizonteCarregadoRunIdRef = useRef<number | null>(null);
   const [mppQtdePorCodigo, setMppQtdePorCodigo] = useState<Record<string, number>>(
-    () => mrpMppQtdeCache?.totais ?? {}
+    () => (mrpMppQtdeCache?.runId === runId ? mrpMppQtdeCache.totais : {})
   );
-  const [mppQtdeLimitHit, setMppQtdeLimitHit] = useState(() => mrpMppQtdeCache?.limitHit ?? false);
+  const [mppQtdeLimitHit, setMppQtdeLimitHit] = useState(() =>
+    mrpMppQtdeCache?.runId === runId ? mrpMppQtdeCache.limitHit : false
+  );
+  const colunasOcultasRef = useRef<HTMLDivElement>(null);
   const [runMeta, setRunMeta] = useState<{
     nome: string;
     processed_at?: string | null;
     scenario_type: string;
     scenario_file_name?: string | null;
+    horizonte_fim?: string | null;
     processed_by_login?: string | null;
     observacoes?: string | null;
   } | null>(null);
+  const pageClassName = embedded ? 'h-full min-h-0 p-4' : 'p-6';
+  const tableScrollClassName = embedded ? 'overflow-x-auto max-h-[62vh] overflow-y-auto' : 'overflow-x-auto max-h-[75vh] overflow-y-auto';
+  const fecharVisualizacao = useCallback(() => {
+    if (onClose) {
+      onClose();
+      return;
+    }
+    navigate('/pedidos/mrp');
+  }, [navigate, onClose]);
 
   const carregar = useCallback(async () => {
     if (!Number.isFinite(runId)) {
@@ -563,6 +556,9 @@ export default function MRPPage() {
     }
     setLoading(true);
     setErro(null);
+    horizonteCarregadoRunIdRef.current = null;
+    setHorizonte(null);
+    setHorizonteErro(null);
     const [metaOutcome, rowsOutcome] = await Promise.allSettled([
       getMrpRun(runId),
       getMrpRunRows(runId),
@@ -570,7 +566,7 @@ export default function MRPPage() {
     if (rowsOutcome.status === 'fulfilled') {
       const rows = Array.isArray(rowsOutcome.value.data) ? rowsOutcome.value.data : [];
       setData(rows);
-      mrpCache = { data: rows };
+      mrpCache = { runId, data: rows };
     } else {
       setData([]);
       mrpCache = null;
@@ -583,20 +579,22 @@ export default function MRPPage() {
         processed_at: m.processed_at,
         scenario_type: m.scenario_type,
         scenario_file_name: m.scenario_file_name,
+        horizonte_fim: m.horizonte_fim,
         processed_by_login: m.processed_by_login,
         observacoes: m.observacoes,
       });
+      if (m.horizonte_fim) setFilterHorizonteFim(m.horizonte_fim);
     } else {
       setRunMeta(null);
     }
     setMppQtdePorCodigo({});
     setMppQtdeLimitHit(false);
-    mrpMppQtdeCache = { totais: {}, limitHit: false };
+    mrpMppQtdeCache = { runId, totais: {}, limitHit: false };
     setLoading(false);
   }, [runId]);
 
   const carregarHorizonte = useCallback(async () => {
-    const fim = filterHorizonteFim.trim();
+    const fim = (filterHorizonteFim.trim() || runMeta?.horizonte_fim || '').trim();
     if (!fim) {
       setHorizonteErro('Informe a data final do Horizonte de Produção.');
       return;
@@ -612,10 +610,7 @@ export default function MRPPage() {
     setHorizonteLoading(true);
     setHorizonteErro(null);
     try {
-      const h =
-        runMeta?.scenario_type === 'SIMULADO'
-          ? await getMrpRunHorizonte(runId, fim)
-          : await getMrpHorizonte(fim);
+      const h = await getMrpRunHorizonte(runId);
       setHorizonte(h);
     } catch (e) {
       setHorizonte(null);
@@ -623,11 +618,30 @@ export default function MRPPage() {
     } finally {
       setHorizonteLoading(false);
     }
-  }, [filterHorizonteFim, runId, runMeta?.scenario_type]);
+  }, [filterHorizonteFim, runId, runMeta?.horizonte_fim, runMeta?.scenario_type]);
 
   useEffect(() => {
     void carregar();
   }, [carregar]);
+
+  useEffect(() => {
+    const fim = runMeta?.horizonte_fim?.trim();
+    if (!fim || horizonteLoading || horizonteCarregadoRunIdRef.current === runId) return;
+    horizonteCarregadoRunIdRef.current = runId;
+    setFilterHorizonteFim(fim);
+    void carregarHorizonte();
+  }, [carregarHorizonte, horizonteLoading, runId, runMeta?.horizonte_fim]);
+
+  useEffect(() => {
+    if (!colunasOcultasOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (colunasOcultasRef.current && !colunasOcultasRef.current.contains(e.target as Node)) {
+        setColunasOcultasOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [colunasOcultasOpen]);
 
   useEffect(() => {
     mrpUiPersistido.filterCodigo = filterCodigo;
@@ -642,8 +656,7 @@ export default function MRPPage() {
     mrpUiPersistido.filterHorizonteFim = filterHorizonteFim;
     mrpUiPersistido.horizonte = horizonte;
     mrpUiPersistido.horizonteErro = horizonteErro;
-    mrpUiPersistido.colunasVisiveisMap = colunasVisiveisMap;
-    mrpUiPersistido.colunaFixadaKey = colunaFixadaKey;
+    mrpUiPersistido.colunasOcultas = colunasOcultas;
   }, [
     filterCodigo,
     filterComponente,
@@ -657,65 +670,72 @@ export default function MRPPage() {
     filterHorizonteFim,
     horizonte,
     horizonteErro,
-    colunasVisiveisMap,
-    colunaFixadaKey,
+    colunasOcultas,
   ]);
-
-  useEffect(() => {
-    if (!painelColunasAberto) return;
-    const fechar = (e: MouseEvent) => {
-      if (painelColunasRef.current && !painelColunasRef.current.contains(e.target as Node)) {
-        setPainelColunasAberto(false);
-      }
-    };
-    document.addEventListener('mousedown', fechar);
-    return () => document.removeEventListener('mousedown', fechar);
-  }, [painelColunasAberto]);
 
   const temHorizonteNaGrade = Boolean(horizonte && horizonte.datas.length > 0);
 
-  const colunasVisiveisLista = useMemo(
-    () => {
-      const base = COLUNAS.filter((c) => {
-        if (colunaSoComHorizonte(c.key) && !temHorizonteNaGrade) return false;
-        return colunasVisiveisMap[c.key] !== false;
-      });
-      if (!colunaFixadaKey) return base;
-      const idx = base.findIndex((c) => c.key === colunaFixadaKey);
-      if (idx <= 0) return base;
-      const pinned = base[idx]!;
-      return [pinned, ...base.slice(0, idx), ...base.slice(idx + 1)];
-    },
-    [colunasVisiveisMap, temHorizonteNaGrade, colunaFixadaKey]
+  const colunasDisponiveisLista = useMemo(
+    () => COLUNAS.filter((c) => !colunaSoComHorizonte(c.key) || temHorizonteNaGrade),
+    [temHorizonteNaGrade]
   );
 
-  const alternarColunaFixa = (key: string) => {
-    setColunasVisiveisMap((prev) => {
-      const atual = prev[key] !== false;
-      if (atual) {
-        const restantes = COLUNAS.filter((c) => c.key !== key && prev[c.key] !== false).length;
-        if (restantes === 0) return prev;
-        if (colunaFixadaKey === key) setColunaFixadaKey('');
-      }
-      return { ...prev, [key]: !atual };
+  useEffect(() => {
+    if (colunasDisponiveisLista.length === 0) return;
+    const disponiveis = new Set(colunasDisponiveisLista.map((c) => String(c.key)));
+    const ocultasValidas = colunasOcultas.filter((key) => disponiveis.has(key));
+    if (ocultasValidas.length >= colunasDisponiveisLista.length) ocultasValidas.pop();
+    if (ocultasValidas.length !== colunasOcultas.length || ocultasValidas.some((key, idx) => key !== colunasOcultas[idx])) {
+      setColunasOcultas(ocultasValidas);
+    }
+  }, [colunasDisponiveisLista, colunasOcultas]);
+
+  const colunasVisiveisLista = useMemo(
+    () => colunasDisponiveisLista.filter((c) => !colunasOcultas.includes(String(c.key))),
+    [colunasDisponiveisLista, colunasOcultas]
+  );
+
+  const colunasOcultasLista = useMemo(
+    () => colunasDisponiveisLista.filter((c) => colunasOcultas.includes(String(c.key))),
+    [colunasDisponiveisLista, colunasOcultas]
+  );
+
+  const ocultarColuna = (key: keyof MrpRow) => {
+    if (colunasVisiveisLista.length <= 1) return;
+    setColunaFiltroAberta((prev) => (prev === key ? null : prev));
+    setSortState((prev) => (prev?.key === key ? null : prev));
+    setColumnFilters((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
     });
+    setExcelFilterDrafts((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setColunasOcultas((prev) => (prev.includes(String(key)) ? prev : [...prev, String(key)]));
   };
 
-  const travarOuDestravarColuna = (key: string) => {
-    setColunaFixadaKey((prev) => (prev === key ? '' : key));
+  const reexibirColuna = (key: keyof MrpRow) => {
+    setColunasOcultas((prev) => prev.filter((k) => k !== String(key)));
   };
 
-  const marcarTodasColunasFixas = () => {
-    setColunasVisiveisMap(colunasVisibilidadeInicial());
+  const reexibirTodasColunas = () => {
+    setColunasOcultas([]);
+    setColunasOcultasOpen(false);
   };
 
-  const ocultarTodasColunasFixas = () => {
-    const next: Record<string, boolean> = {};
-    for (const c of COLUNAS) next[c.key] = false;
-    const primeira = COLUNAS[0]?.key;
-    if (primeira) next[primeira] = true;
-    setColunasVisiveisMap(next);
-    setColunaFixadaKey('');
+  const setFiltroColuna = (key: keyof MrpRow, value: string) => {
+    setColumnFilters((prev) => {
+      const next = { ...prev };
+      const v = value;
+      if (v) next[key] = v;
+      else delete next[key];
+      return next;
+    });
   };
 
   /** Uma linha de horizonte por código (precisa existir antes do filtro por status/ruptura). */
@@ -728,6 +748,49 @@ export default function MRPPage() {
     }
     return m;
   }, [horizonte]);
+
+  const textoColuna = useCallback((row: MrpRow, key: keyof MrpRow): string => {
+    const chave = codigoChave(row);
+    const linhaH = chave ? horizontePorCodigo.get(chave) : undefined;
+    const isoRupRow = primeiraDataRupturaParaRow(linhaH, row);
+    if (key === 'dataRuptura') return isoRupRow ? formatIsoParaBr(isoRupRow) : '—';
+    if (key === 'statusHorizonte') return statusHorizonteParaLinha(row, linhaH, linhaH ? isoRupRow : undefined);
+    return celula(row[key], COLUNAS.find((c) => c.key === key)?.integer);
+  }, [horizontePorCodigo]);
+
+  const valoresUnicosPorColuna = useMemo(() => {
+    const out: Partial<Record<keyof MrpRow, string[]>> = {};
+    for (const col of colunasVisiveisLista) {
+      const values = new Set<string>();
+      for (const row of data) values.add(textoColuna(row, col.key));
+      out[col.key] = [...values].sort((a, b) => a.localeCompare(b, 'pt-BR', { numeric: true, sensitivity: 'base' }));
+    }
+    return out;
+  }, [colunasVisiveisLista, data, textoColuna]);
+
+  const abrirFiltroExcel = (key: keyof MrpRow) => {
+    setColunaFiltroAberta((prev) => {
+      if (prev === key) return null;
+      const valores = valoresUnicosPorColuna[key] ?? [];
+      const filtroAtual = columnFilters[key];
+      setExcelFilterDrafts((drafts) => ({
+        ...drafts,
+        [key]: {
+          search: '',
+          selected: filtroAtual ? filtroAtual.split('\u0001') : valores,
+        },
+      }));
+      return key;
+    });
+  };
+
+  const aplicarFiltroExcel = (key: keyof MrpRow) => {
+    const draft = excelFilterDrafts[key];
+    const valores = valoresUnicosPorColuna[key] ?? [];
+    if (!draft || draft.selected.length === valores.length) setFiltroColuna(key, '');
+    else setFiltroColuna(key, draft.selected.join('\u0001'));
+    setColunaFiltroAberta(null);
+  };
 
   const derivadosHorizontePorCodigo = useMemo(() => {
     const m = new Map<string, MrpDerivadosHorizonteEmpenho>();
@@ -756,11 +819,15 @@ export default function MRPPage() {
   const deferredDataNecessidadeFim = useDeferredValue(filterDataNecessidadeFim);
   const deferredDataRupturaIni = useDeferredValue(filterDataRupturaIni);
   const deferredDataRupturaFim = useDeferredValue(filterDataRupturaFim);
+  const deferredColumnFilters = useDeferredValue(columnFilters);
 
   const filteredData = useMemo(() => {
     const termCod = deferredFilterCodigo.trim().toLowerCase();
     const termComp = deferredFilterComponente.trim().toLowerCase();
     const termCol = deferredFilterColeta.trim().toLowerCase();
+    const filtrosColuna = Object.entries(deferredColumnFilters)
+      .map(([key, value]) => [key, value.trim().toLowerCase()] as const)
+      .filter(([, value]) => value);
     return data.filter((row) => {
       const cod = (row.codigocomponente ?? '').toString().toLowerCase();
       const comp = (row.componente ?? '').toString().toLowerCase();
@@ -778,6 +845,21 @@ export default function MRPPage() {
       const isoRupRow = primeiraDataRupturaParaRow(linhaH, row);
       const statusTxt = statusHorizonteParaLinha(row, linhaH, linhaH ? isoRupRow : undefined);
       if (deferredFilterStatusHorizonte && statusTxt !== deferredFilterStatusHorizonte) return false;
+      for (const [key, value] of filtrosColuna) {
+        const colKey = key as keyof MrpRow;
+        const cellText =
+          colKey === 'dataRuptura'
+            ? isoRupRow
+              ? formatIsoParaBr(isoRupRow)
+              : '—'
+            : colKey === 'statusHorizonte'
+              ? statusTxt
+              : textoColuna(row, colKey);
+        const selected = value.split('\u0001').filter(Boolean);
+        if (selected.length > 1 || value.includes('\u0001')) {
+          if (!selected.includes(cellText)) return false;
+        } else if (!cellText.toLowerCase().includes(value)) return false;
+      }
 
       const isoNec = parseDataMRP(row.dataNecessidade);
       if (
@@ -801,8 +883,32 @@ export default function MRPPage() {
     deferredDataNecessidadeFim,
     deferredDataRupturaIni,
     deferredDataRupturaFim,
+    deferredColumnFilters,
     horizontePorCodigo,
+    textoColuna,
   ]);
+
+  const sortedData = useMemo(() => {
+    if (!sortState) return filteredData;
+    const dir = sortState.direction === 'asc' ? 1 : -1;
+    const valueForSort = (row: MrpRow): string | number => {
+      const chave = codigoChave(row);
+      const linhaH = chave ? horizontePorCodigo.get(chave) : undefined;
+      const isoRupRow = primeiraDataRupturaParaRow(linhaH, row);
+      if (sortState.key === 'dataRuptura') return isoRupRow ?? '';
+      if (sortState.key === 'statusHorizonte') return statusHorizonteParaLinha(row, linhaH, linhaH ? isoRupRow : undefined);
+      const raw = row[sortState.key];
+      const n = numCampoMRP(raw);
+      if (raw != null && String(raw).trim() !== '' && Number.isFinite(n) && /[\d]/.test(String(raw))) return n;
+      return String(raw ?? '').toLowerCase();
+    };
+    return [...filteredData].sort((a, b) => {
+      const av = valueForSort(a);
+      const bv = valueForSort(b);
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+      return String(av).localeCompare(String(bv), 'pt-BR', { numeric: true, sensitivity: 'base' }) * dir;
+    });
+  }, [filteredData, horizontePorCodigo, sortState]);
 
   /** Chave estável por objeto de linha: evita remontar a árvore inteira ao mudar só a posição na lista filtrada. */
   const stableKeyByRow = useMemo(() => {
@@ -829,7 +935,8 @@ export default function MRPPage() {
     filterDataNecessidadeFim.trim() !== '' ||
     filterDataRupturaIni.trim() !== '' ||
     filterDataRupturaFim.trim() !== '' ||
-    filterHorizonteFim.trim() !== '';
+    Object.keys(columnFilters).length > 0 ||
+    sortState != null;
 
   const limparFiltros = () => {
     setFilterCodigo('');
@@ -841,19 +948,26 @@ export default function MRPPage() {
     setFilterDataNecessidadeFim('');
     setFilterDataRupturaIni('');
     setFilterDataRupturaFim('');
-    setFilterHorizonteFim('');
+    setColumnFilters({});
+    setExcelFilterDrafts({});
+    setSortState(null);
+    setColunaFiltroAberta(null);
   };
 
   const exportarExcel = useCallback(async () => {
-    if (filteredData.length === 0) {
-      window.alert('Nenhum registro para exportar com os filtros atuais.');
+    if (sortedData.length === 0) {
+      setFeedbackModal({
+        titulo: 'Nenhum registro',
+        mensagem: 'Nenhum registro para exportar com os filtros atuais.',
+        tom: 'info',
+      });
       return;
     }
     setExportLoading(true);
     try {
       await downloadMrpXlsx(
         {
-          rows: filteredData,
+          rows: sortedData,
           columns: colunasVisiveisLista.map((c) => ({
             key: c.key,
             label: c.label,
@@ -866,15 +980,19 @@ export default function MRPPage() {
         `mrp_${new Date().toISOString().slice(0, 10)}.xlsx`
       );
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Erro ao exportar MRP.');
+      setFeedbackModal({
+        titulo: 'Erro ao exportar MRP',
+        mensagem: e instanceof Error ? e.message : 'Erro ao exportar MRP.',
+        tom: 'error',
+      });
     } finally {
       setExportLoading(false);
     }
-  }, [filteredData, colunasVisiveisLista, horizonte, horizontePorCodigo, mppQtdePorCodigo]);
+  }, [sortedData, colunasVisiveisLista, horizonte, horizontePorCodigo, mppQtdePorCodigo]);
 
   if (loading) {
     return (
-      <div className="flex flex-col flex-1 min-h-0 p-6">
+      <div className={`flex flex-col flex-1 min-h-0 ${pageClassName}`}>
         <div className="flex-1 flex flex-col items-center justify-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 min-h-[320px]">
           <div className="flex flex-col items-center gap-6">
             <div className="relative w-14 h-14">
@@ -897,7 +1015,7 @@ export default function MRPPage() {
 
   if (erro) {
     return (
-      <div className="p-6">
+      <div className={pageClassName}>
         <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-4">MRP</h1>
         <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4">
           <p className="text-amber-800 dark:text-amber-200">{erro}</p>
@@ -914,15 +1032,15 @@ export default function MRPPage() {
   }
 
   return (
-    <div className="p-6">
+    <div className={pageClassName}>
       <div className="flex items-center justify-between mb-4 gap-3">
         <div className="flex flex-col gap-1">
           <button
             type="button"
-            onClick={() => navigate('/pedidos/mrp')}
+            onClick={fecharVisualizacao}
             className="self-start text-xs text-primary-600 hover:underline"
           >
-            ← Voltar para lista de MRPs
+            {embedded ? 'Fechar visualização' : '← Voltar para lista de MRPs'}
           </button>
           <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-200">
             {runMeta?.nome ? `MRP Snapshot — ${runMeta.nome}` : 'MRP Snapshot'}
@@ -931,6 +1049,7 @@ export default function MRPPage() {
             Processado em: {runMeta?.processed_at ? formatIsoParaBr(String(runMeta.processed_at).slice(0, 10)) : '—'} • Cenário:{' '}
             {runMeta?.scenario_type === 'SIMULADO' ? 'Simulado' : 'Real'}
             {runMeta?.scenario_file_name ? ` • Arquivo: ${runMeta.scenario_file_name}` : ''}
+            {runMeta?.horizonte_fim ? ` • Horizonte: ${formatIsoParaBr(runMeta.horizonte_fim)}` : ''}
             {runMeta?.processed_by_login ? ` • Usuário: ${runMeta.processed_by_login}` : ''}
           </p>
           {runMeta?.observacoes ? (
@@ -938,85 +1057,6 @@ export default function MRPPage() {
           ) : null}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <div className="relative" ref={painelColunasRef}>
-            <button
-              type="button"
-              onClick={() => setPainelColunasAberto((v) => !v)}
-              className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
-              aria-expanded={painelColunasAberto}
-              aria-haspopup="true"
-            >
-              Colunas da grade
-            </button>
-            {painelColunasAberto ? (
-              <div
-                className="absolute right-0 top-full mt-1 z-50 w-64 max-h-[min(70vh,420px)] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg py-2 px-3"
-                role="menu"
-              >
-                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">
-                  Colunas fixas (azul)
-                </p>
-                <p className="text-[11px] text-slate-400 dark:text-slate-500 mb-2">
-                  Não afeta as colunas de datas do horizonte.
-                </p>
-                <input
-                  type="text"
-                  value={buscaColuna}
-                  onChange={(e) => setBuscaColuna(e.target.value)}
-                  placeholder="Buscar coluna..."
-                  className="w-full mb-2 rounded-lg border border-slate-300 dark:border-slate-600 px-2 py-1.5 text-xs bg-white dark:bg-slate-700"
-                />
-                <ul className="space-y-0.5">
-                  {COLUNAS.filter((c) => !colunaSoComHorizonte(c.key) || temHorizonteNaGrade)
-                    .filter((c) => c.label.toLowerCase().includes(buscaColuna.trim().toLowerCase()))
-                    .map((c) => (
-                    <li key={c.key}>
-                      <div className="flex items-center justify-between gap-1 py-1 px-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700/80 text-sm text-slate-700 dark:text-slate-200">
-                        <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
-                          <input
-                            type="checkbox"
-                            className="rounded border-slate-400 text-primary-600 focus:ring-primary-500"
-                            checked={colunasVisiveisMap[c.key] !== false}
-                            onChange={() => alternarColunaFixa(c.key)}
-                          />
-                          <span className="truncate">{c.label}</span>
-                        </label>
-                        <button
-                          type="button"
-                          title={colunaFixadaKey === c.key ? 'Destravar coluna' : 'Travar coluna à esquerda'}
-                          onClick={() => travarOuDestravarColuna(c.key)}
-                          disabled={colunasVisiveisMap[c.key] === false}
-                          className={`rounded px-1.5 py-0.5 text-[10px] border ${
-                            colunaFixadaKey === c.key
-                              ? 'border-amber-600 text-amber-700 dark:text-amber-300'
-                              : 'border-slate-300 text-slate-500 dark:text-slate-300'
-                          } disabled:opacity-40`}
-                        >
-                          {colunaFixadaKey === c.key ? 'Travada' : 'Travar'}
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-                <div className="mt-2 grid grid-cols-2 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={marcarTodasColunasFixas}
-                    className="w-full text-xs py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50"
-                  >
-                    Marcar todas
-                  </button>
-                  <button
-                    type="button"
-                    onClick={ocultarTodasColunasFixas}
-                    className="w-full text-xs py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50"
-                  >
-                    Ocultar quase todas
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </div>
           {podeExportarXlsx && (
             <button
               type="button"
@@ -1051,23 +1091,6 @@ export default function MRPPage() {
       </div>
 
       <div className="mb-4">
-        <div className="mb-2 flex flex-wrap items-center gap-1.5">
-          {colunasVisiveisLista.map((c) => (
-            <button
-              key={`chip-${c.key}`}
-              type="button"
-              onClick={() => alternarColunaFixa(c.key)}
-              className={`rounded-full border px-2 py-0.5 text-xs ${
-                c.key === colunaFixadaKey
-                  ? 'border-amber-600 text-amber-700 dark:text-amber-300'
-                  : 'border-slate-300 text-slate-600 dark:text-slate-300'
-              }`}
-              title={`Ocultar coluna ${c.label}`}
-            >
-              {c.label} ×
-            </button>
-          ))}
-        </div>
         <div className="flex flex-wrap items-end gap-3 p-4 bg-white dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
           <div className="shrink-0 min-w-[140px]">
             <label className={MRP_FILTER_LABEL_CLASS}>Código</label>
@@ -1127,6 +1150,7 @@ export default function MRPPage() {
             </select>
           </div>
           <FiltroDatasMRPPopover
+            mostrarHorizonte={false}
             valores={{
               filterDataNecessidadeIni,
               filterDataNecessidadeFim,
@@ -1139,24 +1163,15 @@ export default function MRPPage() {
               if (u.filterDataNecessidadeFim !== undefined) setFilterDataNecessidadeFim(u.filterDataNecessidadeFim);
               if (u.filterDataRupturaIni !== undefined) setFilterDataRupturaIni(u.filterDataRupturaIni);
               if (u.filterDataRupturaFim !== undefined) setFilterDataRupturaFim(u.filterDataRupturaFim);
-              if (u.filterHorizonteFim !== undefined) setFilterHorizonteFim(u.filterHorizonteFim);
             }}
           />
-          <button
-            type="button"
-            onClick={() => void carregarHorizonte()}
-            disabled={horizonteLoading}
-            className="shrink-0 text-sm px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition"
-          >
-            {horizonteLoading ? 'Carregando horizonte…' : 'Carregar horizonte'}
-          </button>
           <button type="button" onClick={limparFiltros} className={MRP_BTN_PRIMARY_CLASS} title="Limpar todos os filtros">
             Limpar filtros
           </button>
         </div>
         {temFiltros && (
           <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-            Exibindo {filteredData.length} de {data.length} registro(s)
+            Exibindo {sortedData.length} de {data.length} registro(s)
           </p>
         )}
         {horizonteErro && (
@@ -1184,10 +1199,62 @@ export default function MRPPage() {
         )}
       </div>
 
-      {horizonteLoading ? <HorizonteLoadingOverlay /> : null}
+      {colunasOcultasLista.length > 0 && (
+        <div className="flex justify-end">
+          <div className="relative" ref={colunasOcultasRef}>
+            <button
+              type="button"
+              onClick={() => setColunasOcultasOpen((open) => !open)}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              aria-expanded={colunasOcultasOpen}
+              aria-haspopup="true"
+            >
+              Colunas ocultas
+              <span className="rounded-full bg-primary-100 px-2 py-0.5 text-xs text-primary-700 dark:bg-primary-900/40 dark:text-primary-200">
+                {colunasOcultasLista.length}
+              </span>
+            </button>
+            {colunasOcultasOpen && (
+              <div
+                className="absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-slate-200 bg-white p-3 text-slate-800 shadow-xl dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                role="dialog"
+                aria-label="Reexibir colunas ocultas"
+              >
+                <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-2 dark:border-slate-600">
+                  <p className="text-sm font-semibold">Reexibir colunas</p>
+                  <button
+                    type="button"
+                    onClick={reexibirTodasColunas}
+                    className="text-xs font-medium text-primary-600 hover:underline dark:text-primary-300"
+                  >
+                    Reexibir todas
+                  </button>
+                </div>
+                <div className="mt-2 max-h-64 overflow-auto">
+                  {colunasOcultasLista.map((col) => (
+                    <button
+                      key={col.key}
+                      type="button"
+                      onClick={() => reexibirColuna(col.key)}
+                      className="flex w-full items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700"
+                    >
+                      <span className="truncate" title={col.label}>
+                        {col.label}
+                      </span>
+                      <span className="shrink-0 text-xs font-medium text-primary-600 dark:text-primary-300">
+                        Reexibir
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden shadow-sm">
-        <div className="overflow-x-auto max-h-[75vh] overflow-y-auto">
+        <div className={tableScrollClassName}>
           <table className={`w-full text-sm text-left border-collapse ${temHorizonteNaGrade ? 'min-w-max' : 'min-w-[900px]'}`}>
             <thead className="sticky top-0 z-20">
               <tr className="bg-primary-600 text-white">
@@ -1208,15 +1275,132 @@ export default function MRPPage() {
                                 ? 'Somatório do consumo (coluna Consumo) nos dias do horizonte carregado.'
                                 : undefined
                     }
-                    className={`py-3 px-4 font-semibold border border-primary-500/40 align-middle ${
+                    className={`relative py-3 px-2 font-semibold border border-primary-500/40 align-middle ${
                       col.thClassName ?? 'whitespace-nowrap'
-                    } ${
-                      col.key === colunaFixadaKey
-                        ? 'sticky left-0 z-[35] bg-primary-700 shadow-[2px_0_0_0_rgba(148,163,184,0.35)]'
-                        : ''
                     }`}
                   >
-                    {col.thContent ?? col.label}
+                    <div className="flex min-w-0 items-start justify-between gap-1">
+                      <span className="min-w-0 flex-1 whitespace-normal break-words leading-tight">{col.thContent ?? col.label}</span>
+                      <span className="flex shrink-0 flex-col gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => abrirFiltroExcel(col.key)}
+                          className={`rounded border border-white/25 px-1 py-0.5 text-[9px] leading-none hover:bg-white/15 ${
+                            columnFilters[col.key] || sortState?.key === col.key ? 'text-amber-200' : 'text-white/90'
+                          }`}
+                          title="Classificar e filtrar"
+                          aria-label={`Classificar e filtrar ${col.label}`}
+                        >
+                          ▾
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => ocultarColuna(col.key)}
+                          disabled={colunasVisiveisLista.length <= 1}
+                          className="inline-flex items-center justify-center rounded border border-white/25 px-1 py-0.5 text-white/80 hover:bg-white/15 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                          title="Ocultar coluna"
+                          aria-label={`Ocultar coluna ${col.label}`}
+                        >
+                          <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M3 3l18 18M10.58 10.58A2 2 0 0012 14a2 2 0 001.42-.58M9.88 5.08A9.77 9.77 0 0112 4c5 0 8.27 4.11 9.54 6.06a1.75 1.75 0 010 1.88 16.2 16.2 0 01-2.1 2.64M6.1 6.1a16.46 16.46 0 00-3.64 3.96 1.75 1.75 0 000 1.88C3.73 13.89 7 18 12 18a9.77 9.77 0 004.17-.94"
+                            />
+                          </svg>
+                        </button>
+                      </span>
+                    </div>
+                    {colunaFiltroAberta === col.key && (
+                      <div className="absolute left-1 top-full z-50 mt-1 w-72 rounded-lg border border-slate-300 bg-white p-2 text-slate-800 shadow-xl dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => { setSortState({ key: col.key, direction: 'asc' }); setColunaFiltroAberta(null); }}
+                          className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-700"
+                        >
+                          A↧ Classificar de A a Z
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setSortState({ key: col.key, direction: 'desc' }); setColunaFiltroAberta(null); }}
+                          className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-700"
+                        >
+                          Z↧ Classificar de Z a A
+                        </button>
+                        <div className="my-2 border-t border-slate-200 dark:border-slate-600" />
+                        <input
+                          type="text"
+                          value={excelFilterDrafts[col.key]?.search ?? ''}
+                          onChange={(e) =>
+                            setExcelFilterDrafts((prev) => ({
+                              ...prev,
+                              [col.key]: {
+                                search: e.target.value,
+                                selected: prev[col.key]?.selected ?? (valoresUnicosPorColuna[col.key] ?? []),
+                              },
+                            }))
+                          }
+                          placeholder="Pesquisar"
+                          className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+                          autoFocus
+                        />
+                        <div className="mt-2 max-h-44 overflow-auto rounded border border-slate-200 p-1 dark:border-slate-600">
+                          {(() => {
+                            const valores = valoresUnicosPorColuna[col.key] ?? [];
+                            const draft = excelFilterDrafts[col.key] ?? { search: '', selected: valores };
+                            const visiveis = valores.filter((v) => v.toLowerCase().includes(draft.search.trim().toLowerCase()));
+                            const todosVisiveisSelecionados = visiveis.every((v) => draft.selected.includes(v));
+                            const toggle = (value: string, checked: boolean) => {
+                              setExcelFilterDrafts((prev) => {
+                                const atual = prev[col.key] ?? { search: '', selected: valores };
+                                const set = new Set(atual.selected);
+                                if (checked) set.add(value);
+                                else set.delete(value);
+                                return { ...prev, [col.key]: { ...atual, selected: [...set] } };
+                              });
+                            };
+                            return (
+                              <>
+                                <label className="flex items-center gap-2 px-1 py-1 text-xs font-medium">
+                                  <input
+                                    type="checkbox"
+                                    checked={todosVisiveisSelecionados}
+                                    onChange={(e) => {
+                                      const checked = e.target.checked;
+                                      setExcelFilterDrafts((prev) => {
+                                        const atual = prev[col.key] ?? { search: '', selected: valores };
+                                        const set = new Set(atual.selected);
+                                        for (const v of visiveis) {
+                                          if (checked) set.add(v);
+                                          else set.delete(v);
+                                        }
+                                        return { ...prev, [col.key]: { ...atual, selected: [...set] } };
+                                      });
+                                    }}
+                                  />
+                                  (Selecionar Tudo)
+                                </label>
+                                {visiveis.map((value) => (
+                                  <label key={value} className="flex items-center gap-2 px-1 py-0.5 text-xs">
+                                    <input
+                                      type="checkbox"
+                                      checked={draft.selected.includes(value)}
+                                      onChange={(e) => toggle(value, e.target.checked)}
+                                    />
+                                    <span className="truncate" title={value}>{value}</span>
+                                  </label>
+                                ))}
+                              </>
+                            );
+                          })()}
+                        </div>
+                        <div className="mt-2 flex justify-end gap-2">
+                          <button type="button" onClick={() => aplicarFiltroExcel(col.key)} className="rounded border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-700">OK</button>
+                          <button type="button" onClick={() => setColunaFiltroAberta(null)} className="rounded border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-700">Cancelar</button>
+                        </div>
+                      </div>
+                    )}
                   </th>
                 ))}
                 {temHorizonteNaGrade &&
@@ -1264,7 +1448,7 @@ export default function MRPPage() {
               ) : null}
             </thead>
             <tbody className="text-slate-700 dark:text-slate-200 divide-y divide-slate-200 dark:divide-slate-600">
-              {filteredData.length === 0 ? (
+              {sortedData.length === 0 ? (
                 <tr>
                   <td colSpan={colSpanGrade} className="py-8 px-4 text-center text-slate-500 dark:text-slate-400">
                     {data.length === 0
@@ -1273,7 +1457,7 @@ export default function MRPPage() {
                   </td>
                 </tr>
               ) : (
-                filteredData.map((row) => {
+                sortedData.map((row) => {
                   const chave = codigoChave(row);
                   const linhaH = chave ? horizontePorCodigo.get(chave) : undefined;
                   const empenhoFmt = chave ? derivadosHorizontePorCodigo.get(chave)?.empenhoHorizonteFmt : undefined;
@@ -1289,7 +1473,6 @@ export default function MRPPage() {
                       temHorizonteNaGrade={temHorizonteNaGrade}
                       colunasVisiveisLista={colunasVisiveisLista}
                       empenhoMppNum={empenhoMpp}
-                      colunaFixadaKey={colunaFixadaKey}
                     />
                   );
                 })
@@ -1298,6 +1481,44 @@ export default function MRPPage() {
           </table>
         </div>
       </div>
+
+      {feedbackModal && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60"
+          onClick={() => setFeedbackModal(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-feedback-mrp-detalhe-title"
+        >
+          <div
+            className="w-full max-w-md rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 shadow-xl p-5 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <h2
+                id="modal-feedback-mrp-detalhe-title"
+                className={`text-lg font-semibold ${
+                  feedbackModal.tom === 'error'
+                    ? 'text-red-700 dark:text-red-300'
+                    : 'text-slate-800 dark:text-slate-100'
+                }`}
+              >
+                {feedbackModal.titulo}
+              </h2>
+              <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">{feedbackModal.mensagem}</p>
+            </div>
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => setFeedbackModal(null)}
+                className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
