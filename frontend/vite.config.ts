@@ -2,9 +2,39 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import type { UserConfig } from 'vite';
+import type { Plugin, UserConfig } from 'vite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Requisições com "%" incompleto ou sequência inválida na URL fazem o middleware estático do Vite
+ * chamar decodeURI e lançar "URI malformed", abrindo o overlay vermelho em tela cheio.
+ * Isso ocorre com bots, extensões ou links quebrados — tratamos antes do Vite.
+ */
+function malformedUriGuardPlugin(): Plugin {
+  return {
+    name: 'malformed-uri-guard',
+    enforce: 'pre',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = req.url;
+        if (url == null || url === '') {
+          next();
+          return;
+        }
+        try {
+          decodeURI(url);
+        } catch {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.end('Bad Request');
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, '');
@@ -23,7 +53,7 @@ export default defineConfig(({ mode }) => {
         target: 'http://127.0.0.1:4000',
         changeOrigin: true,
         secure: false,
-        timeout: 120000,
+        timeout: 900000,
         selfHandleResponse: true,
         configure: (proxy) => {
           proxy.on('proxyRes', (proxyRes, _req, res) => {
@@ -65,7 +95,7 @@ export default defineConfig(({ mode }) => {
         target: 'http://127.0.0.1:4000',
         changeOrigin: true,
         secure: false,
-        timeout: 120000,
+        timeout: 900000,
         selfHandleResponse: true,
         configure: (proxy) => {
           let lastAuthLog = 0;
@@ -148,7 +178,7 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-    plugins: [react()],
+    plugins: [malformedUriGuardPlugin(), react()],
     resolve: {
       alias: { '@': path.resolve(__dirname, './src') },
     },

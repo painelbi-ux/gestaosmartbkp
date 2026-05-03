@@ -14,6 +14,36 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import { fileURLToPath } from 'url';
 var __dirname = path.dirname(fileURLToPath(import.meta.url));
+/**
+ * Requisições com "%" incompleto ou sequência inválida na URL fazem o middleware estático do Vite
+ * chamar decodeURI e lançar "URI malformed", abrindo o overlay vermelho em tela cheio.
+ * Isso ocorre com bots, extensões ou links quebrados — tratamos antes do Vite.
+ */
+function malformedUriGuardPlugin() {
+    return {
+        name: 'malformed-uri-guard',
+        enforce: 'pre',
+        configureServer: function (server) {
+            server.middlewares.use(function (req, res, next) {
+                var url = req.url;
+                if (url == null || url === '') {
+                    next();
+                    return;
+                }
+                try {
+                    decodeURI(url);
+                }
+                catch (_a) {
+                    res.statusCode = 400;
+                    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                    res.end('Bad Request');
+                    return;
+                }
+                next();
+            });
+        },
+    };
+}
 export default defineConfig(function (_a) {
     var _b;
     var mode = _a.mode;
@@ -156,7 +186,7 @@ export default defineConfig(function (_a) {
         server.origin = devOrigin;
     }
     return {
-        plugins: [react()],
+        plugins: [malformedUriGuardPlugin(), react()],
         resolve: {
             alias: { '@': path.resolve(__dirname, './src') },
         },

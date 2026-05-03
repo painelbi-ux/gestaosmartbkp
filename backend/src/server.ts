@@ -90,6 +90,8 @@ function main(): void {
   // Evita que conexões idle sejam fechadas e causem "servidor offline" após tempo
   server.keepAliveTimeout = 65000;
   server.headersTimeout = 66000;
+  // Operações longas (Nomus / MRP) podem demorar vários minutos sem enviar bytes — padrão Node ~5 min corta a requisição ("Failed to fetch").
+  server.requestTimeout = 0;
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     console.error('[startup] Erro ao subir servidor:', err.message);
@@ -142,6 +144,7 @@ function startHttpsIfConfigured(): void {
   const httpsServer = https.createServer(credentials, app);
   httpsServer.keepAliveTimeout = 65000;
   httpsServer.headersTimeout = 66000;
+  httpsServer.requestTimeout = 0;
   httpsServer.listen(sslPort, '0.0.0.0', () => {
     console.log(`HTTPS em https://0.0.0.0:${sslPort} (domínio gsmartsoaco.com.br)`);
   });

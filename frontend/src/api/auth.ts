@@ -1,4 +1,4 @@
-import { apiFetch, setCsrfToken, setAuthToken, notifySessionCleared } from './client';
+import { apiFetch, getApiBase, setCsrfToken, setAuthToken, notifySessionCleared } from './client';
 
 export interface LoginResponse {
   ok: boolean;
@@ -77,9 +77,7 @@ function timeoutSignal(ms: number): AbortSignal {
 
 /** Verifica se o backend está respondendo (para mostrar aviso na tela de login). Com retry para evitar "offline" por falha momentânea. */
 export async function pingServer(): Promise<boolean> {
-  const base = typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL
-    ? String(import.meta.env.VITE_API_URL).replace(/\/$/, '')
-    : '';
+  const base = getApiBase();
   const url = `${base}/auth/ping`;
   for (let i = 0; i < PING_RETRIES; i++) {
     try {

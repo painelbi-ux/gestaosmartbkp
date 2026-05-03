@@ -2,11 +2,28 @@
  * Cliente API com credenciais (cookies + Bearer token) e CSRF.
  * Sem VITE_API_URL: usa a mesma origem (5180 ou 5173/5174/5051); o proxy encaminha /api e /auth para a 4000.
  * Com VITE_API_URL: usa a URL definida (ex: http://10.80.1.187:4000).
+ *
+ * Se VITE_API_URL for http://localhost:4000 (ou 127.0.0.1) mas a página estiver em http://IP:5180,
+ * o browser trataria "localhost" como o PC do usuário — falha de rede. Nesse caso retornamos base
+ * vazia para usar o proxy do Vite no servidor (que fala com 127.0.0.1:4000 na máquina certa).
  */
-function getApiBase(): string {
-  const envUrl = typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL;
-  if (envUrl && String(envUrl).trim()) return String(envUrl).replace(/\/$/, '');
-  return '';
+export function getApiBase(): string {
+  const raw =
+    typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL
+      ? String(import.meta.env.VITE_API_URL).trim().replace(/\/$/, '')
+      : '';
+  if (!raw) return '';
+  if (typeof window === 'undefined') return raw;
+  try {
+    const u = new URL(raw);
+    const backendIsLoopback = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    const pageHost = window.location.hostname;
+    const pageIsLan = pageHost !== 'localhost' && pageHost !== '127.0.0.1';
+    if (backendIsLoopback && pageIsLan) return '';
+  } catch {
+    return raw;
+  }
+  return raw;
 }
 const TOKEN_KEY = 'gestor_token';
 
