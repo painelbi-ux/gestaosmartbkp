@@ -30,6 +30,7 @@ const PCP_SUBMENUS: { to: string; label: string }[] = [
   { to: '/pedidos/mrp', label: 'MRP' },
   { to: '/pedidos/mrp-produtos-em-processo', label: 'MRP - Produtos em Processo' },
   { to: '/pedidos/programacao-setorial', label: 'Programação Setorial' },
+  { to: '/pedidos/ressup-almox', label: 'Ressup Almox' },
 ];
 
 const COMUNICACAO_INTERNA_SUBMENUS: { to: string; label: string }[] = [
@@ -71,6 +72,7 @@ const PATH_LABELS: Record<string, string> = {
   '/pedidos/mrp-produtos-em-processo': 'MRP - Produtos em Processo',
   '/pedidos/mpp': 'MPP',
   '/pedidos/programacao-setorial': 'Programação Setorial',
+  '/pedidos/ressup-almox': 'Ressup Almox',
   '/heatmap': 'Heatmap',
   '/compras': 'Compras',
   '/compras/dashboard': 'Dashboard Compras',

@@ -26,6 +26,7 @@ import MRPProdutosEmProcessoPage from './pages/pedidos/MRPProdutosEmProcessoPage
 import DashboardMRPPage from './pages/pedidos/DashboardMRPPage';
 import MPPPage from './pages/pedidos/MPPPage';
 import ProgramacaoSetorialPainelPage from './pages/pedidos/ProgramacaoSetorialPainelPage';
+import RessupAlmoxAnalisePage from './pages/pedidos/RessupAlmoxAnalisePage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { getStoredToken, SESSION_CLEARED_EVENT } from './api/client';
 import { checkAuth } from './api/auth';
@@ -107,6 +108,7 @@ export default function App() {
           <Route path="pedidos/mrp-dashboard" element={<ErrorBoundary><DashboardMRPPage /></ErrorBoundary>} />
           <Route path="pedidos/mpp" element={<ErrorBoundary><MPPPage /></ErrorBoundary>} />
           <Route path="pedidos/programacao-setorial" element={<ErrorBoundary><ProgramacaoSetorialPainelPage /></ErrorBoundary>} />
+          <Route path="pedidos/ressup-almox" element={<ErrorBoundary><RessupAlmoxAnalisePage /></ErrorBoundary>} />
           <Route path="heatmap" element={<HeatmapPage />} />
           <Route path="compras" element={<ComprasPage />} />
           <Route path="compras/dashboard" element={<ComprasDashboardPage />} />

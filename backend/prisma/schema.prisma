@@ -452,3 +452,17 @@ model SycroOrderNotification {
   @@index([order_id])
   @@map("sycro_order_notification")
 }
+
+/// Snapshot gravado pelo usuário na tela Ressup Almox — análise (grade + linhas Nomus).
+model RessupAlmoxAnalise {
+  id             Int      @id @default(autoincrement())
+  createdAt      DateTime @default(now())
+  usuarioLogin   String
+  resumoFiltros  String?
+  linhaCount     Int      @default(0)
+  /// JSON: version, columnDefs, displayRows, rawRows, aplicado, savedUi
+  payload        String
+
+  @@index([createdAt])
+  @@map("ressup_almox_analise")
+}

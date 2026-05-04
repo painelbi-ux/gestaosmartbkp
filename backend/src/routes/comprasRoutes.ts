@@ -2,7 +2,7 @@ import { Router, type RequestHandler } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/requirePermission.js';
 import { PERMISSOES } from '../config/permissoes.js';
-import { getProdutosColeta, getColetasPrecos, getColetasPrecosDebug, getOpcoesFiltroColetas, getOpcoesVinculoFinalizacao, getOpcoesVinculoErroOperacional, getDashboardErrosVinculoOperacional, getColetasBloqueantes, postCienciaColeta, postConfirmarColeta, getFornecedores, getCondicoesPagamento, getFormasPagamento, putColetaFornecedores, getPrecosColeta, getPrecosCotacao, postPrecosCotacao, patchObservacoesColeta, patchEnviarAprovacao, patchCancelarCotacao, patchReabrirColeta, patchFinalizarCotacao, patchRegistroQtdeAprovada, patchEnviarFinanceiro, deleteColetaPrecos, deleteColetaItem, deleteColetaTodosItens, postColetaItens } from '../controllers/comprasController.js';
+import { getProdutosColeta, getRessupAlmoxRegistroPreview, postRessupAlmoxAnalise, getRessupAlmoxAnalises, getRessupAlmoxAnaliseById, getColetasPrecos, getColetasPrecosDebug, getOpcoesFiltroColetas, getOpcoesVinculoFinalizacao, getOpcoesVinculoErroOperacional, getDashboardErrosVinculoOperacional, getColetasBloqueantes, postCienciaColeta, postConfirmarColeta, getFornecedores, getCondicoesPagamento, getFormasPagamento, putColetaFornecedores, getPrecosColeta, getPrecosCotacao, postPrecosCotacao, patchObservacoesColeta, patchEnviarAprovacao, patchCancelarCotacao, patchReabrirColeta, patchFinalizarCotacao, patchRegistroQtdeAprovada, patchEnviarFinanceiro, deleteColetaPrecos, deleteColetaItem, deleteColetaTodosItens, postColetaItens } from '../controllers/comprasController.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -27,6 +27,28 @@ router.get(
   '/produtos-coleta',
   requirePermission(PERMISSOES.COMPRAS_VER),
   async503(getProdutosColeta)
+);
+
+router.get(
+  '/ressup-almox/registro-preview',
+  requirePermission(PERMISSOES.COMPRAS_VER),
+  async503(getRessupAlmoxRegistroPreview)
+);
+
+router.post(
+  '/ressup-almox/analises',
+  requirePermission(PERMISSOES.COMPRAS_VER),
+  async503(postRessupAlmoxAnalise)
+);
+router.get(
+  '/ressup-almox/analises',
+  requirePermission(PERMISSOES.COMPRAS_VER),
+  async503(getRessupAlmoxAnalises)
+);
+router.get(
+  '/ressup-almox/analises/:id',
+  requirePermission(PERMISSOES.COMPRAS_VER),
+  async503(getRessupAlmoxAnaliseById)
 );
 
 router.get(

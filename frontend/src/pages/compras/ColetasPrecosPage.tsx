@@ -85,7 +85,11 @@ export default function ColetasPrecosPage() {
   const [filterDataFim, setFilterDataFim] = useState('');
   const [filterCodigo, setFilterCodigo] = useState('');
   const [filterDescricao, setFilterDescricao] = useState('');
-  const [opcoesFiltro, setOpcoesFiltro] = useState<{ codigos: string[]; descricoes: string[] }>({ codigos: [], descricoes: [] });
+  const [opcoesFiltro, setOpcoesFiltro] = useState<{ codigos: string[]; descricoes: string[]; coletas: string[] }>({
+    codigos: [],
+    descricoes: [],
+    coletas: [],
+  });
   const [agora, setAgora] = useState(() => new Date());
 
   useEffect(() => {
@@ -163,7 +167,7 @@ export default function ColetasPrecosPage() {
     await carregarColetas();
     try {
       const r = await obterOpcoesFiltroColetas();
-      setOpcoesFiltro({ codigos: r.codigos ?? [], descricoes: r.descricoes ?? [] });
+      setOpcoesFiltro({ codigos: r.codigos ?? [], descricoes: r.descricoes ?? [], coletas: r.coletas ?? [] });
     } catch {
       /* mantém opções anteriores */
     }
@@ -177,8 +181,10 @@ export default function ColetasPrecosPage() {
 
   useEffect(() => {
     obterOpcoesFiltroColetas()
-      .then((r) => setOpcoesFiltro({ codigos: r.codigos ?? [], descricoes: r.descricoes ?? [] }))
-      .catch(() => setOpcoesFiltro({ codigos: [], descricoes: [] }));
+      .then((r) =>
+        setOpcoesFiltro({ codigos: r.codigos ?? [], descricoes: r.descricoes ?? [], coletas: r.coletas ?? [] })
+      )
+      .catch(() => setOpcoesFiltro({ codigos: [], descricoes: [], coletas: [] }));
   }, []);
 
   const temAlgumFiltro =

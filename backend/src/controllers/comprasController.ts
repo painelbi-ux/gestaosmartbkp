@@ -7,6 +7,7 @@ import {
   listarFornecedoresAtivos,
   listarCondicoesPagamentoNomus,
   listarFormasPagamentoNomus,
+  type ProdutoColetaRow,
 } from '../data/comprasRepository.js';
 import { prisma } from '../config/prisma.js';
 import { getNomusPool, isNomusEnabled } from '../config/nomusDb.js';
@@ -94,6 +95,304 @@ export async function getProdutosColeta(req: Request, res: Response): Promise<vo
   res.json({ data: result.data });
 }
 
+function parseCommaParts(s?: string): string[] {
+  return (s ?? '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Mesmos filtros de produtos-coleta; códigos, descrições e nomes de coleta podem vir separados por vírgula
+ * (OR entre termos do mesmo campo; combinação cartesiana entre campos preenchidos).
+ */
+async function listarProdutosColetaMerged(filtros: {
+  codigo?: string;
+  descricao?: string;
+  familia?: string;
+  fornecedor?: string;
+  coleta?: string;
+  diaSemana?: string;
+  apenasComSolicitacao?: boolean;
+}): Promise<{ data: ProdutoColetaRow[]; erro?: string }> {
+  const codigoParts = parseCommaParts(filtros.codigo);
+  const descricaoParts = parseCommaParts(filtros.descricao);
+  const coletaParts = parseCommaParts(filtros.coleta);
+
+  const base = {
+    familia: filtros.familia,
+    fornecedor: filtros.fornecedor,
+    diaSemana: filtros.diaSemana,
+    apenasComSolicitacao: filtros.apenasComSolicitacao,
+  };
+
+  const cods: (string | undefined)[] = codigoParts.length > 0 ? [...codigoParts] : [undefined];
+  const descs: (string | undefined)[] = descricaoParts.length > 0 ? [...descricaoParts] : [undefined];
+  const cols: (string | undefined)[] = coletaParts.length > 0 ? [...coletaParts] : [undefined];
+
+  const merged = new Map<string, ProdutoColetaRow>();
+  const merge = (data: ProdutoColetaRow[]) => {
+    for (const r of data) {
+      const k = `${r.idProduto}-${r.codigoSolicitacao ?? 'n'}`;
+      merged.set(k, r);
+    }
+  };
+
+  let fezConsulta = false;
+  for (const co of cols) {
+    for (const cod of cods) {
+      for (const des of descs) {
+        if (cod == null && des == null && co == null) continue;
+        fezConsulta = true;
+        const r = await listarProdutosColeta({
+          ...base,
+          ...(cod != null ? { codigo: cod } : {}),
+          ...(des != null ? { descricao: des } : {}),
+          ...(co != null ? { coleta: co } : {}),
+        });
+        if (r.erro) return { data: [], erro: r.erro };
+        merge(r.data);
+      }
+    }
+  }
+
+  if (!fezConsulta) {
+    const r = await listarProdutosColeta(base);
+    if (r.erro) return { data: [], erro: r.erro };
+    merge(r.data);
+  }
+
+  return { data: Array.from(merged.values()) };
+}
+
+/**
+ * Evita repetir o SQL pesado do Nomus para o mesmo produto: agrupa todos os itens (várias SCs)
+ * numa única chamada quando há poucos `idProduto` distintos. Só fatia quando o IN (ids) ficaria grande.
+ */
+function chunkItensRegistroPorProdutosDistintos(
+  itens: { idProduto: number; idSolicitacao: number | null }[],
+  maxProdutosDistintosPorQuery: number
+): { idProduto: number; idSolicitacao: number | null }[][] {
+  if (itens.length === 0) return [];
+  const nDistintos = new Set(itens.map((i) => i.idProduto)).size;
+  if (nDistintos <= maxProdutosDistintosPorQuery) return [itens];
+
+  const chunks: { idProduto: number; idSolicitacao: number | null }[][] = [];
+  let cur: { idProduto: number; idSolicitacao: number | null }[] = [];
+  const idsNoChunk = new Set<number>();
+
+  for (const it of itens) {
+    const novoProduto = !idsNoChunk.has(it.idProduto);
+    if (novoProduto && idsNoChunk.size >= maxProdutosDistintosPorQuery && cur.length > 0) {
+      chunks.push(cur);
+      cur = [];
+      idsNoChunk.clear();
+    }
+    cur.push(it);
+    idsNoChunk.add(it.idProduto);
+  }
+  if (cur.length > 0) chunks.push(cur);
+  return chunks;
+}
+
+const RESSUP_ALMOX_MAX_PRODUTOS_DISTINTOS_POR_QUERY = 200;
+
+/**
+ * GET /api/compras/ressup-almox/registro-preview
+ * Lista linhas do SQL de registro da coleta (Nomus) para os mesmos filtros de produtos-coleta.
+ */
+export async function getRessupAlmoxRegistroPreview(req: Request, res: Response): Promise<void> {
+  const codigo = typeof req.query.codigo === 'string' ? req.query.codigo.trim() : undefined;
+  const descricao = typeof req.query.descricao === 'string' ? req.query.descricao.trim() : undefined;
+  const familia = typeof req.query.familia === 'string' ? req.query.familia.trim() : undefined;
+  const fornecedor = typeof req.query.fornecedor === 'string' ? req.query.fornecedor.trim() : undefined;
+  const coleta = typeof req.query.coleta === 'string' ? req.query.coleta.trim() : undefined;
+  const diaSemana = typeof req.query.diaSemana === 'string' ? req.query.diaSemana.trim() : undefined;
+  const apenasComSolicitacao = req.query.apenasComSolicitacao === 'true' || req.query.apenasComSolicitacao === '1';
+
+  const { data: produtos, erro: erroLista } = await listarProdutosColetaMerged({
+    codigo: codigo || undefined,
+    descricao: descricao || undefined,
+    familia: familia || undefined,
+    fornecedor: fornecedor || undefined,
+    coleta: coleta || undefined,
+    diaSemana: diaSemana || undefined,
+    apenasComSolicitacao: apenasComSolicitacao || undefined,
+  });
+
+  if (erroLista) {
+    res.status(503).json({ error: erroLista, data: [] });
+    return;
+  }
+
+  if (produtos.length === 0) {
+    res.json({ data: [], message: 'Nenhum produto encontrado com os filtros informados.' });
+    return;
+  }
+
+  const itens = produtos.map((p) => {
+    const idProduto = Number(p.idProduto);
+    const sid = p.codigoSolicitacao != null ? Number(p.codigoSolicitacao) : NaN;
+    return {
+      idProduto: Number.isFinite(idProduto) && idProduto > 0 ? idProduto : 0,
+      idSolicitacao: Number.isFinite(sid) && sid > 0 ? sid : null,
+    };
+  }).filter((i) => i.idProduto > 0);
+
+  if (itens.length === 0) {
+    res.json({ data: [], message: 'Nenhum item válido após filtrar produtos.' });
+    return;
+  }
+
+  const allRows: Record<string, unknown>[] = [];
+  let nomusErro: string | undefined;
+  const chunks = chunkItensRegistroPorProdutosDistintos(itens, RESSUP_ALMOX_MAX_PRODUTOS_DISTINTOS_POR_QUERY);
+  for (const chunk of chunks) {
+    const { rows, erro } = await buscarRegistroColetaNomus(chunk);
+    if (erro) {
+      nomusErro = erro;
+      break;
+    }
+    allRows.push(...rows);
+  }
+
+  if (nomusErro) {
+    res.status(503).json({ error: nomusErro, data: [] });
+    return;
+  }
+
+  res.json({ data: allRows });
+}
+
+const RESSUP_ALMOX_ANALISE_PAYLOAD_MAX_CHARS = 24 * 1024 * 1024;
+
+function validarPayloadRessupAnalise(raw: unknown): { ok: true; payload: Record<string, unknown> } | { ok: false; error: string } {
+  if (raw == null || typeof raw !== 'object') return { ok: false, error: 'Payload inválido.' };
+  const p = raw as Record<string, unknown>;
+  if (p.version !== 1) return { ok: false, error: 'Versão de payload não suportada.' };
+  if (!Array.isArray(p.displayRows)) return { ok: false, error: 'displayRows deve ser um array.' };
+  if (!Array.isArray(p.rawRows)) return { ok: false, error: 'rawRows deve ser um array.' };
+  if (!Array.isArray(p.columnDefs)) return { ok: false, error: 'columnDefs deve ser um array.' };
+  if (p.aplicado == null || typeof p.aplicado !== 'object') return { ok: false, error: 'aplicado inválido.' };
+  return { ok: true, payload: p };
+}
+
+/**
+ * POST /api/compras/ressup-almox/analises
+ * Grava snapshot da grade (displayRows + rawRows Nomus + metadados).
+ */
+export async function postRessupAlmoxAnalise(req: Request, res: Response): Promise<void> {
+  const login = req.user?.login?.trim();
+  if (!login) {
+    res.status(401).json({ error: 'Sessão inválida.' });
+    return;
+  }
+  let body = req.body as { resumoFiltros?: unknown; payload?: unknown };
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body) as { resumoFiltros?: unknown; payload?: unknown };
+    } catch {
+      res.status(400).json({ error: 'Body JSON inválido.' });
+      return;
+    }
+  }
+  const resumo =
+    typeof body.resumoFiltros === 'string' ? body.resumoFiltros.trim().slice(0, 2000) : null;
+  const val = validarPayloadRessupAnalise(body.payload);
+  if (!val.ok) {
+    res.status(400).json({ error: val.error });
+    return;
+  }
+  const jsonStr = JSON.stringify(val.payload);
+  if (jsonStr.length > RESSUP_ALMOX_ANALISE_PAYLOAD_MAX_CHARS) {
+    res.status(413).json({
+      error: 'Snapshot muito grande para gravar. Reduza os filtros de carga ou o volume de linhas.',
+    });
+    return;
+  }
+  const displayRows = val.payload.displayRows as unknown[];
+  try {
+    const row = await prisma.ressupAlmoxAnalise.create({
+      data: {
+        usuarioLogin: login,
+        resumoFiltros: resumo || null,
+        linhaCount: displayRows.length,
+        payload: jsonStr,
+      },
+    });
+    res.status(201).json({ id: row.id, ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[comprasController] postRessupAlmoxAnalise:', msg);
+    res.status(503).json({ error: msg });
+  }
+}
+
+/**
+ * GET /api/compras/ressup-almox/analises?limit=80
+ */
+export async function getRessupAlmoxAnalises(req: Request, res: Response): Promise<void> {
+  const lim = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? '80'), 10) || 80));
+  try {
+    const rows = await prisma.ressupAlmoxAnalise.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: lim,
+      select: { id: true, createdAt: true, usuarioLogin: true, resumoFiltros: true, linhaCount: true },
+    });
+    res.json({
+      data: rows.map((r) => ({
+        id: r.id,
+        createdAt: r.createdAt.toISOString(),
+        usuarioLogin: r.usuarioLogin,
+        resumoFiltros: r.resumoFiltros,
+        linhaCount: r.linhaCount,
+      })),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[comprasController] getRessupAlmoxAnalises:', msg);
+    res.status(503).json({ error: msg, data: [] });
+  }
+}
+
+/**
+ * GET /api/compras/ressup-almox/analises/:id
+ */
+export async function getRessupAlmoxAnaliseById(req: Request, res: Response): Promise<void> {
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'ID inválido.' });
+    return;
+  }
+  try {
+    const row = await prisma.ressupAlmoxAnalise.findUnique({
+      where: { id },
+    });
+    if (!row) {
+      res.status(404).json({ error: 'Análise não encontrada.' });
+      return;
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.payload) as unknown;
+    } catch {
+      payload = null;
+    }
+    res.json({
+      id: row.id,
+      createdAt: row.createdAt.toISOString(),
+      usuarioLogin: row.usuarioLogin,
+      resumoFiltros: row.resumoFiltros,
+      linhaCount: row.linhaCount,
+      payload,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[comprasController] getRessupAlmoxAnaliseById:', msg);
+    res.status(503).json({ error: msg });
+  }
+}
+
 /** Extrai código e descrição do produto do JSON "dados" do registro. */
 function extrairCodigoDescricao(dadosStr: string): { codigo: string; descricao: string } {
   let codigo = '';
@@ -130,7 +429,7 @@ function extrairNomeColeta(dadosStr: string): string {
 
 /**
  * GET /api/compras/coletas/opcoes-filtro
- * Retorna listas distintas de códigos e descrições de produtos para os filtros (multi-select).
+ * Retorna listas distintas de códigos, descrições e nomes de coleta para os filtros (multi-select).
  */
 export async function getOpcoesFiltroColetas(_req: Request, res: Response): Promise<void> {
   try {
@@ -139,19 +438,23 @@ export async function getOpcoesFiltroColetas(_req: Request, res: Response): Prom
     });
     const codigosSet = new Set<string>();
     const descricoesSet = new Set<string>();
+    const coletasSet = new Set<string>();
     for (const r of registros) {
       const dadosStr = typeof r.dados === 'string' ? r.dados : '';
       const { codigo, descricao } = extrairCodigoDescricao(dadosStr);
       if (codigo) codigosSet.add(codigo);
       if (descricao) descricoesSet.add(descricao);
+      const nomeColeta = extrairNomeColeta(dadosStr);
+      if (nomeColeta) coletasSet.add(nomeColeta);
     }
     const codigos = Array.from(codigosSet).sort((a, b) => a.localeCompare(b, 'pt-BR'));
     const descricoes = Array.from(descricoesSet).sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    res.json({ codigos, descricoes });
+    const coletas = Array.from(coletasSet).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    res.json({ codigos, descricoes, coletas });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[comprasController] getOpcoesFiltroColetas:', msg);
-    res.status(503).json({ error: msg, codigos: [], descricoes: [] });
+    res.status(503).json({ error: msg, codigos: [], descricoes: [], coletas: [] });
   }
 }
 

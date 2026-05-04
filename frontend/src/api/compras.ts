@@ -56,6 +56,165 @@ export async function listarProdutosColeta(filtros: FiltrosProdutosColeta = {}):
   return { data: body.data ?? [], error: body.error };
 }
 
+/** Consulta Nomus (lista + registro) pode ser lenta; evitar abort prematuro em um único produto com muitas SCs. */
+const RESSUP_ALMOX_PREVIEW_TIMEOUT_MS = 120000;
+
+/**
+ * Linhas do registro Nomus (mesmo SQL da coleta de preços) para análise Ressup Almox, a partir dos filtros de produtos-coleta.
+ */
+export async function listarRessupAlmoxRegistroPreview(
+  filtros: FiltrosProdutosColeta = {}
+): Promise<{ data: Record<string, unknown>[]; message?: string; error?: string }> {
+  const params = new URLSearchParams();
+  if (filtros.codigo) params.set('codigo', filtros.codigo);
+  if (filtros.descricao) params.set('descricao', filtros.descricao);
+  if (filtros.familia) params.set('familia', filtros.familia);
+  if (filtros.fornecedor) params.set('fornecedor', filtros.fornecedor);
+  if (filtros.coleta) params.set('coleta', filtros.coleta);
+  if (filtros.diaSemana) params.set('diaSemana', filtros.diaSemana);
+  if (filtros.apenasComSolicitacao === true) params.set('apenasComSolicitacao', 'true');
+  const qs = params.toString();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), RESSUP_ALMOX_PREVIEW_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await apiFetch(`/api/compras/ressup-almox/registro-preview${qs ? `?${qs}` : ''}`, {
+      signal: controller.signal,
+    });
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e instanceof Error && e.name === 'AbortError') {
+      return {
+        data: [],
+        error:
+          'A consulta ao Nomus ultrapassou o tempo máximo (2 min). Tente de novo em horário de menor carga ou verifique rede/ERP.',
+      };
+    }
+    throw e;
+  }
+  clearTimeout(timeoutId);
+  const text = await res.text();
+  let body: { data?: Record<string, unknown>[]; message?: string; error?: string } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as typeof body;
+    } catch {
+      body = { error: text || res.statusText };
+    }
+  }
+  if (!res.ok) {
+    return { data: [], error: body.error ?? res.statusText, message: body.message };
+  }
+  const data = Array.isArray(body.data) ? body.data : [];
+  return { data, message: body.message };
+}
+
+/** Snapshot gravado na análise Ressup Almox (versão 1). */
+export type RessupAlmoxAnalisePayloadV1 = {
+  version: 1;
+  columnDefs: { key: string; label: string }[];
+  displayRows: Record<string, string>[];
+  rawRows: Record<string, unknown>[];
+  aplicado: { codigo: string; descricao: string; coleta: string };
+  savedUi?: {
+    colunasOcultas: string[];
+    columnFilters: Record<string, string>;
+    sort: { key: string; direction: 'asc' | 'desc' } | null;
+  };
+};
+
+export interface RessupAlmoxAnaliseListItem {
+  id: number;
+  createdAt: string;
+  usuarioLogin: string;
+  resumoFiltros: string | null;
+  linhaCount: number;
+}
+
+export async function gravarRessupAlmoxAnalise(params: {
+  resumoFiltros?: string;
+  payload: RessupAlmoxAnalisePayloadV1;
+}): Promise<{ ok: boolean; id?: number; error?: string }> {
+  const res = await apiFetch('/api/compras/ressup-almox/analises', { method: 'POST', body: params });
+  const text = await res.text();
+  let body: { id?: number; ok?: boolean; error?: string } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as typeof body;
+    } catch {
+      body = { error: text || res.statusText };
+    }
+  }
+  if (!res.ok) return { ok: false, error: body.error ?? res.statusText };
+  return { ok: true, id: body.id };
+}
+
+export async function listarRessupAlmoxAnalises(limit = 80): Promise<{
+  data: RessupAlmoxAnaliseListItem[];
+  error?: string;
+}> {
+  const res = await apiFetch(`/api/compras/ressup-almox/analises?limit=${encodeURIComponent(String(limit))}`);
+  const text = await res.text();
+  let body: { data?: RessupAlmoxAnaliseListItem[]; error?: string } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as typeof body;
+    } catch {
+      body = { error: text || res.statusText };
+    }
+  }
+  if (!res.ok) return { data: [], error: body.error ?? res.statusText };
+  return { data: Array.isArray(body.data) ? body.data : [] };
+}
+
+export async function obterRessupAlmoxAnalise(id: number): Promise<{
+  id: number;
+  createdAt: string;
+  usuarioLogin: string;
+  resumoFiltros: string | null;
+  linhaCount: number;
+  payload: RessupAlmoxAnalisePayloadV1 | null;
+  error?: string;
+}> {
+  const res = await apiFetch(`/api/compras/ressup-almox/analises/${id}`);
+  const text = await res.text();
+  let body: {
+    id?: number;
+    createdAt?: string;
+    usuarioLogin?: string;
+    resumoFiltros?: string | null;
+    linhaCount?: number;
+    payload?: RessupAlmoxAnalisePayloadV1 | null;
+    error?: string;
+  } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as typeof body;
+    } catch {
+      body = { error: text || res.statusText };
+    }
+  }
+  if (!res.ok) {
+    return {
+      id: 0,
+      createdAt: '',
+      usuarioLogin: '',
+      resumoFiltros: null,
+      linhaCount: 0,
+      payload: null,
+      error: body.error ?? res.statusText,
+    };
+  }
+  return {
+    id: body.id ?? 0,
+    createdAt: body.createdAt ?? '',
+    usuarioLogin: body.usuarioLogin ?? '',
+    resumoFiltros: body.resumoFiltros ?? null,
+    linhaCount: body.linhaCount ?? 0,
+    payload: body.payload ?? null,
+  };
+}
+
 /** Item para confirmar/adicionar à coleta: idProduto e opcionalmente codigoSolicitacao (vínculo com solicitação de compra). */
 export interface ItemColetaPayload {
   idProduto: number;
@@ -196,28 +355,30 @@ export async function registrarCienciaColeta(coletaId: number, justificativa: st
 export interface OpcoesFiltroColetas {
   codigos: string[];
   descricoes: string[];
+  coletas: string[];
 }
 
 /**
- * Opções para os filtros de Código e Descrição do produto (multi-select).
+ * Opções para os filtros de Código, Descrição e Nome da coleta (multi-select).
  */
-export async function obterOpcoesFiltroColetas(): Promise<{ codigos: string[]; descricoes: string[]; error?: string }> {
+export async function obterOpcoesFiltroColetas(): Promise<OpcoesFiltroColetas & { error?: string }> {
   const res = await apiFetch('/api/compras/coletas/opcoes-filtro');
   const text = await res.text();
-  let body: { codigos?: string[]; descricoes?: string[]; error?: string } = {};
+  let body: { codigos?: string[]; descricoes?: string[]; coletas?: string[]; error?: string } = {};
   if (text) {
     try {
-      body = JSON.parse(text) as { codigos?: string[]; descricoes?: string[]; error?: string };
+      body = JSON.parse(text) as { codigos?: string[]; descricoes?: string[]; coletas?: string[]; error?: string };
     } catch {
       body = { error: text || res.statusText };
     }
   }
   if (!res.ok) {
-    return { codigos: [], descricoes: [], error: body.error ?? res.statusText };
+    return { codigos: [], descricoes: [], coletas: [], error: body.error ?? res.statusText };
   }
   return {
     codigos: Array.isArray(body.codigos) ? body.codigos : [],
     descricoes: Array.isArray(body.descricoes) ? body.descricoes : [],
+    coletas: Array.isArray(body.coletas) ? body.coletas : [],
     error: body.error,
   };
 }

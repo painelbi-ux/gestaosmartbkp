@@ -614,7 +614,11 @@ export default function ComprasDashboardPage() {
   const [filterDataFim, setFilterDataFim] = useState('');
   const [filterCodigo, setFilterCodigo] = useState('');
   const [filterDescricao, setFilterDescricao] = useState('');
-  const [opcoesFiltro, setOpcoesFiltro] = useState<{ codigos: string[]; descricoes: string[] }>({ codigos: [], descricoes: [] });
+  const [opcoesFiltro, setOpcoesFiltro] = useState<{ codigos: string[]; descricoes: string[]; coletas: string[] }>({
+    codigos: [],
+    descricoes: [],
+    coletas: [],
+  });
   const [serieErrosVinculoOperacional, setSerieErrosVinculoOperacional] = useState<{ key: string; label: string; count: number }[]>([]);
 
   useEffect(() => {
@@ -623,8 +627,10 @@ export default function ComprasDashboardPage() {
 
   useEffect(() => {
     obterOpcoesFiltroColetas()
-      .then((r) => setOpcoesFiltro({ codigos: r.codigos ?? [], descricoes: r.descricoes ?? [] }))
-      .catch(() => setOpcoesFiltro({ codigos: [], descricoes: [] }));
+      .then((r) =>
+        setOpcoesFiltro({ codigos: r.codigos ?? [], descricoes: r.descricoes ?? [], coletas: r.coletas ?? [] })
+      )
+      .catch(() => setOpcoesFiltro({ codigos: [], descricoes: [], coletas: [] }));
   }, []);
 
   const coletasFiltradas = useMemo(
