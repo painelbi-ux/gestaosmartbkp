@@ -13,6 +13,15 @@ export interface DfcAgendamentoLinha {
   valor: number;
 }
 
+const SQL_PG_JOIN = `
+LEFT JOIN (
+  SELECT idAgendamentoPagamento, MAX(l.dataLancamento) AS dataLancamento, SUM(l.valor) AS valorpago
+  FROM lancamentofinanceiro l
+  WHERE idAgendamentoPagamento IS NOT NULL
+  GROUP BY idAgendamentoPagamento
+) pg ON pg.idAgendamentoPagamento = af.id
+`.trim();
+
 const SQL_BASE_FROM = `
 FROM agendamentofinanceiro af
 LEFT JOIN pessoa pe ON pe.id = af.idPessoa
@@ -22,13 +31,11 @@ LEFT JOIN (
   FROM lancamentofinanceiro l
   WHERE idAgendamentoPagamento IS NOT NULL
 ) sn ON sn.idAgendamentoPagamento = af.id
-LEFT JOIN (
-  SELECT idAgendamentoPagamento, SUM(valor) AS valorpago
-  FROM lancamentofinanceiro l
-  WHERE idAgendamentoPagamento IS NOT NULL
-  GROUP BY idAgendamentoPagamento
-) pg ON pg.idAgendamentoPagamento = af.id
-WHERE DATE(af.dataBaixa) BETWEEN ? AND ?
+${SQL_PG_JOIN}
+`.trim();
+
+const SQL_WHERE_EFETIVO_PG = `
+WHERE DATE(pg.dataLancamento) BETWEEN ? AND ?
   AND af.discriminador = 'P'
   AND af.idEmpresa = ?
   AND af.idPedidoCompra IS NULL
@@ -48,23 +55,26 @@ CASE
 END
 `.trim();
 
+/** Dia: mesmo universo que o mês e o detalhe (pg.dataLancamento no intervalo), bucket por dia do pagamento. */
 const SQL_AGREGADO_DIA = `
 SELECT
   af.idContaFinanceiro AS idContaFinanceiro,
-  DATE(af.dataBaixa) AS periodo,
+  DATE_FORMAT(pg.dataLancamento, '%Y-%m-%d') AS periodo,
   SUM((${SQL_VALOR_BAIXADO_EXPR})) AS valor
 ${SQL_BASE_FROM}
-GROUP BY af.idContaFinanceiro, DATE(af.dataBaixa)
+${SQL_WHERE_EFETIVO_PG}
+GROUP BY af.idContaFinanceiro, DATE_FORMAT(pg.dataLancamento, '%Y-%m-%d')
 ORDER BY periodo, idContaFinanceiro
 `.trim();
 
 const SQL_AGREGADO_MES = `
 SELECT
   af.idContaFinanceiro AS idContaFinanceiro,
-  DATE_FORMAT(af.dataBaixa, '%Y-%m') AS periodo,
+  DATE_FORMAT(pg.dataLancamento, '%Y-%m') AS periodo,
   SUM((${SQL_VALOR_BAIXADO_EXPR})) AS valor
 ${SQL_BASE_FROM}
-GROUP BY af.idContaFinanceiro, DATE_FORMAT(af.dataBaixa, '%Y-%m')
+${SQL_WHERE_EFETIVO_PG}
+GROUP BY af.idContaFinanceiro, DATE_FORMAT(pg.dataLancamento, '%Y-%m')
 ORDER BY periodo, idContaFinanceiro
 `.trim();
 
@@ -102,7 +112,7 @@ function formatYmdFromSqlDate(v: unknown): string | null {
 }
 
 /**
- * Lançamentos no intervalo, opcionalmente filtrados a um bucket (mês ou dia) por data de baixa.
+ * Lançamentos no intervalo, opcionalmente filtrados a um bucket (mês ou dia) por data de lançamento do pagamento (pg).
  * `periodoBucket`: YYYY-MM (mensal) ou YYYY-MM-DD (diário); omitir para todo o intervalo.
  */
 export async function queryDfcAgendamentosDetalhe(params: {
@@ -124,9 +134,9 @@ export async function queryDfcAgendamentosDetalhe(params: {
   const args: unknown[] = [dataBaixaInicio, dataBaixaFim, idEmpresa];
   if (periodoBucket) {
     if (granularidade === 'mes') {
-      periodClause = ' AND DATE_FORMAT(af.dataBaixa, \'%Y-%m\') = ?';
+      periodClause = ' AND DATE_FORMAT(pg.dataLancamento, \'%Y-%m\') = ?';
     } else {
-      periodClause = ' AND DATE(af.dataBaixa) = ?';
+      periodClause = ' AND DATE(pg.dataLancamento) = ?';
     }
   }
   const placeholders = ids.map(() => '?').join(', ');
@@ -140,9 +150,10 @@ SELECT
   af.descricaoLancamento AS descricaoLancamento,
   pe.nome AS nome,
   DATE(af.dataVencimento) AS dataVencimento,
-  DATE(af.dataBaixa) AS dataBaixa,
+  DATE(pg.dataLancamento) AS dataBaixa,
   (${SQL_VALOR_BAIXADO_EXPR}) AS valorBaixado
 ${SQL_BASE_FROM}
+${SQL_WHERE_EFETIVO_PG}
   AND af.idContaFinanceiro IN (${placeholders})
   ${periodClause}
 ORDER BY valorBaixado DESC, af.id DESC
@@ -193,7 +204,10 @@ export async function queryDfcAgendamentosEfetivos(params: {
           const m = String(d.getMonth() + 1).padStart(2, '0');
           periodo = `${y}-${m}`;
         } else {
-          periodo = d.toISOString().slice(0, 10);
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          periodo = `${y}-${m}-${day}`;
         }
       } else if (granularidade === 'mes' && periodoRaw != null && String(periodoRaw).includes('-')) {
         periodo = String(periodoRaw).slice(0, 7);

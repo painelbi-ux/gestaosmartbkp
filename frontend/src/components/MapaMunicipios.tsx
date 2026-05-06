@@ -229,6 +229,19 @@ function RecalcularMapa({ token }: { token?: string }) {
   return null;
 }
 
+function FecharPopupComEsc() {
+  const map = useMap();
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      map.closePopup();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [map]);
+  return null;
+}
+
 export default function MapaMunicipios({ filtros = {}, layoutToken }: MapaMunicipiosProps) {
   const [resposta, setResposta] = useState<MapaMunicipiosResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -340,6 +353,7 @@ export default function MapaMunicipios({ filtros = {}, layoutToken }: MapaMunici
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
             url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
           />
+          <FecharPopupComEsc />
           <RecalcularMapa token={layoutToken} />
           <AjustarBounds items={dados} />
           {dados.map((item, i) => {

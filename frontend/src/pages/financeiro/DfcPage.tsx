@@ -75,6 +75,7 @@ export default function DfcPage() {
   const [valoresPorConta, setValoresPorConta] = useState<Record<number, Record<string, number>>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [filtroPlanoContas, setFiltroPlanoContas] = useState('');
 
   const diasNoIntervalo = useMemo(() => diffDaysInclusiveYmd(dataInicio, dataFim), [dataInicio, dataFim]);
   const bloqueioDiario = granularidade === 'dia' && diasNoIntervalo != null && diasNoIntervalo > 120;
@@ -185,7 +186,7 @@ export default function DfcPage() {
         <div className="flex flex-wrap items-end gap-4 min-w-0 flex-1">
           <div className="flex flex-wrap gap-4">
             <label className="flex flex-col gap-1 text-xs font-medium text-slate-600 dark:text-slate-300">
-              Data baixa (início)
+              Período — início
               <input
                 type="date"
                 value={dataInicio}
@@ -194,7 +195,7 @@ export default function DfcPage() {
               />
             </label>
             <label className="flex flex-col gap-1 text-xs font-medium text-slate-600 dark:text-slate-300">
-              Data baixa (fim)
+              Período — fim
               <input
                 type="date"
                 value={dataFim}
@@ -230,6 +231,18 @@ export default function DfcPage() {
               </button>
             </div>
           </div>
+          <label className="flex flex-col gap-1 min-w-[12rem] flex-1 max-w-md">
+            <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Plano de contas</span>
+            <input
+              type="search"
+              value={filtroPlanoContas}
+              onChange={(e) => setFiltroPlanoContas(e.target.value)}
+              placeholder="Filtrar por nome, código ou id…"
+              autoComplete="off"
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 w-full"
+              aria-label="Filtrar plano de contas na DFC"
+            />
+          </label>
           <button
             type="button"
             onClick={() => void carregar()}
@@ -268,6 +281,7 @@ export default function DfcPage() {
           loading={loading}
           error={error}
           telaCheia={telaCheia}
+          filtroPlanoContas={filtroPlanoContas}
         />
       </div>
     </div>

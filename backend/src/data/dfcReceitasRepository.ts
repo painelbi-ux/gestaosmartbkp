@@ -25,7 +25,10 @@ function formatYmdFromRow(periodoRaw: unknown, granularidade: DfcAgendamentoGran
       const m = String(d.getMonth() + 1).padStart(2, '0');
       return `${y}-${m}`;
     }
-    return d.toISOString().slice(0, 10);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
   }
   if (granularidade === 'mes' && periodoRaw != null && String(periodoRaw).includes('-')) {
     return String(periodoRaw).slice(0, 7);
@@ -48,7 +51,7 @@ function sqlAgregadoUnion(granularidade: DfcAgendamentoGranularidade): string {
   const periodoExpr =
     granularidade === 'mes'
       ? "DATE_FORMAT(lf.dataLancamento, '%Y-%m')"
-      : 'DATE(lf.dataLancamento)';
+      : "DATE_FORMAT(lf.dataLancamento, '%Y-%m-%d')";
   return `
 SELECT u.idContaFinanceiro, u.periodo, SUM(u.valor) AS valor
 FROM (

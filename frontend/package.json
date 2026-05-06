@@ -8,7 +8,11 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "export:dfc-plano": "node scripts/export-plano-contas-dfc.cjs",
-    "build:dfc-estrutura": "node scripts/build-estrutura-dfc-json.cjs"
+    "build:dfc-estrutura": "node scripts/build-estrutura-dfc-json.cjs",
+    "patch:dfc-receitas-fin": "node scripts/patch-dfc-move-para-receitas-financeiras.cjs",
+    "patch:dfc-recompra-desp-fin": "node scripts/patch-dfc-recompra-despesas-fin.cjs",
+    "patch:dfc-aporte-rec-fin": "node scripts/patch-dfc-aporte-receitas-fin.cjs",
+    "patch:dfc-fornecedores": "node scripts/patch-dfc-fornecedores-custos.cjs"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

@@ -24,6 +24,8 @@ export type ArvoreContasDfcProps = {
   error?: string | null;
   /** Quando true, a grade usa a altura disponível (ex.: modo tela inteira). */
   telaCheia?: boolean;
+  /** Filtra linhas por nome/código/id (substring, em tempo real). Vazio = sem filtro. */
+  filtroPlanoContas?: string;
 };
 
 /** Larguras e `left` cumulativo das colunas fixas (px). (Id e Tipo ocultos na grade.) */
@@ -57,14 +59,37 @@ function chipMacro(macro: string): string {
   return `${base} bg-slate-200 text-slate-800 dark:bg-slate-600 dark:text-slate-100`;
 }
 
-/** Fundo da linha: sintéticas em tons de violeta (agrupamento); analíticas listradas neutras. */
+/** Raízes M0, M1, … (Fluxo Operacional / Financeiro / Investimentos / Outras) — fundo neutro, não azul de grupo. */
+function isLinhaRaizFluxoDfc(node: DfcEstruturaNo): boolean {
+  return /^M\d+$/.test(node.pathKey);
+}
+
+function fundoListraNeutra(rowIdx: number): string {
+  return rowIdx % 2 === 0 ? 'bg-white dark:bg-slate-800' : 'bg-slate-50 dark:bg-slate-900';
+}
+
+/**
+ * Fundo da linha: cores **opacas** para sticky; sintéticas (pais) em azul sky unificado,
+ * exceto Entradas/Saídas operacionais e as raízes de fluxo (M0, M1, …).
+ */
 function corFundoLinha(node: DfcEstruturaNo, rowIdx: number): string {
-  if (node.tipo === 'S') {
+  if (node.nome === 'Entradas operacionais' && node.macro === 'OPERACIONAL') {
     return rowIdx % 2 === 0
-      ? 'bg-violet-100/85 dark:bg-violet-950/50'
-      : 'bg-indigo-100/75 dark:bg-indigo-950/45';
+      ? 'bg-emerald-50 dark:bg-emerald-950'
+      : 'bg-emerald-100 dark:bg-emerald-950';
   }
-  return rowIdx % 2 === 0 ? 'bg-white dark:bg-slate-800/30' : 'bg-slate-50/80 dark:bg-slate-800/50';
+  if (node.nome === 'Saídas operacionais' && node.macro === 'OPERACIONAL') {
+    return rowIdx % 2 === 0
+      ? 'bg-rose-50 dark:bg-rose-950'
+      : 'bg-rose-100 dark:bg-rose-950';
+  }
+  if (isLinhaRaizFluxoDfc(node)) {
+    return fundoListraNeutra(rowIdx);
+  }
+  if (node.tipo === 'S') {
+    return 'bg-sky-50 dark:bg-sky-950';
+  }
+  return fundoListraNeutra(rowIdx);
 }
 
 function isDescendantPath(desc: string, ancestor: string): boolean {
@@ -108,6 +133,45 @@ function linhasVisiveis(roots: DfcEstruturaNo[], expanded: Set<string>): { node:
   return out;
 }
 
+function normalizarParaBusca(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/** Só ramos com correspondência em algum descendente; árvore aberta até às folhas que casam. */
+function linhasFiltradasPorTexto(
+  roots: DfcEstruturaNo[],
+  queryRaw: string
+): { node: DfcEstruturaNo; depth: number }[] {
+  const raw = queryRaw.trim();
+  if (!raw) return [];
+  const nq = normalizarParaBusca(raw);
+
+  function noCasa(n: DfcEstruturaNo): boolean {
+    if (normalizarParaBusca(n.nome).includes(nq)) return true;
+    if (normalizarParaBusca(n.codigo || '').includes(nq)) return true;
+    if (n.id != null && String(n.id).includes(raw)) return true;
+    return false;
+  }
+
+  function subarvoreTemCasa(n: DfcEstruturaNo): boolean {
+    if (noCasa(n)) return true;
+    return (n.children ?? []).some(subarvoreTemCasa);
+  }
+
+  const out: { node: DfcEstruturaNo; depth: number }[] = [];
+  function walk(n: DfcEstruturaNo, depth: number) {
+    if (!subarvoreTemCasa(n)) return;
+    out.push({ node: n, depth });
+    for (const c of n.children ?? []) walk(c, depth + 1);
+  }
+  roots.forEach((r) => walk(r, 0));
+  return out;
+}
+
 /** IDs analíticos (conta Nomus) sob este nó — para rollup. */
 function coletarIdsAnaliticos(node: DfcEstruturaNo): number[] {
   if (node.tipo === 'A' && node.id != null) return [node.id];
@@ -124,6 +188,63 @@ function montarMapaIdsPorPathKey(roots: DfcEstruturaNo[]): Map<string, number[]>
   return map;
 }
 
+/** Reatribui `pathKey` em profundidade (M0, M0/0, …) para bater com a ordem atual dos filhos. */
+function assignPathKeysRecursive(node: DfcEstruturaNo, base: string): void {
+  node.pathKey = base;
+  node.children?.forEach((ch, i) => assignPathKeysRecursive(ch, `${base}/${i}`));
+}
+
+/**
+ * Sob o macro operacional, substitui os filhos diretos de M0 por dois nós sintéticos
+ * (Entradas operacionais / Saídas operacionais) com a mesma lógica do resumo em cruzamento.
+ * Demais raízes inalteradas; `pathKey` de toda a floresta é recalculada.
+ */
+function montarRootsParaExibicao(roots: DfcEstruturaNo[]): DfcEstruturaNo[] {
+  const cloned = JSON.parse(JSON.stringify(roots)) as DfcEstruturaNo[];
+  const opIdx = cloned.findIndex((r) => r.macro === 'OPERACIONAL');
+  if (opIdx < 0) {
+    cloned.forEach((r, i) => assignPathKeysRecursive(r, `M${i}`));
+    return cloned;
+  }
+  const op = cloned[opIdx];
+  const children = op.children ?? [];
+  const nRec = children.find((c) => c.nome === 'Receitas Operacionais');
+  const nDev = children.find((c) => c.nome === 'Devoluções');
+  const nNao = children.find((c) => c.nome === 'Receitas Não Operacionais');
+  if (!nRec || !nDev || !nNao) {
+    cloned.forEach((r, i) => assignPathKeysRecursive(r, `M${i}`));
+    return cloned;
+  }
+  const exc = new Set([nRec.pathKey, nDev.pathKey, nNao.pathKey]);
+  const saidaChildren = children.filter((c) => !exc.has(c.pathKey));
+  op.children = [
+    {
+      id: null,
+      nome: 'Entradas operacionais',
+      tipo: 'S',
+      macro: 'OPERACIONAL',
+      codigo: '',
+      pathKey: '',
+      children: [
+        JSON.parse(JSON.stringify(nRec)) as DfcEstruturaNo,
+        JSON.parse(JSON.stringify(nDev)) as DfcEstruturaNo,
+        JSON.parse(JSON.stringify(nNao)) as DfcEstruturaNo,
+      ],
+    },
+    {
+      id: null,
+      nome: 'Saídas operacionais',
+      tipo: 'S',
+      macro: 'OPERACIONAL',
+      codigo: '',
+      pathKey: '',
+      children: saidaChildren.map((c) => JSON.parse(JSON.stringify(c)) as DfcEstruturaNo),
+    },
+  ];
+  cloned.forEach((r, i) => assignPathKeysRecursive(r, `M${i}`));
+  return cloned;
+}
+
 function somaPeriodo(
   ids: number[],
   periodo: string,
@@ -135,6 +256,14 @@ function somaPeriodo(
   }
   return s;
 }
+
+type CruzamentoOperacional = {
+  opPathKey: string;
+  porPeriodoEntradas: number[];
+  porPeriodoSaidas: number[];
+  fluxoPorPeriodo: number[];
+  fluxoTotal: number;
+};
 
 type DetalheLancamentosState = {
   ids: number[];
@@ -152,11 +281,15 @@ export default function ArvoreContasDfc({
   loading = false,
   error = null,
   telaCheia = false,
+  filtroPlanoContas = '',
 }: ArvoreContasDfcProps) {
-  const roots = useMemo(
+  const rootsRaw = useMemo(
     () => (estruturaJson as unknown as { roots: DfcEstruturaNo[] }).roots,
     []
   );
+  const roots = useMemo(() => montarRootsParaExibicao(rootsRaw), [rootsRaw]);
+  const idsPorPathKeyRaw = useMemo(() => montarMapaIdsPorPathKey(rootsRaw), [rootsRaw]);
+
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [detalheAberto, setDetalheAberto] = useState<DetalheLancamentosState>(null);
 
@@ -179,7 +312,54 @@ export default function ArvoreContasDfc({
     setExpanded(new Set());
   }, []);
 
-  const visiveis = useMemo(() => linhasVisiveis(roots, expanded), [roots, expanded]);
+  const filtroAtivo = filtroPlanoContas.trim().length > 0;
+  const visiveis = useMemo(() => {
+    if (!filtroPlanoContas.trim()) return linhasVisiveis(roots, expanded);
+    return linhasFiltradasPorTexto(roots, filtroPlanoContas);
+  }, [roots, expanded, filtroPlanoContas]);
+
+  const cruzamentoOperacional = useMemo((): CruzamentoOperacional | null => {
+    if (periodos.length === 0) return null;
+    const op = rootsRaw.find((r) => r.macro === 'OPERACIONAL');
+    if (!op?.children?.length) return null;
+    const nRec = op.children.find((c) => c.nome === 'Receitas Operacionais');
+    const nDev = op.children.find((c) => c.nome === 'Devoluções');
+    const nNao = op.children.find((c) => c.nome === 'Receitas Não Operacionais');
+    if (!nRec || !nDev || !nNao) return null;
+
+    const idsRec = idsPorPathKeyRaw.get(nRec.pathKey) ?? [];
+    const idsDev = idsPorPathKeyRaw.get(nDev.pathKey) ?? [];
+    const idsNao = idsPorPathKeyRaw.get(nNao.pathKey) ?? [];
+
+    const porPeriodoEntradas = periodos.map(
+      (p) =>
+        somaPeriodo(idsRec, p, valoresPorConta) -
+        somaPeriodo(idsDev, p, valoresPorConta) +
+        somaPeriodo(idsNao, p, valoresPorConta)
+    );
+
+    const exc = new Set([nRec.pathKey, nDev.pathKey, nNao.pathKey]);
+    const saidaChildren = op.children.filter((c) => !exc.has(c.pathKey));
+    const porPeriodoSaidas = periodos.map((p) =>
+      saidaChildren.reduce((acc, ch) => {
+        const idsCh = idsPorPathKeyRaw.get(ch.pathKey) ?? [];
+        return acc + somaPeriodo(idsCh, p, valoresPorConta);
+      }, 0)
+    );
+
+    const fluxoPorPeriodo = periodos.map((_, i) => porPeriodoEntradas[i] - porPeriodoSaidas[i]);
+    const fluxoTotal = fluxoPorPeriodo.reduce((a, b) => a + b, 0);
+
+    const opEx = roots.find((r) => r.macro === 'OPERACIONAL');
+    const base = opEx?.pathKey ?? op.pathKey;
+    return {
+      opPathKey: base,
+      porPeriodoEntradas,
+      porPeriodoSaidas,
+      fluxoPorPeriodo,
+      fluxoTotal,
+    };
+  }, [roots, rootsRaw, idsPorPathKeyRaw, periodos, valoresPorConta]);
 
   const temPivot = periodos.length > 0;
 
@@ -193,9 +373,9 @@ export default function ArvoreContasDfc({
         <div>
           <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Estrutura DFC</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Valores por <span className="font-medium">data de baixa</span> no plano{' '}
-            <span className="font-medium">idContaFinanceiro</span>: contas a pagar (P + LP por data de lançamento) e
-            receitas (R + LR por <span className="font-medium">dataLancamento</span> do lançamento). Regenerar árvore:{' '}
+            Intervalo do filtro por <span className="font-medium">data do lançamento</span> no Nomus (P e receitas R/LR:
+            pagamento/recebimento em LF; LP: <span className="font-medium">dataLancamento</span>), bucket diário{' '}
+            <span className="font-medium">YYYY-MM-DD</span> vindo do SQL. Regenerar árvore:{' '}
             <code className="text-[10px]">npm run build:dfc-estrutura</code>.
           </p>
         </div>
@@ -206,14 +386,18 @@ export default function ArvoreContasDfc({
           <button
             type="button"
             onClick={expandirTudo}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600/80 transition"
+            disabled={filtroAtivo}
+            title={filtroAtivo ? 'Indisponível enquanto o filtro do plano estiver ativo' : undefined}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600/80 transition disabled:opacity-45 disabled:cursor-not-allowed"
           >
             Expandir tudo
           </button>
           <button
             type="button"
             onClick={recolherTudo}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600/80 transition"
+            disabled={filtroAtivo}
+            title={filtroAtivo ? 'Indisponível enquanto o filtro do plano estiver ativo' : undefined}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600/80 transition disabled:opacity-45 disabled:cursor-not-allowed"
           >
             Recolher tudo
           </button>
@@ -289,31 +473,55 @@ export default function ArvoreContasDfc({
             </tr>
           </thead>
           <tbody>
+            {visiveis.length === 0 && filtroAtivo ? (
+              <tr>
+                <td colSpan={temPivot ? 5 + periodos.length : 4} className="py-8 px-4 text-center text-sm text-slate-500 dark:text-slate-400">
+                  Nenhuma conta encontrada para «{filtroPlanoContas.trim()}».
+                </td>
+              </tr>
+            ) : null}
             {visiveis.map(({ node, depth }, rowIdx) => {
               const pad = depth * 14;
               const temFilhos = (node.children?.length ?? 0) > 0;
-              const aberto = expanded.has(node.pathKey);
+              const aberto = filtroAtivo && temFilhos ? true : expanded.has(node.pathKey);
               const ids = idsPorPathKey.get(node.pathKey) ?? [];
               const bg = corFundoLinha(node, rowIdx);
               const synth = node.tipo === 'S';
+              const isGrupoOpResumo =
+                node.macro === 'OPERACIONAL' &&
+                (node.nome === 'Entradas operacionais' || node.nome === 'Saídas operacionais');
+              const isRaizFluxoDfc = isLinhaRaizFluxoDfc(node);
+              const synthRing = synth && !isGrupoOpResumo && !isRaizFluxoDfc;
+              const isRaizOperacional =
+                cruzamentoOperacional != null && node.pathKey === cruzamentoOperacional.opPathKey;
+              const isResumoEntradasOp =
+                cruzamentoOperacional != null && node.nome === 'Entradas operacionais' && node.macro === 'OPERACIONAL';
+              const isResumoSaidasOp =
+                cruzamentoOperacional != null && node.nome === 'Saídas operacionais' && node.macro === 'OPERACIONAL';
+              const isResumoOpFormula = isResumoEntradasOp || isResumoSaidasOp;
               return (
                 <tr
                   key={node.pathKey}
                   className={`border-t border-slate-100 dark:border-slate-700/80 ${bg} ${
-                    synth ? 'ring-1 ring-inset ring-violet-300/35 dark:ring-violet-600/25' : ''
+                    synthRing ? 'ring-1 ring-inset ring-sky-300/40 dark:ring-sky-600/30' : ''
                   }`}
                 >
                   <td
-                    className={`py-1.5 px-1 align-middle sticky z-20 border-r border-slate-200/90 dark:border-slate-600/80 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)] ${bg}`}
+                    className={`py-1.5 px-1 align-middle sticky z-20 border-r border-slate-200 dark:border-slate-600 ${bg}`}
                     style={{ left: STICKY_COLS[0].l, width: STICKY_COLS[0].w, minWidth: STICKY_COLS[0].w }}
                   >
                     {temFilhos ? (
                       <button
                         type="button"
-                        className="mx-auto flex h-8 w-8 items-center justify-center rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-600/50 transition"
+                        disabled={filtroAtivo}
+                        className="mx-auto flex h-8 w-8 items-center justify-center rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-600/50 transition disabled:opacity-40 disabled:pointer-events-none disabled:hover:bg-transparent"
                         aria-expanded={aberto}
                         aria-label={aberto ? 'Recolher' : 'Explodir'}
-                        onClick={() => setExpanded((prev) => alternarExpansao(prev, node.pathKey))}
+                        title={filtroAtivo ? 'Limpe o filtro do plano para expandir ou recolher nós' : undefined}
+                        onClick={() => {
+                          if (filtroAtivo) return;
+                          setExpanded((prev) => alternarExpansao(prev, node.pathKey));
+                        }}
                       >
                         <svg
                           width="18"
@@ -335,13 +543,13 @@ export default function ArvoreContasDfc({
                     )}
                   </td>
                   <td
-                    className={`py-1.5 px-2 text-xs tabular-nums whitespace-nowrap text-slate-600 dark:text-slate-400 align-middle sticky z-20 border-r border-slate-200/90 dark:border-slate-600/80 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)] ${bg}`}
+                    className={`py-1.5 px-2 text-xs tabular-nums whitespace-nowrap text-slate-600 dark:text-slate-400 align-middle sticky z-20 border-r border-slate-200 dark:border-slate-600 ${bg}`}
                     style={{ left: STICKY_COLS[1].l, width: STICKY_COLS[1].w, minWidth: STICKY_COLS[1].w }}
                   >
                     {node.codigo || '—'}
                   </td>
                   <td
-                    className={`py-1.5 px-2 text-slate-800 dark:text-slate-200 align-middle sticky z-20 border-r border-slate-200/90 dark:border-slate-600/80 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)] ${bg} ${
+                    className={`py-1.5 px-2 text-slate-800 dark:text-slate-200 align-middle sticky z-20 border-r border-slate-200 dark:border-slate-600 ${bg} ${
                       ids.length > 0 ? 'cursor-pointer hover:underline decoration-slate-400/60' : ''
                     }`}
                     style={{ left: STICKY_COLS[2].l, width: STICKY_COLS[2].w, minWidth: STICKY_COLS[2].w }}
@@ -357,22 +565,42 @@ export default function ArvoreContasDfc({
                     </span>
                   </td>
                   <td
-                    className={`py-1.5 px-2 align-middle sticky z-20 border-r border-slate-300/90 dark:border-slate-500/80 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.12)] ${bg}`}
+                    className={`py-1.5 px-2 align-middle sticky z-20 border-r border-slate-300 dark:border-slate-500 ${bg}`}
                     style={{ left: STICKY_COLS[3].l, width: STICKY_COLS[3].w, minWidth: STICKY_COLS[3].w }}
                   >
                     <span className={chipMacro(node.macro)}>{MACRO_LABEL[node.macro] ?? node.macro}</span>
                   </td>
                   {temPivot
-                    ? periodos.map((p) => {
-                        const v = somaPeriodo(ids, p, valoresPorConta);
+                    ? periodos.map((p, i) => {
+                        let v: number;
+                        if (isRaizOperacional && cruzamentoOperacional) {
+                          v = cruzamentoOperacional.fluxoPorPeriodo[i] ?? 0;
+                        } else if (isResumoEntradasOp && cruzamentoOperacional) {
+                          v = cruzamentoOperacional.porPeriodoEntradas[i] ?? 0;
+                        } else if (isResumoSaidasOp && cruzamentoOperacional) {
+                          v = cruzamentoOperacional.porPeriodoSaidas[i] ?? 0;
+                        } else {
+                          v = somaPeriodo(ids, p, valoresPorConta);
+                        }
+                        const podeDrill = ids.length > 0 && !isRaizOperacional;
                         return (
                           <td
                             key={p}
-                            className={`py-1.5 px-2 text-right tabular-nums text-slate-700 dark:text-slate-200 cursor-pointer hover:bg-slate-200/60 dark:hover:bg-slate-600/40 ${bg}`}
-                            title="Clique para ver lançamentos deste período"
+                            className={`py-1.5 px-2 text-right tabular-nums text-slate-700 dark:text-slate-200 ${bg} ${
+                              podeDrill ? 'cursor-pointer hover:bg-slate-200/60 dark:hover:bg-slate-600/40' : ''
+                            }`}
+                            title={
+                              isRaizOperacional
+                                ? 'Resumo: entradas operacionais menos saídas operacionais'
+                                : isResumoEntradasOp
+                                  ? 'Fórmula: receitas operacionais − devoluções + receitas não operacionais'
+                                  : isResumoSaidasOp
+                                    ? 'Soma das saídas operacionais (custos, despesas, etc.)'
+                                    : 'Clique para ver lançamentos deste período'
+                            }
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (ids.length === 0) return;
+                              if (!podeDrill) return;
                               abrirDetalhe(
                                 ids,
                                 p,
@@ -387,15 +615,33 @@ export default function ArvoreContasDfc({
                     : null}
                   {temPivot ? (
                     <td
-                      className={`py-1.5 px-2 text-right tabular-nums font-medium text-slate-800 dark:text-slate-100 cursor-pointer hover:brightness-95 dark:hover:brightness-110 ${
-                        synth
-                          ? 'bg-violet-200/50 dark:bg-violet-900/35'
-                          : 'bg-slate-100/90 dark:bg-slate-700/40'
-                      } ${bg}`}
-                      title="Clique para ver todos os lançamentos do período filtrado"
+                      className={`py-1.5 px-2 text-right tabular-nums font-medium text-slate-800 dark:text-slate-100 ${
+                        isResumoEntradasOp
+                          ? 'bg-emerald-200 dark:bg-emerald-900'
+                          : isResumoSaidasOp
+                            ? 'bg-rose-200 dark:bg-rose-900'
+                            : synth && !isRaizFluxoDfc
+                              ? 'bg-sky-200 dark:bg-sky-900'
+                              : 'bg-slate-100 dark:bg-slate-700'
+                      } ${bg} ${
+                        isRaizOperacional
+                          ? ''
+                          : ids.length > 0
+                            ? 'cursor-pointer hover:brightness-95 dark:hover:brightness-110'
+                            : ''
+                      }`}
+                      title={
+                        isRaizOperacional
+                          ? 'Total do período: entradas operacionais menos saídas operacionais'
+                          : isResumoOpFormula && cruzamentoOperacional
+                            ? isResumoEntradasOp
+                              ? 'Total: fórmula de entradas operacionais'
+                              : 'Total: soma das saídas operacionais'
+                            : 'Clique para ver todos os lançamentos do período filtrado'
+                      }
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (ids.length === 0) return;
+                        if (isRaizOperacional || ids.length === 0) return;
                         abrirDetalhe(
                           ids,
                           undefined,
@@ -403,7 +649,15 @@ export default function ArvoreContasDfc({
                         );
                       }}
                     >
-                      {nf.format(periodos.reduce((s, p) => s + somaPeriodo(ids, p, valoresPorConta), 0))}
+                      {nf.format(
+                        isRaizOperacional && cruzamentoOperacional
+                          ? cruzamentoOperacional.fluxoTotal
+                          : isResumoEntradasOp && cruzamentoOperacional
+                            ? cruzamentoOperacional.porPeriodoEntradas.reduce((a, b) => a + b, 0)
+                            : isResumoSaidasOp && cruzamentoOperacional
+                              ? cruzamentoOperacional.porPeriodoSaidas.reduce((a, b) => a + b, 0)
+                              : periodos.reduce((s, p) => s + somaPeriodo(ids, p, valoresPorConta), 0)
+                      )}
                     </td>
                   ) : null}
                 </tr>

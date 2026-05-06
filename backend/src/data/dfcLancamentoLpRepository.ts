@@ -25,7 +25,10 @@ function formatYmdFromRow(periodoRaw: unknown, granularidade: DfcAgendamentoGran
       const m = String(d.getMonth() + 1).padStart(2, '0');
       return `${y}-${m}`;
     }
-    return d.toISOString().slice(0, 10);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
   }
   if (granularidade === 'mes' && periodoRaw != null && String(periodoRaw).includes('-')) {
     return String(periodoRaw).slice(0, 7);
@@ -47,10 +50,10 @@ WHERE DATE(lf.dataLancamento) BETWEEN ? AND ?
 const SQL_AGREG_DIA = `
 SELECT
   lf.idContaFinanceiro AS idContaFinanceiro,
-  DATE(lf.dataLancamento) AS periodo,
+  DATE_FORMAT(lf.dataLancamento, '%Y-%m-%d') AS periodo,
   SUM(lf.valor) AS valor
 ${SQL_WHERE_LP}
-GROUP BY lf.idContaFinanceiro, DATE(lf.dataLancamento)
+GROUP BY lf.idContaFinanceiro, DATE_FORMAT(lf.dataLancamento, '%Y-%m-%d')
 ORDER BY periodo, idContaFinanceiro
 `.trim();
 
