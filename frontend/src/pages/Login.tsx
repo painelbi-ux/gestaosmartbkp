@@ -35,8 +35,8 @@ export default function Login() {
   const [showCard, setShowCard] = useState(false);
   const [serverOnline, setServerOnline] = useState<boolean | null>(null);
 
-  // Atrasa o primeiro ping para dar tempo ao backend subir (evita ECONNREFUSED ao rodar npm run dev)
-  const PING_INITIAL_DELAY_MS = 3500;
+  // Ping rápido: aviso "servidor offline" aparece cedo; retries cobrem backend que sobe logo após `npm run dev`.
+  const PING_INITIAL_DELAY_MS = 600;
   useEffect(() => {
     const t = setTimeout(() => {
       pingServer().then(setServerOnline);
@@ -101,8 +101,7 @@ export default function Login() {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Falha no login.';
-      // Evita duplicar o aviso "npm run dev" quando já mostramos "Servidor offline"
-      setError(msg.includes('npm run dev') || msg.includes('Na pasta raiz') ? 'Não foi possível conectar ao servidor.' : msg);
+      setError(msg);
     } finally {
       setLoading(false);
     }

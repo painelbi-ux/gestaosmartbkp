@@ -637,7 +637,7 @@ export default function RessupAlmoxAnalisePage() {
                 aria-label="Filtros — nova análise"
               >
                 <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">
-                  Filtros (mesmas opções da tela Coletas de Preços)
+                  Filtros
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-end">
                   <MultiSelectWithSearch
@@ -1087,11 +1087,6 @@ export default function RessupAlmoxAnalisePage() {
                   <p>
                     <span className="font-medium">Usuário:</span> {historicoDetalheMeta.usuarioLogin}
                   </p>
-                  {historicoDetalheMeta.resumoFiltros && (
-                    <p>
-                      <span className="font-medium">Filtros (carga Nomus):</span> {historicoDetalheMeta.resumoFiltros}
-                    </p>
-                  )}
                 </div>
               )}
               {!historicoDetalheCarregando && historicoDetalhePayload && (
