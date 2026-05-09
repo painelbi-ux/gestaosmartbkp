@@ -57,6 +57,14 @@ export const PERMISSOES = {
   COMUNICACAO_COMENTARIOS_PERMITIR_MENCAO: 'comunicacao.comentarios.permitir_mencao',
   COMUNICACAO_TOTAL: 'comunicacao.total',
 
+  // Suporte (chamados internos)
+  SUPORTE_CHAMADOS_VER: 'suporte.chamados.ver',
+  SUPORTE_CHAMADOS_CRIAR: 'suporte.chamados.criar',
+  SUPORTE_CHAMADOS_RESPONDER: 'suporte.chamados.responder',
+  SUPORTE_CHAMADOS_VER_TODOS: 'suporte.chamados.ver_todos',
+  SUPORTE_CHAMADOS_ALTERAR_STATUS: 'suporte.chamados.alterar_status',
+  SUPORTE_CONFIGURAR: 'suporte.configurar',
+
   // legado (mantido por compatibilidade)
   USUARIOS_GERENCIAR: 'usuarios.gerenciar',
 } as const;

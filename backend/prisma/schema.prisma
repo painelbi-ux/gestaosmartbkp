@@ -466,3 +466,134 @@ model RessupAlmoxAnalise {
   @@index([createdAt])
   @@map("ressup_almox_analise")
 }
+
+/// Ticket de suporte interno (abertura por usuário comum e gestão pelo master).
+model SupportTicket {
+  id                 Int      @id @default(autoincrement())
+  ticketNumber       String   @unique
+  ownerLogin         String
+  ownerNome          String?
+  tipo               String
+  titulo             String
+  descricao          String
+  categoria          String?
+  prioridade         String   @default("media")
+  status             String   @default("aberto")
+  customFieldsJson   String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  lastStatusChangeAt DateTime @default(now())
+  lastStatusChangeBy String?
+  mensagens          SupportTicketMessage[]
+  anexos             SupportTicketAttachment[]
+  historicoStatus    SupportTicketStatusHistory[]
+  notificacoes       SupportTicketNotification[]
+
+  @@index([ownerLogin])
+  @@index([status])
+  @@index([prioridade])
+  @@index([createdAt])
+  @@map("support_ticket")
+}
+
+/// Mensagens no histórico do chamado (usuário comum e master).
+model SupportTicketMessage {
+  id          Int      @id @default(autoincrement())
+  ticketId    Int
+  authorLogin String
+  authorNome  String?
+  authorType  String   // usuario | master
+  mensagem    String
+  createdAt   DateTime @default(now())
+  ticket      SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  anexos      SupportTicketAttachment[]
+
+  @@index([ticketId])
+  @@index([createdAt])
+  @@map("support_ticket_message")
+}
+
+/// Anexos enviados no chamado (abertura e respostas).
+model SupportTicketAttachment {
+  id           Int      @id @default(autoincrement())
+  ticketId     Int
+  messageId    Int?
+  fileName     String
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  storagePath  String
+  createdAt    DateTime @default(now())
+  ticket       SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  message      SupportTicketMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+  @@index([messageId])
+  @@map("support_ticket_attachment")
+}
+
+/// Histórico de mudanças de status com auditoria.
+model SupportTicketStatusHistory {
+  id         Int      @id @default(autoincrement())
+  ticketId   Int
+  fromStatus String?
+  toStatus   String
+  changedBy  String
+  changedAt  DateTime @default(now())
+  ticket     SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+  @@index([changedAt])
+  @@map("support_ticket_status_history")
+}
+
+/// Configuração dinâmica dos campos da abertura de chamado (master).
+model SupportTicketFieldConfig {
+  id          Int      @id @default(autoincrement())
+  fieldKey    String   @unique
+  label       String
+  fieldType   String   // text | textarea | select | number | date
+  required    Boolean  @default(false)
+  optionsJson String?
+  placeholder String?
+  sortOrder   Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([sortOrder])
+  @@map("support_ticket_field_config")
+}
+
+/// Notificação interna (estrutura pronta para integração de alertas no frontend).
+model SupportTicketNotification {
+  id        Int      @id @default(autoincrement())
+  userLogin String
+  message   String
+  ticketId  Int
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([userLogin])
+  @@index([ticketId])
+  @@index([createdAt])
+  @@map("support_ticket_notification")
+}
+
+/// Catálogo configurável: status, prioridade e tipo de chamado (rótulo, código estável, ativo).
+model SupportTicketCatalogItem {
+  id              Int      @id @default(autoincrement())
+  kind            String
+  code            String
+  label           String
+  active          Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  blocksUserReply Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([kind, code])
+  @@index([kind, active, sortOrder])
+  @@map("support_ticket_catalog_item")
+}

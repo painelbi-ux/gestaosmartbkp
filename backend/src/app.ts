@@ -25,12 +25,14 @@ import mppRoutes from './routes/mppRoutes.js';
 import pcRoutes from './routes/pcRoutes.js';
 import programacaoSetorialRoutes from './routes/programacaoSetorialRoutes.js';
 import financeiroRoutes from './routes/financeiroRoutes.js';
+import suporteRoutes from './routes/suporteRoutes.js';
 import { csrfProtect } from './middleware/csrf.js';
 
 const app = express();
 
 const __dirnameApp = path.dirname(fileURLToPath(import.meta.url));
 const backendRootApp = path.join(__dirnameApp, '..');
+const uploadsRoot = path.join(backendRootApp, 'var', 'uploads');
 
 // Atrás de nginx/IIS com HTTPS (TRUST_PROXY=true no .env) — necessário para req.secure e cookies corretos
 if (process.env.TRUST_PROXY === 'true') {
@@ -44,6 +46,8 @@ app.use(
   '/.well-known',
   express.static(acmeWellKnownRoot, { dotfiles: 'allow', index: false, maxAge: 0 })
 );
+fs.mkdirSync(uploadsRoot, { recursive: true });
+app.use('/uploads', express.static(uploadsRoot, { maxAge: 0 }));
 
 // Só ative no .env após HTTPS na 443 estar OK (senão redireciona para um site que ainda não responde em TLS).
 if (process.env.FORCE_HTTPS_REDIRECT === 'true') {
@@ -119,7 +123,7 @@ app.use(cookieParser());
 // Body JSON: em erro de parsing definimos req.body = {} (nunca repassar erro)
 app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
   // Aumentamos o limite para suportar uploads de importação (arquivos de pedidos em lote).
-  express.json({ limit: '1mb' })(req, res, (err: unknown) => {
+  express.json({ limit: '15mb' })(req, res, (err: unknown) => {
     if (err) (req as express.Request & { body?: unknown }).body = {};
     next();
   });
@@ -149,6 +153,7 @@ app.use('/api/mpp', mppRoutes);
 app.use('/api/pc', pcRoutes);
 app.use('/api/programacao-setorial', programacaoSetorialRoutes);
 app.use('/api/financeiro', financeiroRoutes);
+app.use('/api/suporte', suporteRoutes);
 
 // Header em todas as respostas para conferir na outra máquina se está rodando o build novo
 export const BUILD_ID = 'pedidos-no-csrf-v1';

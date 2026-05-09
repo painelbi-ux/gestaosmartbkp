@@ -4,7 +4,7 @@
  */
 
 import { getNomusPool } from '../config/nomusDb.js';
-import { SQL_REGISTRO_COLETA_LEVE } from './sqlRegistroColetaPrecos.js';
+import { SQL_REGISTRO_COLETA_BASE } from './sqlRegistroColetaPrecos.js';
 
 const SQL_BASE = `
 Select
@@ -320,7 +320,7 @@ export async function buscarRegistroColetaNomus(itens: ItemRegistroColeta[]): Pr
   const idProdutosUnicos = [...new Set(itens.map((i) => i.idProduto))];
   try {
     const placeholders = idProdutosUnicos.map(() => '?').join(', ');
-    const sql = `${SQL_REGISTRO_COLETA_LEVE} AND p.id IN (${placeholders})`;
+    const sql = `${SQL_REGISTRO_COLETA_BASE} AND p.id IN (${placeholders})`;
     const [rows] = await pool.query<Record<string, unknown>[]>(sql, idProdutosUnicos);
     const list = Array.isArray(rows) ? rows : [];
     const result: Record<string, unknown>[] = [];

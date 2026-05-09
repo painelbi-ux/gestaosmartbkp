@@ -4,6 +4,7 @@ import { logout, changeMyPassword } from '../api/auth';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { PERMISSOES } from '../config/permissoes';
+import { podeAcessarRotaChamadosSuporte, podeConfigurarSuporte } from '../utils/suportePermissoes';
 import PermissionGuard from './PermissionGuard';
 import StatusCard from './StatusCard';
 import { getSycroOrderNotifications } from '../api/sycroorder';
@@ -33,9 +34,7 @@ const PCP_SUBMENUS: { to: string; label: string }[] = [
   { to: '/pedidos/ressup-almox', label: 'Ressup Almox' },
 ];
 
-const COMUNICACAO_INTERNA_SUBMENUS: { to: string; label: string }[] = [
-  { to: '/pedidos/sycroorder', label: 'Comunicação PD' },
-];
+const COMUNICACAO_INTERNA_SUBMENUS: { to: string; label: string }[] = [{ to: '/pedidos/sycroorder', label: 'Comunicação PD' }];
 
 const COMPRAS_SUBMENUS: { to: string; label: string }[] = [
   { to: '/compras/dashboard', label: 'Dashboard' },
@@ -50,6 +49,7 @@ const FINANCEIRO_SUBMENUS: { to: string; label: string }[] = [
   { to: '/financeiro/resumo', label: 'Resumo Financeiro' },
   { to: '/financeiro/dfc', label: 'DFC' },
   { to: '/financeiro/painel-financeiro-comercial', label: 'Painel Financeiro-Comercial' },
+  { to: '/financeiro/renegociacao-contratos', label: 'Simulação de Renegociação' },
 ];
 
 const INTEGRACAO_SUBMENUS: { to: string; label: string }[] = [
@@ -67,6 +67,8 @@ const PATH_LABELS: Record<string, string> = {
   '/': 'Início',
   '/pedidos': 'Gerenciador de Pedidos',
   '/pedidos/sycroorder': 'Comunicação PD',
+  '/suporte': 'Chamados',
+  '/suporte/configuracao': 'Configurações de suporte',
   '/pedidos/mrp-dashboard': 'Dashboard MRP',
   '/pedidos/mrp': 'MRP',
   '/pedidos/mrp-produtos-em-processo': 'MRP - Produtos em Processo',
@@ -83,6 +85,7 @@ const PATH_LABELS: Record<string, string> = {
   '/financeiro/resumo': 'Resumo Financeiro',
   '/financeiro/dfc': 'DFC',
   '/financeiro/painel-financeiro-comercial': 'Painel Financeiro-Comercial',
+  '/financeiro/renegociacao-contratos': 'Simulação de Renegociação',
   '/relatorios': 'Relatórios',
   '/integracao': 'Integração',
   '/integracao/alteracao-data-entrega-compra': 'Alteração Data Entrega',
@@ -117,9 +120,12 @@ export default function Layout() {
   const financeiroRef = useRef<HTMLDivElement>(null);
   const [gestaoUsuariosOpen, setGestaoUsuariosOpen] = useState(false);
   const gestaoUsuariosRef = useRef<HTMLDivElement>(null);
+  const [suporteOpen, setSuporteOpen] = useState(false);
+  const suporteRef = useRef<HTMLDivElement>(null);
 
   const isPcpActive = location.pathname.startsWith('/pedidos');
   const isComunicacaoActive = location.pathname === '/pedidos/sycroorder';
+  const isSuporteActive = location.pathname.startsWith('/suporte');
   const isComprasActive = location.pathname.startsWith('/compras');
   const isIntegracaoActive = location.pathname.startsWith('/integracao');
   const isEngenhariaActive = location.pathname.startsWith('/engenharia');
@@ -168,7 +174,7 @@ export default function Layout() {
   const syncPanelRef = useRef<HTMLDivElement>(null);
 
   /** Fecha todos os dropdowns do menu e abre apenas o informado (evita sobreposição ao passar o mouse). */
-  const openOnly = useCallback((menu: 'pcp' | 'comunicacao' | 'compras' | 'integracao' | 'engenharia' | 'financeiro' | 'gestaoUsuarios') => {
+  const openOnly = useCallback((menu: 'pcp' | 'comunicacao' | 'compras' | 'integracao' | 'engenharia' | 'financeiro' | 'gestaoUsuarios' | 'suporte') => {
     setPcpOpen(menu === 'pcp');
     setComunicacaoOpen(menu === 'comunicacao');
     setComprasOpen(menu === 'compras');
@@ -176,6 +182,7 @@ export default function Layout() {
     setEngenhariaOpen(menu === 'engenharia');
     setFinanceiroOpen(menu === 'financeiro');
     setGestaoUsuariosOpen(menu === 'gestaoUsuarios');
+    setSuporteOpen(menu === 'suporte');
   }, []);
 
   /** Abas abertas no topo da área de conteúdo (cada submenu/rota em uma aba). */
@@ -198,7 +205,7 @@ export default function Layout() {
   const justDraggedRef = useRef(false);
   const closeMenuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const scheduleCloseMenu = useCallback((menu: 'pcp' | 'comunicacao' | 'compras' | 'integracao' | 'engenharia' | 'financeiro' | 'gestaoUsuarios') => {
+  const scheduleCloseMenu = useCallback((menu: 'pcp' | 'comunicacao' | 'compras' | 'integracao' | 'engenharia' | 'financeiro' | 'gestaoUsuarios' | 'suporte') => {
     if (closeMenuTimerRef.current) clearTimeout(closeMenuTimerRef.current);
     closeMenuTimerRef.current = setTimeout(() => {
       if (menu === 'pcp') setPcpOpen(false);
@@ -208,6 +215,7 @@ export default function Layout() {
       if (menu === 'engenharia') setEngenhariaOpen(false);
       if (menu === 'financeiro') setFinanceiroOpen(false);
       if (menu === 'gestaoUsuarios') setGestaoUsuariosOpen(false);
+      if (menu === 'suporte') setSuporteOpen(false);
     }, 140);
   }, []);
 
@@ -291,6 +299,9 @@ export default function Layout() {
       }
       if (gestaoUsuariosRef.current && !gestaoUsuariosRef.current.contains(e.target as Node)) {
         setGestaoUsuariosOpen(false);
+      }
+      if (suporteRef.current && !suporteRef.current.contains(e.target as Node)) {
+        setSuporteOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
@@ -750,6 +761,65 @@ export default function Layout() {
             <span className="text-sm text-slate-600 dark:text-slate-300 mr-1">
               {nome ?? login ?? ''}
             </span>
+            {(podeAcessarRotaChamadosSuporte(hasPermission) || podeConfigurarSuporte(isMaster, hasPermission)) && (
+              <div className="relative" ref={suporteRef}>
+                <button
+                  type="button"
+                  onClick={() => setSuporteOpen((v) => !v)}
+                  onMouseEnter={() => openOnly('suporte')}
+                  className={`inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                    isSuporteActive
+                      ? 'bg-primary-600 text-white'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700/50'
+                  }`}
+                  aria-expanded={suporteOpen}
+                  aria-haspopup="true"
+                >
+                  Suporte
+                  <svg className="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {suporteOpen && (
+                  <div
+                    className="absolute right-0 top-full mt-0 py-1 w-56 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg z-50"
+                    onMouseEnter={cancelScheduledCloseMenu}
+                    onMouseLeave={() => scheduleCloseMenu('suporte')}
+                  >
+                    {podeAcessarRotaChamadosSuporte(hasPermission) && (
+                      <NavLink
+                        to="/suporte"
+                        onClick={() => setSuporteOpen(false)}
+                        className={({ isActive }) =>
+                          `block px-4 py-2 text-sm transition ${
+                            isActive
+                              ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200 font-medium'
+                              : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                          }`
+                        }
+                      >
+                        Chamados
+                      </NavLink>
+                    )}
+                    {podeConfigurarSuporte(isMaster, hasPermission) && (
+                      <NavLink
+                        to="/suporte/configuracao"
+                        onClick={() => setSuporteOpen(false)}
+                        className={({ isActive }) =>
+                          `block px-4 py-2 text-sm transition ${
+                            isActive
+                              ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200 font-medium'
+                              : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                          }`
+                        }
+                      >
+                        Configurações de suporte
+                      </NavLink>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <button
               type="button"
               onClick={handleLogout}

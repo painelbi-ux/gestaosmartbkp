@@ -19,6 +19,7 @@ import PrecificacaoPage from './pages/PrecificacaoPage';
 import ResumoFinanceiroPage from './pages/financeiro/ResumoFinanceiroPage';
 import DfcPage from './pages/financeiro/DfcPage';
 import PainelFinanceiroComercialPage from './pages/financeiro/PainelFinanceiroComercialPage';
+import RenegociacaoContratosPage from './pages/financeiro/RenegociacaoContratosPage';
 import SycroOrderPage from './pages/pedidos/SycroOrderPage';
 import MRPPage from './pages/pedidos/MRPPage';
 import MRPManagerPage from './pages/pedidos/MRPManagerPage';
@@ -27,6 +28,8 @@ import DashboardMRPPage from './pages/pedidos/DashboardMRPPage';
 import MPPPage from './pages/pedidos/MPPPage';
 import ProgramacaoSetorialPainelPage from './pages/pedidos/ProgramacaoSetorialPainelPage';
 import RessupAlmoxAnalisePage from './pages/pedidos/RessupAlmoxAnalisePage';
+import SuportePage from './pages/suporte/SuportePage';
+import SuporteConfigPage from './pages/suporte/SuporteConfigPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { getStoredToken, SESSION_CLEARED_EVENT } from './api/client';
 import { checkAuth } from './api/auth';
@@ -109,6 +112,8 @@ export default function App() {
           <Route path="pedidos/mpp" element={<ErrorBoundary><MPPPage /></ErrorBoundary>} />
           <Route path="pedidos/programacao-setorial" element={<ErrorBoundary><ProgramacaoSetorialPainelPage /></ErrorBoundary>} />
           <Route path="pedidos/ressup-almox" element={<ErrorBoundary><RessupAlmoxAnalisePage /></ErrorBoundary>} />
+          <Route path="suporte" element={<ErrorBoundary><SuportePage /></ErrorBoundary>} />
+          <Route path="suporte/configuracao" element={<ErrorBoundary><SuporteConfigPage /></ErrorBoundary>} />
           <Route path="heatmap" element={<HeatmapPage />} />
           <Route path="compras" element={<ComprasPage />} />
           <Route path="compras/dashboard" element={<ComprasDashboardPage />} />
@@ -122,6 +127,7 @@ export default function App() {
             path="financeiro/painel-financeiro-comercial"
             element={<PainelFinanceiroComercialPage />}
           />
+          <Route path="financeiro/renegociacao-contratos" element={<RenegociacaoContratosPage />} />
           <Route path="relatorios" element={<RelatoriosPage />} />
           <Route path="integracao" element={<IntegracaoPage />} />
           <Route path="integracao/alteracao-data-entrega-compra" element={<AlteracaoDataEntregaCompraPage />} />

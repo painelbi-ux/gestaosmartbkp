@@ -59,6 +59,14 @@ export const PERMISSOES = {
   COMUNICACAO_COMENTARIOS_PERMITIR_MENCAO: 'comunicacao.comentarios.permitir_mencao',
   COMUNICACAO_TOTAL: 'comunicacao.total',
 
+  // Suporte (chamados internos)
+  SUPORTE_CHAMADOS_VER: 'suporte.chamados.ver',
+  SUPORTE_CHAMADOS_CRIAR: 'suporte.chamados.criar',
+  SUPORTE_CHAMADOS_RESPONDER: 'suporte.chamados.responder',
+  SUPORTE_CHAMADOS_VER_TODOS: 'suporte.chamados.ver_todos',
+  SUPORTE_CHAMADOS_ALTERAR_STATUS: 'suporte.chamados.alterar_status',
+  SUPORTE_CONFIGURAR: 'suporte.configurar',
+
   // Permissão legado (mantida para compatibilidade)
   USUARIOS_GERENCIAR: 'usuarios.gerenciar',
 } as const;
@@ -117,6 +125,14 @@ export const TODAS_PERMISSOES: CodigoPermissao[] = [
   PERMISSOES.COMUNICACAO_TAG_VISUALIZAR,
   PERMISSOES.COMUNICACAO_COMENTARIOS_PERMITIR_MENCAO,
   PERMISSOES.COMUNICACAO_TOTAL,
+
+  // Suporte
+  PERMISSOES.SUPORTE_CHAMADOS_VER,
+  PERMISSOES.SUPORTE_CHAMADOS_CRIAR,
+  PERMISSOES.SUPORTE_CHAMADOS_RESPONDER,
+  PERMISSOES.SUPORTE_CHAMADOS_VER_TODOS,
+  PERMISSOES.SUPORTE_CHAMADOS_ALTERAR_STATUS,
+  PERMISSOES.SUPORTE_CONFIGURAR,
 
   // legado
   PERMISSOES.USUARIOS_GERENCIAR,
@@ -177,6 +193,14 @@ export const LABELS_PERMISSOES: Record<CodigoPermissao, string> = {
   [PERMISSOES.COMUNICACAO_TAG_VISUALIZAR]: 'Permitir visualizar card como disponível/indisponível',
   [PERMISSOES.COMUNICACAO_COMENTARIOS_PERMITIR_MENCAO]: 'Permite ser marcado nos comentários',
   [PERMISSOES.COMUNICACAO_TOTAL]: 'Permissão total',
+
+  // Suporte
+  [PERMISSOES.SUPORTE_CHAMADOS_VER]: 'Suporte: visualizar chamados (lista e detalhe)',
+  [PERMISSOES.SUPORTE_CHAMADOS_CRIAR]: 'Suporte: abrir novo chamado',
+  [PERMISSOES.SUPORTE_CHAMADOS_RESPONDER]: 'Suporte: enviar mensagens no chamado',
+  [PERMISSOES.SUPORTE_CHAMADOS_VER_TODOS]: 'Suporte: ver chamados de todos os usuários',
+  [PERMISSOES.SUPORTE_CHAMADOS_ALTERAR_STATUS]: 'Suporte: alterar status do chamado',
+  [PERMISSOES.SUPORTE_CONFIGURAR]: 'Suporte: configurações (catálogo, campos da abertura)',
 
   // legado
   [PERMISSOES.USUARIOS_GERENCIAR]: 'Gerenciar usuários e grupos',
