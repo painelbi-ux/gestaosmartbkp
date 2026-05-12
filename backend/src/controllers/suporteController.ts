@@ -3,6 +3,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import type { Request, Response } from 'express';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/prisma.js';
 import { PERMISSOES, type CodigoPermissao } from '../config/permissoes.js';
 import { getPermissoesUsuario } from '../middleware/requirePermission.js';
@@ -34,19 +35,6 @@ const CATALOG_KINDS = new Set(['status', 'prioridade', 'tipo']);
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const uploadRoot = path.join(path.resolve(thisDir, '..', '..'), 'var', 'uploads', 'suporte');
 fs.mkdirSync(uploadRoot, { recursive: true });
-
-type FieldType = 'text' | 'textarea' | 'select' | 'number' | 'date';
-
-type FieldConfigDTO = {
-  fieldKey: string;
-  label: string;
-  fieldType: FieldType;
-  required: boolean;
-  options: string[];
-  placeholder: string | null;
-  sortOrder: number;
-  active: boolean;
-};
 
 type IncomingAttachment = {
   fileName: string;
@@ -93,7 +81,7 @@ async function canAcessarChamadosSuporte(login: string): Promise<boolean> {
   return perms.includes(PERMISSOES.SUPORTE_CHAMADOS_VER) || hasLegacyChamadosAccess(perms);
 }
 
-/** Catálogo e campos da abertura: quem vê chamados ou quem só configura. */
+/** Catálogo de suporte: quem vê chamados ou quem só configura. */
 async function canAccessSuporteModulo(login: string): Promise<boolean> {
   if (isMaster(login)) return true;
   const perms = await getPermissoesUsuario(login);
@@ -151,31 +139,6 @@ function parseJsonObject(value: string | null | undefined): Record<string, unkno
   }
 }
 
-function defaultFieldConfigs(): FieldConfigDTO[] {
-  return [
-    {
-      fieldKey: 'categoria',
-      label: 'Categoria',
-      fieldType: 'select',
-      required: false,
-      options: ['Sistema', 'Dados', 'Permissão', 'Financeiro', 'Outro'],
-      placeholder: null,
-      sortOrder: 1,
-      active: true,
-    },
-    {
-      fieldKey: 'prioridade',
-      label: 'Prioridade',
-      fieldType: 'select',
-      required: true,
-      options: ['baixa', 'media', 'alta', 'critica'],
-      placeholder: null,
-      sortOrder: 2,
-      active: true,
-    },
-  ];
-}
-
 function defaultCatalogRows(): Array<{
   kind: string;
   code: string;
@@ -212,34 +175,6 @@ async function ensureDefaultCatalog(): Promise<void> {
   const count = await prisma.supportTicketCatalogItem.count();
   if (count > 0) return;
   await prisma.supportTicketCatalogItem.createMany({ data: defaultCatalogRows() });
-}
-
-function parseOptionsJson(value: string | null): string[] {
-  if (!value) return [];
-  try {
-    const arr = JSON.parse(value);
-    if (!Array.isArray(arr)) return [];
-    return arr.map((x) => normalizeString(x)).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-async function getFieldConfigsFromDb(): Promise<FieldConfigDTO[]> {
-  const rows = await prisma.supportTicketFieldConfig.findMany({
-    orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
-  });
-  if (rows.length === 0) return defaultFieldConfigs();
-  return rows.map((r) => ({
-    fieldKey: r.fieldKey,
-    label: r.label,
-    fieldType: r.fieldType as FieldType,
-    required: !!r.required,
-    options: parseOptionsJson(r.optionsJson),
-    placeholder: r.placeholder ?? null,
-    sortOrder: r.sortOrder,
-    active: !!r.active,
-  }));
 }
 
 async function getActiveCodes(kind: string): Promise<Set<string>> {
@@ -348,43 +283,20 @@ async function saveIncomingAttachments(ticketId: number, messageId: number | nul
   }
 }
 
-function validateCustomFields(configs: FieldConfigDTO[], customFields: Record<string, unknown>): void {
-  for (const cfg of configs.filter((x) => x.active)) {
-    const value = customFields[cfg.fieldKey];
-    const hasValue = value != null && String(value).trim() !== '';
-    if (cfg.required && !hasValue) {
-      throw new Error(`Campo obrigatório não informado: ${cfg.label}`);
-    }
-    if (!hasValue) continue;
-    if (cfg.fieldType === 'select' && cfg.options.length > 0) {
-      const val = normalizeString(value);
-      if (!cfg.options.includes(val)) {
-        throw new Error(`Valor inválido para ${cfg.label}.`);
-      }
-    }
-    if (cfg.fieldType === 'number' && Number.isNaN(Number(value))) {
-      throw new Error(`Valor numérico inválido para ${cfg.label}.`);
-    }
-    if (cfg.fieldType === 'date') {
-      const s = normalizeString(value);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-        throw new Error(`Data inválida para ${cfg.label}. Use YYYY-MM-DD.`);
-      }
-    }
-  }
-}
-
-function mapTicketListRow(row: {
-  id: number;
-  ticketNumber: string;
-  tipo: string;
-  titulo: string;
-  status: string;
-  prioridade: string;
-  createdAt: Date;
-  updatedAt: Date;
-  ownerLogin: string;
-}): Record<string, unknown> {
+function mapTicketListRow(
+  row: {
+    id: number;
+    ticketNumber: string;
+    tipo: string;
+    titulo: string;
+    status: string;
+    prioridade: string;
+    createdAt: Date;
+    updatedAt: Date;
+    ownerLogin: string;
+  },
+  unreadUpdates = 0
+): Record<string, unknown> {
   return {
     id: row.id,
     ticketNumber: row.ticketNumber,
@@ -395,6 +307,7 @@ function mapTicketListRow(row: {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ownerLogin: row.ownerLogin,
+    unreadUpdates,
   };
 }
 
@@ -429,6 +342,29 @@ export async function listSupportCatalog(req: Request, res: Response): Promise<v
   }
 }
 
+type CatalogSyncParsed = {
+  id: number;
+  kind: string;
+  label: string;
+  active: boolean;
+  sortOrder: number;
+  blocksUserReply: boolean;
+};
+
+async function allocateCatalogCodeTx(tx: Prisma.TransactionClient, kind: string, label: string): Promise<string> {
+  let base = slugCode(label);
+  if (!base) base = 'item';
+  let code = base;
+  for (let n = 0; n < 500; n++) {
+    const row = await tx.supportTicketCatalogItem.findUnique({
+      where: { kind_code: { kind, code } },
+    });
+    if (!row) return code;
+    code = `${base}_${n + 1}`;
+  }
+  throw new Error('Não foi possível gerar identificador interno único para o catálogo.');
+}
+
 export async function replaceSupportCatalog(req: Request, res: Response): Promise<void> {
   const login = normalizeString(req.user?.login);
   if (!(await canConfigurarSuporte(login))) {
@@ -437,28 +373,21 @@ export async function replaceSupportCatalog(req: Request, res: Response): Promis
   }
   const rowsRaw = Array.isArray(req.body?.items) ? (req.body.items as unknown[]) : [];
   try {
-    const parsed: Array<{
-      kind: string;
-      code: string;
-      label: string;
-      active: boolean;
-      sortOrder: number;
-      blocksUserReply: boolean;
-    }> = rowsRaw.map((item, idx) => {
+    const parsed: CatalogSyncParsed[] = rowsRaw.map((item, idx) => {
       const kind = normalizeString((item as Record<string, unknown>)?.kind).toLowerCase();
       if (!CATALOG_KINDS.has(kind)) {
         throw new Error(`Tipo de catálogo inválido na linha ${idx + 1}.`);
       }
-      let code = normalizeString((item as Record<string, unknown>)?.code).toLowerCase();
+      const idRaw = (item as Record<string, unknown>)?.id;
+      const id =
+        typeof idRaw === 'number' && Number.isFinite(idRaw) && idRaw > 0 ? Math.floor(idRaw) : 0;
       const label = normalizeString((item as Record<string, unknown>)?.label);
-      if (!label) throw new Error(`Label obrigatória na linha ${idx + 1}.`);
-      if (!code) code = slugCode(label);
-      if (!code) throw new Error(`Código inválido na linha ${idx + 1}.`);
+      if (!label) throw new Error(`Nome exibido obrigatório na linha ${idx + 1}.`);
       const sortOrderRaw = Number((item as Record<string, unknown>)?.sortOrder);
       const sortOrder = Number.isFinite(sortOrderRaw) ? sortOrderRaw : idx + 1;
       const active = (item as Record<string, unknown>)?.active !== false;
       const blocksUserReply = !!(item as Record<string, unknown>)?.blocksUserReply;
-      return { kind, code, label, active, sortOrder, blocksUserReply };
+      return { id, kind, label, active, sortOrder, blocksUserReply };
     });
 
     const statusActive = parsed.filter((p) => p.kind === 'status' && p.active);
@@ -474,87 +403,54 @@ export async function replaceSupportCatalog(req: Request, res: Response): Promis
       throw new Error('É necessário ao menos um tipo de chamado ativo.');
     }
 
-    await prisma.$transaction([
-      prisma.supportTicketCatalogItem.deleteMany({}),
-      prisma.supportTicketCatalogItem.createMany({
-        data: parsed.map((p) => ({
-          kind: p.kind,
-          code: p.code,
-          label: p.label,
-          active: p.active,
-          sortOrder: p.sortOrder,
-          blocksUserReply: p.kind === 'status' ? p.blocksUserReply : false,
-        })),
-      }),
-    ]);
+    await prisma.$transaction(async (tx) => {
+      const keepIds: number[] = [];
+      for (const row of parsed) {
+        const blocks = row.kind === 'status' ? row.blocksUserReply : false;
+        if (row.id > 0) {
+          const exist = await tx.supportTicketCatalogItem.findUnique({ where: { id: row.id } });
+          if (!exist) {
+            throw new Error(
+              `Item de catálogo não encontrado (id ${row.id}). Recarregue a página e tente novamente.`
+            );
+          }
+          if (exist.kind !== row.kind) {
+            throw new Error(`Inconsistência de tipo para o item id ${row.id}.`);
+          }
+          await tx.supportTicketCatalogItem.update({
+            where: { id: row.id },
+            data: {
+              label: row.label,
+              active: row.active,
+              sortOrder: row.sortOrder,
+              blocksUserReply: blocks,
+            },
+          });
+          keepIds.push(row.id);
+        } else {
+          const code = await allocateCatalogCodeTx(tx, row.kind, row.label);
+          const created = await tx.supportTicketCatalogItem.create({
+            data: {
+              kind: row.kind,
+              code,
+              label: row.label,
+              active: row.active,
+              sortOrder: row.sortOrder,
+              blocksUserReply: blocks,
+            },
+          });
+          keepIds.push(created.id);
+        }
+      }
+      if (keepIds.length > 0) {
+        await tx.supportTicketCatalogItem.deleteMany({
+          where: { id: { notIn: keepIds } },
+        });
+      }
+    });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : 'Não foi possível salvar o catálogo.' });
-  }
-}
-
-export async function listSupportFieldConfig(req: Request, res: Response): Promise<void> {
-  const login = normalizeString(req.user?.login);
-  if (!login) {
-    res.status(401).json({ error: 'Não autorizado.' });
-    return;
-  }
-  if (!(await canAccessSuporteModulo(login))) {
-    res.status(403).json({ error: 'Sem permissão para o módulo de suporte.' });
-    return;
-  }
-  const data = await getFieldConfigsFromDb();
-  res.json({ data });
-}
-
-export async function upsertSupportFieldConfig(req: Request, res: Response): Promise<void> {
-  const login = normalizeString(req.user?.login);
-  if (!(await canConfigurarSuporte(login))) {
-    res.status(403).json({ error: 'Sem permissão para configurar os campos de suporte.' });
-    return;
-  }
-  try {
-    const rowsRaw = Array.isArray(req.body?.fields) ? (req.body.fields as unknown[]) : [];
-    const rows: FieldConfigDTO[] = rowsRaw.map((item, idx) => {
-      const fieldKey = normalizeString((item as Record<string, unknown>)?.fieldKey)
-        .toLowerCase()
-        .replace(/[^a-z0-9_]/g, '_');
-      const label = normalizeString((item as Record<string, unknown>)?.label);
-      const fieldType = normalizeString((item as Record<string, unknown>)?.fieldType) as FieldType;
-      const required = !!(item as Record<string, unknown>)?.required;
-      const options = Array.isArray((item as Record<string, unknown>)?.options)
-        ? ((item as Record<string, unknown>).options as unknown[]).map((x) => normalizeString(x)).filter(Boolean)
-        : [];
-      const placeholder = optionalString((item as Record<string, unknown>)?.placeholder);
-      const sortOrderRaw = Number((item as Record<string, unknown>)?.sortOrder);
-      const sortOrder = Number.isFinite(sortOrderRaw) ? sortOrderRaw : idx + 1;
-      const active = (item as Record<string, unknown>)?.active !== false;
-      if (!fieldKey || !label) throw new Error('fieldKey e label são obrigatórios.');
-      if (!['text', 'textarea', 'select', 'number', 'date'].includes(fieldType)) {
-        throw new Error(`Tipo de campo inválido: ${fieldType || fieldKey}`);
-      }
-      return { fieldKey, label, fieldType, required, options, placeholder, sortOrder, active };
-    });
-    await prisma.$transaction([
-      prisma.supportTicketFieldConfig.deleteMany({}),
-      ...rows.map((row) =>
-        prisma.supportTicketFieldConfig.create({
-          data: {
-            fieldKey: row.fieldKey,
-            label: row.label,
-            fieldType: row.fieldType,
-            required: row.required,
-            optionsJson: JSON.stringify(row.options),
-            placeholder: row.placeholder,
-            sortOrder: row.sortOrder,
-            active: row.active,
-          },
-        })
-      ),
-    ]);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: e instanceof Error ? e.message : 'Não foi possível salvar a configuração.' });
   }
 }
 
@@ -579,9 +475,6 @@ export async function createSupportTicket(req: Request, res: Response): Promise<
     const categoria = optionalString(req.body?.categoria);
     const prioridade = normalizeString(req.body?.prioridade || 'media').toLowerCase();
     const files = Array.isArray(req.body?.attachments) ? (req.body.attachments as IncomingAttachment[]) : [];
-    const customFields = req.body?.customFields && typeof req.body.customFields === 'object'
-      ? (req.body.customFields as Record<string, unknown>)
-      : {};
 
     if (!tipo || !titulo || !descricao) {
       res.status(400).json({ error: 'Tipo, título e descrição são obrigatórios.' });
@@ -595,9 +488,6 @@ export async function createSupportTicket(req: Request, res: Response): Promise<
       res.status(400).json({ error: `Limite de ${MAX_ATTACHMENTS_PER_ACTION} anexos por envio.` });
       return;
     }
-
-    const configs = await getFieldConfigsFromDb();
-    validateCustomFields(configs, customFields);
 
     const owner = await prisma.usuario.findUnique({
       where: { login },
@@ -617,7 +507,7 @@ export async function createSupportTicket(req: Request, res: Response): Promise<
         categoria,
         prioridade,
         status: initialStatus,
-        customFieldsJson: JSON.stringify(customFields),
+        customFieldsJson: '{}',
         lastStatusChangeBy: login,
       },
     });
@@ -709,7 +599,39 @@ export async function listSupportTickets(req: Request, res: Response): Promise<v
     },
   });
 
-  res.json({ data: data.map(mapTicketListRow) });
+  const ids = data.map((t) => t.id);
+  const unreadByTicket = new Map<number, number>();
+  if (ids.length > 0) {
+    const grouped = await prisma.supportTicketNotification.groupBy({
+      by: ['ticketId'],
+      where: { userLogin: login, isRead: false, ticketId: { in: ids } },
+      _count: { id: true },
+    });
+    for (const g of grouped) {
+      unreadByTicket.set(g.ticketId, g._count.id);
+    }
+  }
+
+  res.json({
+    data: data.map((row) => mapTicketListRow(row, unreadByTicket.get(row.id) ?? 0)),
+  });
+}
+
+/** Total de notificações de chamado não lidas para o usuário logado (badge no menu Suporte). */
+export async function getSupportNotificationsUnreadCount(req: Request, res: Response): Promise<void> {
+  const login = normalizeString(req.user?.login);
+  if (!login) {
+    res.status(401).json({ error: 'Não autorizado.' });
+    return;
+  }
+  if (!(await canAcessarChamadosSuporte(login))) {
+    res.status(403).json({ error: 'Sem permissão.' });
+    return;
+  }
+  const count = await prisma.supportTicketNotification.count({
+    where: { userLogin: login, isRead: false },
+  });
+  res.json({ count });
 }
 
 export async function getSupportTicketById(req: Request, res: Response): Promise<void> {
@@ -744,6 +666,11 @@ export async function getSupportTicketById(req: Request, res: Response): Promise
     res.status(403).json({ error: 'Você não pode visualizar este chamado.' });
     return;
   }
+
+  await prisma.supportTicketNotification.updateMany({
+    where: { ticketId: id, userLogin: login, isRead: false },
+    data: { isRead: true },
+  });
 
   const customFields = parseJsonObject(ticket.customFieldsJson);
   const mensagens = ticket.mensagens.map((m) => ({

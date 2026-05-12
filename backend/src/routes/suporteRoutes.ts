@@ -3,13 +3,12 @@ import { requireAuth } from '../middleware/auth.js';
 import {
   createSupportTicket,
   createSupportTicketMessage,
+  getSupportNotificationsUnreadCount,
   getSupportTicketById,
   listSupportCatalog,
-  listSupportFieldConfig,
   listSupportTickets,
   replaceSupportCatalog,
   updateSupportTicketStatus,
-  upsertSupportFieldConfig,
 } from '../controllers/suporteController.js';
 
 const router = Router();
@@ -17,8 +16,7 @@ router.use(requireAuth);
 
 router.get('/catalog', listSupportCatalog);
 router.put('/catalog', replaceSupportCatalog);
-router.get('/field-config', listSupportFieldConfig);
-router.put('/field-config', upsertSupportFieldConfig);
+router.get('/notifications/unread-count', getSupportNotificationsUnreadCount);
 router.get('/tickets', listSupportTickets);
 router.post('/tickets', createSupportTicket);
 router.get('/tickets/:id', getSupportTicketById);

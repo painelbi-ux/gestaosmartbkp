@@ -4,11 +4,9 @@ import { podeConfigurarSuporte } from '../../utils/suportePermissoes';
 import CarregandoInformacoesOverlay from '../../components/CarregandoInformacoesOverlay';
 import {
   listSupportCatalog,
-  listSupportFieldConfig,
   saveSupportCatalog,
-  saveSupportFieldConfig,
   type SupportCatalogItem,
-  type SupportFieldConfig,
+  type SupportCatalogSaveItem,
 } from '../../api/suporte';
 
 const inputClass =
@@ -20,10 +18,10 @@ const KIND_LABEL: Record<string, string> = {
   tipo: 'Tipos de chamado',
 };
 
-function catalogToPayload(items: SupportCatalogItem[]): Omit<SupportCatalogItem, 'id'>[] {
-  return items.map(({ kind, code, label, active, sortOrder, blocksUserReply }) => ({
+function catalogToPayload(items: SupportCatalogItem[]): SupportCatalogSaveItem[] {
+  return items.map(({ id, kind, label, active, sortOrder, blocksUserReply }) => ({
+    id: id > 0 ? id : 0,
     kind,
-    code,
     label,
     active,
     sortOrder,
@@ -42,17 +40,13 @@ export default function SuporteConfigPage() {
   const [catalog, setCatalog] = useState<SupportCatalogItem[]>([]);
   const [savingCatalog, setSavingCatalog] = useState(false);
 
-  const [configDraft, setConfigDraft] = useState<SupportFieldConfig[]>([]);
-  const [savingFields, setSavingFields] = useState(false);
-
   const load = useCallback(async () => {
     if (!allowed) return;
     setLoading(true);
     setErr(null);
     try {
-      const [cat, fields] = await Promise.all([listSupportCatalog(), listSupportFieldConfig()]);
+      const cat = await listSupportCatalog();
       setCatalog(cat);
-      setConfigDraft(fields);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Falha ao carregar.');
     } finally {
@@ -91,20 +85,6 @@ export default function SuporteConfigPage() {
     }
   };
 
-  const handleSaveFields = async () => {
-    setSavingFields(true);
-    setOkMsg(null);
-    setErr(null);
-    try {
-      await saveSupportFieldConfig(configDraft);
-      setOkMsg('Campos da abertura salvos.');
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Falha ao salvar campos.');
-    } finally {
-      setSavingFields(false);
-    }
-  };
-
   const updateCatalogRow = (id: number, patch: Partial<SupportCatalogItem>) => {
     setCatalog((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   };
@@ -137,7 +117,7 @@ export default function SuporteConfigPage() {
   return (
     <div className="relative flex flex-col gap-4 p-4 min-h-[200px]">
       <CarregandoInformacoesOverlay
-        show={loading || savingCatalog || savingFields}
+        show={loading || savingCatalog}
         mensagem={loading ? 'Carregando configurações...' : 'Salvando...'}
         mode="contained"
       />
@@ -145,8 +125,8 @@ export default function SuporteConfigPage() {
         <p className="text-xs font-medium uppercase tracking-wide text-primary-600 dark:text-primary-400">Suporte</p>
         <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Configurações de suporte</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Gerencie status, prioridades, tipos de chamado e campos extras na abertura. Itens inativos deixam de aparecer em novos
-          chamados, mas chamados antigos mantêm o código gravado.
+          Gerencie status, prioridades e tipos de chamado. Itens inativos deixam de aparecer em novos chamados; os já abertos mantêm o
+          tipo/status/prioridade gravados.
         </p>
       </div>
       {okMsg && <p className="text-sm text-emerald-700 dark:text-emerald-300">{okMsg}</p>}
@@ -161,16 +141,6 @@ export default function SuporteConfigPage() {
         >
           Salvar catálogo (status, prioridades, tipos)
         </button>
-        {allowed && (
-          <button
-            type="button"
-            onClick={() => void handleSaveFields()}
-            disabled={savingFields || loading}
-            className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 text-sm font-medium disabled:opacity-50"
-          >
-            Salvar campos da abertura
-          </button>
-        )}
       </div>
 
       {(['status', 'prioridade', 'tipo'] as const).map((kind) => (
@@ -185,23 +155,22 @@ export default function SuporteConfigPage() {
               Adicionar
             </button>
           </div>
+          {kind === 'tipo' && (
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
+              Estas opções alimentam o campo <span className="font-medium text-slate-700 dark:text-slate-300">Tipo de chamado</span> no
+              formulário <span className="font-medium">Abrir chamado</span> (Chamados). Apenas itens marcados como ativos aparecem para o
+              usuário.
+            </p>
+          )}
           <div className="space-y-2">
             {grouped[kind].length === 0 && <p className="text-xs text-slate-500">Nenhum item.</p>}
             {grouped[kind].map((row) => (
               <div
-                key={`${row.id}-${row.code}`}
+                key={row.id}
                 className="grid grid-cols-1 md:grid-cols-12 gap-2 p-2 rounded border border-slate-100 dark:border-slate-700"
               >
                 <input
-                  className={`${inputClass} md:col-span-2`}
-                  placeholder="código (slug)"
-                  value={row.code}
-                  onChange={(e) => updateCatalogRow(row.id, { code: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') })}
-                  disabled={row.id > 0}
-                  title={row.id > 0 ? 'Código fixo após salvar (identificador no banco)' : 'Defina antes de salvar'}
-                />
-                <input
-                  className={`${inputClass} md:col-span-4`}
+                  className={`${inputClass} md:col-span-6`}
                   placeholder="Nome exibido"
                   value={row.label}
                   onChange={(e) => updateCatalogRow(row.id, { label: e.target.value })}
@@ -236,91 +205,6 @@ export default function SuporteConfigPage() {
           </div>
         </div>
       ))}
-
-      {allowed && (
-        <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-3">
-          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-2">Campos extras na abertura</h2>
-          <div className="space-y-2">
-            {configDraft.map((f, idx) => (
-              <div key={f.fieldKey || idx} className="grid grid-cols-1 md:grid-cols-6 gap-2 p-2 rounded border border-slate-200 dark:border-slate-700">
-                <input
-                  className={inputClass}
-                  value={f.fieldKey}
-                  onChange={(e) =>
-                    setConfigDraft((prev) =>
-                      prev.map((x, i) => (i === idx ? { ...x, fieldKey: e.target.value } : x))
-                    )
-                  }
-                />
-                <input
-                  className={inputClass}
-                  value={f.label}
-                  onChange={(e) =>
-                    setConfigDraft((prev) =>
-                      prev.map((x, i) => (i === idx ? { ...x, label: e.target.value } : x))
-                    )
-                  }
-                />
-                <select
-                  className={inputClass}
-                  value={f.fieldType}
-                  onChange={(e) =>
-                    setConfigDraft((prev) =>
-                      prev.map((x, i) =>
-                        i === idx ? { ...x, fieldType: e.target.value as SupportFieldConfig['fieldType'] } : x
-                      )
-                    )
-                  }
-                >
-                  <option value="text">text</option>
-                  <option value="textarea">textarea</option>
-                  <option value="select">select</option>
-                  <option value="number">number</option>
-                  <option value="date">date</option>
-                </select>
-                <input
-                  className={inputClass}
-                  placeholder="opções ; separadas"
-                  value={f.options.join('; ')}
-                  onChange={(e) =>
-                    setConfigDraft((prev) =>
-                      prev.map((x, i) =>
-                        i === idx
-                          ? { ...x, options: e.target.value.split(';').map((v) => v.trim()).filter(Boolean) }
-                          : x
-                      )
-                    )
-                  }
-                />
-                <label className="text-sm flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={f.required}
-                    onChange={(e) =>
-                      setConfigDraft((prev) =>
-                        prev.map((x, i) => (i === idx ? { ...x, required: e.target.checked } : x))
-                      )
-                    }
-                  />
-                  Obrigatório
-                </label>
-                <label className="text-sm flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={f.active}
-                    onChange={(e) =>
-                      setConfigDraft((prev) =>
-                        prev.map((x, i) => (i === idx ? { ...x, active: e.target.checked } : x))
-                      )
-                    }
-                  />
-                  Ativo
-                </label>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
     </div>
   );

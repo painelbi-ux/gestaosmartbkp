@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useBlocker } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   podeAbrirChamadoSuporte,
@@ -11,15 +12,12 @@ import {
   createSupportTicket,
   getSupportTicket,
   listSupportCatalog,
-  listSupportFieldConfig,
   listSupportTickets,
   updateSupportStatus,
   type SupportAttachmentInput,
   type SupportCatalogItem,
-  type SupportFieldConfig,
   type SupportTicketDetail,
   type SupportTicketListItem,
-  type TicketPriority,
 } from '../../api/suporte';
 
 const inputClass =
@@ -52,6 +50,51 @@ function labelMap(items: SupportCatalogItem[], kind: string): Map<string, string
   }
   return m;
 }
+
+const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg']);
+
+/** Anexo que pode ser mostrado em overlay (evita sair da tela do chamado). */
+function isPreviewableImageAttachment(mimeType: string, originalName: string): boolean {
+  const mime = String(mimeType ?? '').trim().toLowerCase();
+  if (mime.startsWith('image/')) return true;
+  const ext = originalName.includes('.') ? originalName.split('.').pop()?.toLowerCase() ?? '' : '';
+  return IMAGE_EXT.has(ext);
+}
+
+/** Indicador na linha do chamado: há atualizações não lidas (abrir o detalhe marca como vistas). */
+function ChamadoLinhaIndicadorAtualizacoes({ count }: { count: number }) {
+  if (count <= 0) return null;
+  const label = `${count} atualização(ões) não lida(s) neste chamado`;
+  return (
+    <span
+      className="pointer-events-none absolute right-2 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-full bg-amber-500 py-0.5 pl-1 pr-1.5 text-[10px] font-bold text-white shadow-md ring-2 ring-white dark:ring-slate-800"
+      title={label}
+      aria-label={label}
+    >
+      <svg className="h-3.5 w-3.5 shrink-0 opacity-95" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+      </svg>
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
+type MasterLeaveChamadoPrompt =
+  | {
+      kind: 'switchTicket';
+      ticketId: number;
+      ticketNumber: string;
+      currentStatus: string;
+      chosenStatus: string;
+      nextSelectedId: number | null;
+    }
+  | {
+      kind: 'leavePage';
+      ticketId: number;
+      ticketNumber: string;
+      currentStatus: string;
+      chosenStatus: string;
+    };
 
 async function fileToAttachment(file: File): Promise<SupportAttachmentInput> {
   const MAX_BYTES = 5 * 1024 * 1024;
@@ -115,21 +158,26 @@ export default function SuportePage() {
   const [sortBy, setSortBy] = useState<'createdAt' | 'prioridade'>('createdAt');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
-  const [fieldConfigs, setFieldConfigs] = useState<SupportFieldConfig[]>([]);
-  const [defaultPrioridade, setDefaultPrioridade] = useState<TicketPriority>('media');
+  const [defaultPrioridade, setDefaultPrioridade] = useState('media');
   const [openForm, setOpenForm] = useState({
+    /** Código do tipo no catálogo (configurável em Configurações de suporte). */
     tipo: '',
     titulo: '',
     descricao: '',
-    categoria: '',
-    prioridade: 'media' as TicketPriority,
-    customFields: {} as Record<string, string>,
     attachments: [] as File[],
   });
   const [msgText, setMsgText] = useState('');
   const [msgFiles, setMsgFiles] = useState<File[]>([]);
   const [sendingMsg, setSendingMsg] = useState(false);
   const [savingStatus, setSavingStatus] = useState(false);
+  /** Pré-visualização de imagem (clique no anexo); não redireciona na mesma aba. */
+  const [imagePreview, setImagePreview] = useState<{ url: string; title: string } | null>(null);
+  const [masterLeavePrompt, setMasterLeavePrompt] = useState<MasterLeaveChamadoPrompt | null>(null);
+  const [leaveModalErr, setLeaveModalErr] = useState<string | null>(null);
+  const [savingMasterLeaveStatus, setSavingMasterLeaveStatus] = useState(false);
+  const blockedNavHandledRef = useRef(false);
+  const masterLeavePromptRef = useRef<MasterLeaveChamadoPrompt | null>(null);
+  masterLeavePromptRef.current = masterLeavePrompt;
 
   const statusLabels = useMemo(() => labelMap(catalog, 'status'), [catalog]);
   const prioridadeLabels = useMemo(() => labelMap(catalog, 'prioridade'), [catalog]);
@@ -148,20 +196,12 @@ export default function SuportePage() {
     [catalog]
   );
 
-  const loadCatalogAndFields = useCallback(async () => {
-    const [cat, fields] = await Promise.all([listSupportCatalog(), listSupportFieldConfig()]);
+  const loadCatalog = useCallback(async () => {
+    const cat = await listSupportCatalog();
     setCatalog(cat);
-    setFieldConfigs(fields);
     const firstP = cat.find((c) => c.kind === 'prioridade' && c.active);
-    if (firstP) {
-      setDefaultPrioridade(firstP.code);
-      setOpenForm((s) => ({ ...s, prioridade: firstP.code }));
-    }
-    const firstT = cat.find((c) => c.kind === 'tipo' && c.active);
-    if (firstT) setOpenForm((s) => ({ ...s, tipo: firstT.code }));
+    if (firstP) setDefaultPrioridade(firstP.code);
   }, []);
-
-  const activeConfigs = useMemo(() => fieldConfigs.filter((f) => f.active), [fieldConfigs]);
 
   const loadTickets = useCallback(async () => {
     setLoadingList(true);
@@ -190,6 +230,8 @@ export default function SuportePage() {
     try {
       const data = await getSupportTicket(id);
       setDetail(data);
+      setTickets((prev) => prev.map((tt) => (tt.id === id ? { ...tt, unreadUpdates: 0 } : tt)));
+      window.dispatchEvent(new CustomEvent('suporte:notificationsUpdated'));
     } catch (e) {
       setDetail(null);
       setDetailErr(e instanceof Error ? e.message : 'Falha ao carregar detalhe.');
@@ -198,9 +240,139 @@ export default function SuportePage() {
     }
   }, []);
 
+  const shouldOfferMasterStatusOnLeave =
+    isMaster && alterarStatus && selectedId != null && detail != null && detail.id === selectedId && !loadingDetail;
+
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
+    if (!shouldOfferMasterStatusOnLeave) return false;
+    if (currentLocation.pathname !== '/suporte') return false;
+    return nextLocation.pathname !== '/suporte';
+  });
+
   useEffect(() => {
-    void loadCatalogAndFields();
-  }, [loadCatalogAndFields]);
+    if (blocker.state !== 'blocked') {
+      blockedNavHandledRef.current = false;
+      return;
+    }
+    if (blockedNavHandledRef.current) return;
+    if (!shouldOfferMasterStatusOnLeave || !detail) {
+      blockedNavHandledRef.current = true;
+      blocker.proceed?.();
+      return;
+    }
+    blockedNavHandledRef.current = true;
+    setLeaveModalErr(null);
+    setMasterLeavePrompt({
+      kind: 'leavePage',
+      ticketId: detail.id,
+      ticketNumber: detail.ticketNumber,
+      currentStatus: detail.status,
+      chosenStatus: detail.status,
+    });
+  }, [blocker.state, shouldOfferMasterStatusOnLeave, detail, blocker]);
+
+  const requestSelectTicket = useCallback(
+    (nextSelectedId: number | null) => {
+      if (masterLeavePromptRef.current) return;
+      if (!isMaster || !alterarStatus) {
+        setSelectedId(nextSelectedId);
+        return;
+      }
+      if (selectedId == null || detail == null || detail.id !== selectedId || loadingDetail) {
+        setSelectedId(nextSelectedId);
+        return;
+      }
+      if (nextSelectedId === selectedId) return;
+      setLeaveModalErr(null);
+      setMasterLeavePrompt({
+        kind: 'switchTicket',
+        ticketId: detail.id,
+        ticketNumber: detail.ticketNumber,
+        currentStatus: detail.status,
+        chosenStatus: detail.status,
+        nextSelectedId,
+      });
+    },
+    [isMaster, alterarStatus, selectedId, detail, loadingDetail]
+  );
+
+  const dismissBlockedNavigationPrompt = useCallback(() => {
+    blockedNavHandledRef.current = false;
+    blocker.reset?.();
+    setLeaveModalErr(null);
+    setMasterLeavePrompt(null);
+  }, [blocker]);
+
+  const cancelSwitchTicketPromptOnly = useCallback(() => {
+    setLeaveModalErr(null);
+    setMasterLeavePrompt(null);
+  }, []);
+
+  const finishMasterLeavePrompt = useCallback(
+    async (salvarStatus: boolean) => {
+      const p = masterLeavePromptRef.current;
+      if (!p) return;
+      setLeaveModalErr(null);
+      try {
+        if (salvarStatus && p.chosenStatus !== p.currentStatus) {
+          setSavingMasterLeaveStatus(true);
+          await updateSupportStatus(p.ticketId, p.chosenStatus);
+          await loadTickets();
+          window.dispatchEvent(new CustomEvent('suporte:notificationsUpdated'));
+        }
+      } catch (e) {
+        setLeaveModalErr(e instanceof Error ? e.message : 'Falha ao atualizar status.');
+        return;
+      } finally {
+        setSavingMasterLeaveStatus(false);
+      }
+      setMasterLeavePrompt(null);
+      if (p.kind === 'switchTicket') {
+        setSelectedId(p.nextSelectedId);
+      } else {
+        blocker.proceed?.();
+      }
+    },
+    [blocker, loadTickets]
+  );
+
+  const finishMasterLeaveWithoutStatusChange = useCallback(() => {
+    const p = masterLeavePromptRef.current;
+    if (!p) return;
+    setLeaveModalErr(null);
+    setMasterLeavePrompt(null);
+    if (p.kind === 'switchTicket') {
+      setSelectedId(p.nextSelectedId);
+    } else {
+      blocker.proceed?.();
+    }
+  }, [blocker]);
+
+  useEffect(() => {
+    if (!masterLeavePrompt) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (savingMasterLeaveStatus) return;
+      e.preventDefault();
+      if (masterLeavePrompt.kind === 'leavePage') dismissBlockedNavigationPrompt();
+      else cancelSwitchTicketPromptOnly();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [masterLeavePrompt, savingMasterLeaveStatus, dismissBlockedNavigationPrompt, cancelSwitchTicketPromptOnly]);
+
+  useEffect(() => {
+    void loadCatalog();
+  }, [loadCatalog]);
+
+  useEffect(() => {
+    if (!imagePreview) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setImagePreview(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [imagePreview]);
 
   useEffect(() => {
     void loadTickets();
@@ -208,8 +380,38 @@ export default function SuportePage() {
 
   useEffect(() => {
     if (selectedId == null) return;
+    setImagePreview(null);
     void loadDetail(selectedId);
   }, [loadDetail, selectedId]);
+
+  /** Se o tipo escolhido deixar de existir no catálogo (ex. inativado), volta para "Selecione". */
+  useEffect(() => {
+    if (!showCreate) return;
+    const codes = catalog.filter((c) => c.kind === 'tipo' && c.active).map((c) => c.code);
+    setOpenForm((s) => {
+      if (s.tipo && codes.length > 0 && !codes.includes(s.tipo)) return { ...s, tipo: '' };
+      return s;
+    });
+  }, [showCreate, catalog]);
+
+  const fecharModalAbrirChamado = useCallback(() => {
+    if (!window.confirm('Confirma encerrar o formulário? Os dados informados serão descartados.')) return;
+    setShowCreate(false);
+    setOpenForm({ tipo: '', titulo: '', descricao: '', attachments: [] });
+    setCreateErr(null);
+  }, []);
+
+  /** ESC: fecha somente após confirmação (clique fora não fecha). */
+  useEffect(() => {
+    if (!showCreate || savingCreate) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      fecharModalAbrirChamado();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showCreate, savingCreate, fecharModalAbrirChamado]);
 
   function statusBadge(code: string): string {
     return STATUS_BADGE[code] ?? 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200';
@@ -236,36 +438,37 @@ export default function SuportePage() {
 
   const handleCreate = async () => {
     setCreateErr(null);
-    if (!openForm.tipo.trim() || !openForm.titulo.trim() || !openForm.descricao.trim()) {
-      setCreateErr('Tipo, título e descrição são obrigatórios.');
+    const tipoSel = openForm.tipo.trim().toLowerCase();
+    if (!tipoSel) {
+      setCreateErr('Selecione um tipo de chamado válido (não é possível salvar com "Selecione").');
       return;
     }
+    if (!openForm.titulo.trim() || !openForm.descricao.trim()) {
+      setCreateErr('Título e descrição são obrigatórios.');
+      return;
+    }
+    if (!window.confirm('Confirma a abertura deste chamado com os dados informados?')) return;
     setSavingCreate(true);
     try {
       const attachments = await Promise.all(openForm.attachments.map(fileToAttachment));
       const created = await createSupportTicket({
-        tipo: openForm.tipo.trim().toLowerCase(),
+        tipo: tipoSel,
         titulo: openForm.titulo.trim(),
         descricao: openForm.descricao.trim(),
-        categoria: openForm.categoria.trim() || undefined,
-        prioridade: openForm.prioridade,
-        customFields: openForm.customFields,
+        prioridade: defaultPrioridade,
         attachments,
       });
       setOkMsg(`Chamado ${created.ticketNumber} aberto com sucesso.`);
       setShowCreate(false);
-      const firstT = activeTipoItems[0]?.code ?? '';
       setOpenForm({
-        tipo: firstT,
+        tipo: '',
         titulo: '',
         descricao: '',
-        categoria: '',
-        prioridade: defaultPrioridade,
-        customFields: {},
         attachments: [],
       });
       await loadTickets();
       setSelectedId(created.id);
+      window.dispatchEvent(new CustomEvent('suporte:notificationsUpdated'));
     } catch (e) {
       setCreateErr(e instanceof Error ? e.message : 'Falha ao abrir chamado.');
     } finally {
@@ -315,15 +518,30 @@ export default function SuportePage() {
           <p className="text-xs font-medium uppercase tracking-wide text-primary-600 dark:text-primary-400">Suporte</p>
           <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Chamados</h1>
         </div>
-        {podeCriar && (
-          <button
-            type="button"
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-medium hover:bg-primary-700"
-          >
-            Abrir chamado
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {isMaster && alterarStatus && selectedId != null && (
+            <button
+              type="button"
+              onClick={() => requestSelectTicket(null)}
+              className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-700/50"
+            >
+              Fechar chamado
+            </button>
+          )}
+          {podeCriar && (
+            <button
+              type="button"
+              onClick={() => {
+                setCreateErr(null);
+                setOpenForm({ tipo: '', titulo: '', descricao: '', attachments: [] });
+                setShowCreate(true);
+              }}
+              className="px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-medium hover:bg-primary-700"
+            >
+              Abrir chamado
+            </button>
+          )}
+        </div>
       </div>
       {okMsg && <p className="text-sm text-emerald-700 dark:text-emerald-300">{okMsg}</p>}
 
@@ -399,10 +617,11 @@ export default function SuportePage() {
                 {tickets.map((t) => (
                   <tr
                     key={t.id}
-                    className={`border-t border-slate-100 dark:border-slate-700 cursor-pointer ${selectedId === t.id ? 'bg-primary-50 dark:bg-primary-900/20' : ''}`}
-                    onClick={() => setSelectedId(t.id)}
+                    className={`relative border-t border-slate-100 dark:border-slate-700 cursor-pointer ${selectedId === t.id ? 'bg-primary-50 dark:bg-primary-900/20' : ''}`}
+                    onClick={() => requestSelectTicket(t.id)}
                   >
-                    <td className="py-2">{t.ticketNumber}</td>
+                    <ChamadoLinhaIndicadorAtualizacoes count={t.unreadUpdates ?? 0} />
+                    <td className="py-2 pr-10">{t.ticketNumber}</td>
                     <td className="py-2">{tipoLabels.get(t.tipo) ?? t.tipo}</td>
                     <td className="py-2">{t.titulo}</td>
                     <td className="py-2">
@@ -442,20 +661,35 @@ export default function SuportePage() {
                 <b>Usuário:</b> {detail.ownerNome ?? detail.ownerLogin}
               </p>
               <p className="text-sm text-slate-600 dark:text-slate-300">
-                <b>Tipo:</b> {tipoLabels.get(detail.tipo) ?? detail.tipo} | <b>Categoria:</b> {detail.categoria ?? '—'}
-              </p>
-              <p className="text-sm text-slate-600 dark:text-slate-300">
                 <b>Abertura:</b> {toBrDate(detail.createdAt)} | <b>Última atualização:</b> {toBrDate(detail.updatedAt)}
               </p>
               <p className="text-sm text-slate-700 dark:text-slate-200 whitespace-pre-wrap">{detail.descricao}</p>
               {detail.openingAttachments.length > 0 && (
                 <div className="space-y-1">
                   <p className="text-xs font-medium text-slate-500 uppercase">Anexos da abertura</p>
-                  {detail.openingAttachments.map((a) => (
-                    <a key={a.id} className="block text-sm text-primary-600 hover:underline" href={a.url} target="_blank" rel="noreferrer">
-                      {a.originalName}
-                    </a>
-                  ))}
+                  {detail.openingAttachments.map((a) =>
+                    isPreviewableImageAttachment(a.mimeType, a.originalName) ? (
+                      <button
+                        key={a.id}
+                        type="button"
+                        className="block w-full text-left text-sm text-primary-600 hover:underline cursor-pointer"
+                        title="Ver imagem"
+                        onClick={() => setImagePreview({ url: a.url, title: a.originalName })}
+                      >
+                        {a.originalName}
+                      </button>
+                    ) : (
+                      <a
+                        key={a.id}
+                        className="block text-sm text-primary-600 hover:underline"
+                        href={a.url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {a.originalName}
+                      </a>
+                    )
+                  )}
                 </div>
               )}
               {alterarStatus && (
@@ -481,11 +715,29 @@ export default function SuportePage() {
                       {m.authorType === 'master' ? 'master' : 'usuário'} · {m.authorNome ?? m.authorLogin} · {toBrDate(m.createdAt)}
                     </p>
                     <p className="text-sm whitespace-pre-wrap">{m.mensagem}</p>
-                    {m.attachments.map((a) => (
-                      <a key={a.id} className="block text-xs text-primary-600 hover:underline" href={a.url} target="_blank" rel="noreferrer">
-                        {a.originalName}
-                      </a>
-                    ))}
+                    {m.attachments.map((a) =>
+                      isPreviewableImageAttachment(a.mimeType, a.originalName) ? (
+                        <button
+                          key={a.id}
+                          type="button"
+                          className="block w-full text-left text-xs text-primary-600 hover:underline cursor-pointer"
+                          title="Ver imagem"
+                          onClick={() => setImagePreview({ url: a.url, title: a.originalName })}
+                        >
+                          {a.originalName}
+                        </button>
+                      ) : (
+                        <a
+                          key={a.id}
+                          className="block text-xs text-primary-600 hover:underline"
+                          href={a.url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {a.originalName}
+                        </a>
+                      )
+                    )}
                   </div>
                 ))}
               </div>
@@ -514,37 +766,124 @@ export default function SuportePage() {
         </div>
       </div>
 
-      {showCreate && podeCriar && (
-        <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4" onClick={() => setShowCreate(false)}>
+      {masterLeavePrompt && (
+        <div
+          className="fixed inset-0 z-[92] flex items-center justify-center bg-black/60 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="master-leave-chamado-titulo"
+        >
           <div
-            className="w-full max-w-3xl rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 max-h-[90vh] overflow-auto"
+            className="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Abrir chamado</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
-              <select
-                className={inputClass}
-                value={openForm.tipo}
-                onChange={(e) => setOpenForm((s) => ({ ...s, tipo: e.target.value }))}
+            <h3
+              id="master-leave-chamado-titulo"
+              className="text-base font-semibold text-slate-800 dark:text-slate-100"
+            >
+              Atualizar status do chamado?
+            </h3>
+            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+              {masterLeavePrompt.kind === 'switchTicket'
+                ? 'Você está saindo deste chamado para visualizar outro.'
+                : 'Você está saindo da lista de chamados.'}{' '}
+              Deseja gravar um novo status em{' '}
+              <span className="font-medium text-slate-800 dark:text-slate-100">{masterLeavePrompt.ticketNumber}</span>{' '}
+              antes de continuar?
+            </p>
+            <label className="mt-3 block text-xs font-medium text-slate-500 dark:text-slate-400">Status</label>
+            <select
+              className={`${inputClass} mt-1`}
+              value={masterLeavePrompt.chosenStatus}
+              onChange={(e) =>
+                setMasterLeavePrompt((prev) =>
+                  prev ? { ...prev, chosenStatus: e.target.value } : prev
+                )
+              }
+            >
+              {activeStatusItems.map((s) => (
+                <option key={s.code} value={s.code}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+            {leaveModalErr && <p className="mt-2 text-sm text-red-600">{leaveModalErr}</p>}
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              {masterLeavePrompt.kind === 'leavePage' ? (
+                <button
+                  type="button"
+                  onClick={() => dismissBlockedNavigationPrompt()}
+                  className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-200"
+                >
+                  Ficar nesta página
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => cancelSwitchTicketPromptOnly()}
+                  className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-200"
+                >
+                  Voltar
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={savingMasterLeaveStatus}
+                onClick={() => void finishMasterLeaveWithoutStatusChange()}
+                className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-200 disabled:opacity-50"
               >
-                <option value="">Tipo</option>
-                {activeTipoItems.map((t) => (
-                  <option key={t.code} value={t.code}>
-                    {t.label}
-                  </option>
-                ))}
-              </select>
-              <select
-                className={inputClass}
-                value={openForm.prioridade}
-                onChange={(e) => setOpenForm((s) => ({ ...s, prioridade: e.target.value }))}
+                Continuar sem alterar
+              </button>
+              <button
+                type="button"
+                disabled={savingMasterLeaveStatus}
+                onClick={() => void finishMasterLeavePrompt(true)}
+                className="px-3 py-2 rounded-lg bg-primary-600 text-white text-sm font-medium hover:bg-primary-700 disabled:opacity-50"
               >
-                {activePrioridadeItems.map((p) => (
-                  <option key={p.code} value={p.code}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
+                {savingMasterLeaveStatus ? 'Salvando...' : 'Salvar status e continuar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCreate && podeCriar && (
+        <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4">
+          <div
+            className="w-full max-w-3xl rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 max-h-[90vh] overflow-auto shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-abrir-chamado-titulo"
+          >
+            <h2 id="modal-abrir-chamado-titulo" className="text-lg font-semibold text-slate-800 dark:text-slate-100">
+              Abrir chamado
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Clicar fora não fecha o formulário. Use Cancelar ou Esc — em ambos os casos será pedida confirmação antes de
+              descartar.
+            </p>
+            <div className="mt-3">
+              <label className="block text-xs text-slate-500 mb-1">Tipo de chamado *</label>
+              {activeTipoItems.length === 0 ? (
+                <p className="text-sm text-amber-700 dark:text-amber-300">
+                  Nenhum tipo disponível. Um usuário com acesso a Configurações de suporte deve cadastrar e ativar tipos no
+                  catálogo.
+                </p>
+              ) : (
+                <select
+                  className={inputClass}
+                  value={openForm.tipo}
+                  onChange={(e) => setOpenForm((s) => ({ ...s, tipo: e.target.value }))}
+                >
+                  <option value="">Selecione</option>
+                  {activeTipoItems.map((t) => (
+                    <option key={t.code} value={t.code}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
             <input
               className={`${inputClass} mt-2`}
@@ -559,51 +898,6 @@ export default function SuportePage() {
               value={openForm.descricao}
               onChange={(e) => setOpenForm((s) => ({ ...s, descricao: e.target.value }))}
             />
-            <input
-              className={`${inputClass} mt-2`}
-              placeholder="Categoria"
-              value={openForm.categoria}
-              onChange={(e) => setOpenForm((s) => ({ ...s, categoria: e.target.value }))}
-            />
-            {activeConfigs.map((f) => (
-              <div className="mt-2" key={f.fieldKey}>
-                <label className="block text-xs text-slate-500 mb-1">
-                  {f.label}
-                  {f.required ? ' *' : ''}
-                </label>
-                {f.fieldType === 'select' ? (
-                  <select
-                    className={inputClass}
-                    value={openForm.customFields[f.fieldKey] ?? ''}
-                    onChange={(e) =>
-                      setOpenForm((s) => ({
-                        ...s,
-                        customFields: { ...s.customFields, [f.fieldKey]: e.target.value },
-                      }))
-                    }
-                  >
-                    <option value="">Selecione</option>
-                    {f.options.map((o) => (
-                      <option key={o} value={o}>
-                        {o}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className={inputClass}
-                    type={f.fieldType === 'number' ? 'number' : f.fieldType === 'date' ? 'date' : 'text'}
-                    value={openForm.customFields[f.fieldKey] ?? ''}
-                    onChange={(e) =>
-                      setOpenForm((s) => ({
-                        ...s,
-                        customFields: { ...s.customFields, [f.fieldKey]: e.target.value },
-                      }))
-                    }
-                  />
-                )}
-              </div>
-            ))}
             <div className="mt-2">
               <label className="block text-xs text-slate-500 mb-1">Anexos</label>
               <input
@@ -615,17 +909,57 @@ export default function SuportePage() {
             </div>
             {createErr && <p className="mt-2 text-sm text-red-600">{createErr}</p>}
             <div className="mt-3 flex justify-end gap-2">
-              <button type="button" onClick={() => setShowCreate(false)} className="px-3 py-2 rounded border border-slate-300 text-sm">
+              <button type="button" onClick={fecharModalAbrirChamado} className="px-3 py-2 rounded border border-slate-300 text-sm">
                 Cancelar
               </button>
               <button
                 type="button"
                 onClick={() => void handleCreate()}
-                disabled={savingCreate}
-                className="px-4 py-2 rounded bg-primary-600 text-white text-sm"
+                disabled={savingCreate || activeTipoItems.length === 0 || !openForm.tipo.trim()}
+                className="px-4 py-2 rounded bg-primary-600 text-white text-sm disabled:opacity-50"
               >
                 {savingCreate ? 'Abrindo...' : 'Abrir chamado'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {imagePreview && (
+        <div
+          className="fixed inset-0 z-[85] flex items-center justify-center bg-black/85 p-4"
+          onClick={() => setImagePreview(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={imagePreview.title}
+        >
+          <div
+            className="relative flex max-h-[92vh] max-w-[min(96vw,1200px)] flex-col items-center gap-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={imagePreview.url}
+              alt={imagePreview.title}
+              className="max-h-[80vh] max-w-full rounded-lg object-contain shadow-2xl ring-1 ring-white/10"
+            />
+            <div className="flex flex-wrap items-center justify-center gap-3 text-sm text-slate-200">
+              <span className="max-w-[min(80vw,32rem)] truncate" title={imagePreview.title}>
+                {imagePreview.title}
+              </span>
+              <button
+                type="button"
+                className="rounded-lg border border-slate-500 px-3 py-1.5 text-slate-100 hover:bg-white/10"
+                onClick={() => setImagePreview(null)}
+              >
+                Fechar
+              </button>
+              <a
+                href={imagePreview.url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary-300 underline hover:text-primary-200"
+              >
+                Abrir em nova aba
+              </a>
             </div>
           </div>
         </div>

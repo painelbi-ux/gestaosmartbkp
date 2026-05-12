@@ -13,16 +13,11 @@ export type SupportCatalogItem = {
   blocksUserReply: boolean;
 };
 
-export type SupportFieldConfig = {
-  fieldKey: string;
-  label: string;
-  fieldType: 'text' | 'textarea' | 'select' | 'number' | 'date';
-  required: boolean;
-  options: string[];
-  placeholder: string | null;
-  sortOrder: number;
-  active: boolean;
-};
+/** Corpo do PUT /catalog: `id` 0 = linha nova; `code` é gerido só no servidor. */
+export type SupportCatalogSaveItem = Pick<
+  SupportCatalogItem,
+  'kind' | 'label' | 'active' | 'sortOrder' | 'blocksUserReply'
+> & { id: number };
 
 export type SupportAttachmentInput = {
   fileName: string;
@@ -41,6 +36,8 @@ export type SupportTicketListItem = {
   createdAt: string;
   updatedAt: string;
   ownerLogin: string;
+  /** Notificações não lidas neste chamado (mensagem, status, etc.). */
+  unreadUpdates: number;
 };
 
 export type SupportTicketDetail = {
@@ -95,7 +92,7 @@ export async function listSupportCatalog(): Promise<SupportCatalogItem[]> {
   return r.data ?? [];
 }
 
-export async function saveSupportCatalog(items: Omit<SupportCatalogItem, 'id'>[]): Promise<void> {
+export async function saveSupportCatalog(items: SupportCatalogSaveItem[]): Promise<void> {
   const res = await apiFetch('/api/suporte/catalog', {
     method: 'PUT',
     body: { items },
@@ -103,22 +100,6 @@ export async function saveSupportCatalog(items: Omit<SupportCatalogItem, 'id'>[]
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Não foi possível salvar o catálogo.' }));
     throw new Error((err as { error?: string }).error ?? 'Não foi possível salvar o catálogo.');
-  }
-}
-
-export async function listSupportFieldConfig(): Promise<SupportFieldConfig[]> {
-  const r = await apiJson<{ data: SupportFieldConfig[] }>('/api/suporte/field-config');
-  return r.data ?? [];
-}
-
-export async function saveSupportFieldConfig(fields: SupportFieldConfig[]): Promise<void> {
-  const res = await apiFetch('/api/suporte/field-config', {
-    method: 'PUT',
-    body: { fields },
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Não foi possível salvar configuração.' }));
-    throw new Error((err as { error?: string }).error ?? 'Não foi possível salvar configuração.');
   }
 }
 
@@ -141,7 +122,13 @@ export async function listSupportTickets(params?: {
   if (params?.sortDir) qs.set('sortDir', params.sortDir);
   const query = qs.toString();
   const r = await apiJson<{ data: SupportTicketListItem[] }>(`/api/suporte/tickets${query ? `?${query}` : ''}`);
-  return r.data ?? [];
+  return (r.data ?? []).map((row) => ({ ...row, unreadUpdates: row.unreadUpdates ?? 0 }));
+}
+
+/** Total de atualizações em chamados ainda não “vistas” (abrir o detalhe zera as daquele chamado). */
+export async function getSupportUnreadCount(): Promise<number> {
+  const r = await apiJson<{ count: number }>('/api/suporte/notifications/unread-count');
+  return Number(r.count ?? 0);
 }
 
 export async function createSupportTicket(payload: {
@@ -150,7 +137,6 @@ export async function createSupportTicket(payload: {
   descricao: string;
   categoria?: string;
   prioridade: TicketPriority;
-  customFields?: Record<string, unknown>;
   attachments?: SupportAttachmentInput[];
 }): Promise<{ id: number; ticketNumber: string }> {
   const res = await apiFetch('/api/suporte/tickets', { method: 'POST', body: payload });

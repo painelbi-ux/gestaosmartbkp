@@ -62,7 +62,7 @@ export default defineConfig(function (_a) {
                 target: 'http://127.0.0.1:4000',
                 changeOrigin: true,
                 secure: false,
-                timeout: 120000,
+                timeout: 900000,
                 selfHandleResponse: true,
                 configure: function (proxy) {
                     proxy.on('proxyRes', function (proxyRes, _req, res) {
@@ -104,7 +104,7 @@ export default defineConfig(function (_a) {
                 target: 'http://127.0.0.1:4000',
                 changeOrigin: true,
                 secure: false,
-                timeout: 120000,
+                timeout: 900000,
                 selfHandleResponse: true,
                 configure: function (proxy) {
                     var lastAuthLog = 0;

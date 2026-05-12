@@ -8,6 +8,7 @@ import { podeAcessarRotaChamadosSuporte, podeConfigurarSuporte } from '../utils/
 import PermissionGuard from './PermissionGuard';
 import StatusCard from './StatusCard';
 import { getSycroOrderNotifications } from '../api/sycroorder';
+import { getSupportUnreadCount } from '../api/suporte';
 
 function SunIcon() {
   return (
@@ -139,6 +140,19 @@ export default function Layout() {
   const [erroSenha, setErroSenha] = useState<string | null>(null);
 
   const [sycroUnreadCount, setSycroUnreadCount] = useState<number>(0);
+  const [supportUnreadCount, setSupportUnreadCount] = useState(0);
+
+  const refreshSupportUnreadCount = useCallback(async () => {
+    if (!podeAcessarRotaChamadosSuporte(hasPermission)) {
+      setSupportUnreadCount(0);
+      return;
+    }
+    try {
+      setSupportUnreadCount(await getSupportUnreadCount());
+    } catch {
+      setSupportUnreadCount(0);
+    }
+  }, [hasPermission]);
 
   const refreshSycroUnreadCount = useCallback(async () => {
     if (!hasPermission(PERMISSOES.COMUNICACAO_TELA_VER) && !hasPermission(PERMISSOES.COMUNICACAO_TOTAL)) {
@@ -162,6 +176,28 @@ export default function Layout() {
     window.addEventListener('sycroorder:notificationsUpdated', handler);
     return () => window.removeEventListener('sycroorder:notificationsUpdated', handler);
   }, [refreshSycroUnreadCount]);
+
+  useEffect(() => {
+    void refreshSupportUnreadCount();
+  }, [login, refreshSupportUnreadCount]);
+
+  useEffect(() => {
+    const handler = () => void refreshSupportUnreadCount();
+    window.addEventListener('suporte:notificationsUpdated', handler);
+    return () => window.removeEventListener('suporte:notificationsUpdated', handler);
+  }, [refreshSupportUnreadCount]);
+
+  useEffect(() => {
+    if (!podeAcessarRotaChamadosSuporte(hasPermission)) return;
+    const t = window.setInterval(() => void refreshSupportUnreadCount(), 30000);
+    return () => window.clearInterval(t);
+  }, [hasPermission, refreshSupportUnreadCount]);
+
+  useEffect(() => {
+    if (location.pathname.startsWith('/suporte')) {
+      void refreshSupportUnreadCount();
+    }
+  }, [location.pathname, refreshSupportUnreadCount]);
 
   // Para o perfil de Compras, mostramos apenas a tela de "Alteração da Data de Entrega do Pedido de Compra".
   const INTEGRACAO_SUBMENUS_FOR_USER = (() => {
@@ -767,14 +803,24 @@ export default function Layout() {
                   type="button"
                   onClick={() => setSuporteOpen((v) => !v)}
                   onMouseEnter={() => openOnly('suporte')}
-                  className={`inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                  className={`relative inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition ${
                     isSuporteActive
                       ? 'bg-primary-600 text-white'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700/50'
                   }`}
                   aria-expanded={suporteOpen}
                   aria-haspopup="true"
+                  title={
+                    supportUnreadCount > 0
+                      ? `${supportUnreadCount} atualização(ões) em chamados não visualizada(s)`
+                      : undefined
+                  }
                 >
+                  {supportUnreadCount > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 z-10 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold leading-none text-white shadow ring-2 ring-white dark:ring-slate-800">
+                      {supportUnreadCount > 99 ? '99+' : supportUnreadCount}
+                    </span>
+                  )}
                   Suporte
                   <svg className="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
