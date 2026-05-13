@@ -56,7 +56,7 @@ export type DfcDetalheLancamentosModalProps = {
   dataInicio: string;
   dataFim: string;
   granularidade: 'dia' | 'mes';
-  idEmpresa: number;
+  idEmpresas: number[];
 };
 
 /**
@@ -70,7 +70,7 @@ export default function DfcDetalheLancamentosModal({
   dataInicio,
   dataFim,
   granularidade,
-  idEmpresa,
+  idEmpresas,
 }: DfcDetalheLancamentosModalProps) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | undefined>();
@@ -140,7 +140,7 @@ export default function DfcDetalheLancamentosModal({
       granularidade,
       ids: idList,
       periodo,
-      idEmpresa,
+      idEmpresas,
       signal: ac.signal,
     })
       .then((r) => {
@@ -162,7 +162,7 @@ export default function DfcDetalheLancamentosModal({
       ac.abort();
       loadId.current += 1;
     };
-  }, [dataInicio, dataFim, granularidade, idEmpresa, periodo, idListKey, idList]);
+  }, [dataInicio, dataFim, granularidade, idEmpresas, periodo, idListKey, idList]);
 
   const linhasOrdenadas = useMemo(() => {
     if (!linhas.length) return [];

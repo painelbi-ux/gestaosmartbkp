@@ -36,36 +36,32 @@ function formatYmdFromRow(periodoRaw: unknown, granularidade: DfcAgendamentoGran
   return String(periodoRaw ?? '').slice(0, 10);
 }
 
-const SQL_WHERE_LP = `
+function buildSqlWhereLp(idEmpresas: number[]): string {
+  const inClause = idEmpresas.map(() => '?').join(', ');
+  return `
 FROM lancamentofinanceiro lf
 LEFT JOIN pessoa pe ON pe.id = lf.idPessoa
 LEFT JOIN contafinanceiro cf ON cf.id = lf.idContaFinanceiro
 WHERE DATE(lf.dataLancamento) BETWEEN ? AND ?
-  AND lf.idEmpresa = ?
+  AND lf.idEmpresa IN (${inClause})
   AND lf.discriminador = 'LP'
   AND lf.idAgendamentoPagamento IS NULL
   AND lf.idContaFinanceiro IS NOT NULL
 `.trim();
+}
 
-const SQL_AGREG_DIA = `
+function buildSqlAgregLp(granularidade: DfcAgendamentoGranularidade, idEmpresas: number[]): string {
+  const fmt = granularidade === 'mes' ? "'%Y-%m'" : "'%Y-%m-%d'";
+  return `
 SELECT
   lf.idContaFinanceiro AS idContaFinanceiro,
-  DATE_FORMAT(lf.dataLancamento, '%Y-%m-%d') AS periodo,
+  DATE_FORMAT(lf.dataLancamento, ${fmt}) AS periodo,
   SUM(lf.valor) AS valor
-${SQL_WHERE_LP}
-GROUP BY lf.idContaFinanceiro, DATE_FORMAT(lf.dataLancamento, '%Y-%m-%d')
+${buildSqlWhereLp(idEmpresas)}
+GROUP BY lf.idContaFinanceiro, DATE_FORMAT(lf.dataLancamento, ${fmt})
 ORDER BY periodo, idContaFinanceiro
 `.trim();
-
-const SQL_AGREG_MES = `
-SELECT
-  lf.idContaFinanceiro AS idContaFinanceiro,
-  DATE_FORMAT(lf.dataLancamento, '%Y-%m') AS periodo,
-  SUM(lf.valor) AS valor
-${SQL_WHERE_LP}
-GROUP BY lf.idContaFinanceiro, DATE_FORMAT(lf.dataLancamento, '%Y-%m')
-ORDER BY periodo, idContaFinanceiro
-`.trim();
+}
 
 /**
  * Soma de lf.valor por idContaFinanceiro e bucket (mês/dia) por dataLancamento.
@@ -74,13 +70,13 @@ export async function queryDfcLancamentosLpAgrupado(params: {
   dataLancamentoInicio: string;
   dataLancamentoFim: string;
   granularidade: DfcAgendamentoGranularidade;
-  idEmpresa: number;
+  idEmpresas: number[];
 }): Promise<{ linhas: DfcAgendamentoLinha[]; erro?: string }> {
   const pool = getNomusPool();
   if (!pool) return { linhas: [], erro: 'NOMUS_DB_URL não configurado' };
-  const { dataLancamentoInicio, dataLancamentoFim, granularidade, idEmpresa } = params;
-  const sql = granularidade === 'mes' ? SQL_AGREG_MES : SQL_AGREG_DIA;
-  const args = [dataLancamentoInicio, dataLancamentoFim, idEmpresa];
+  const { dataLancamentoInicio, dataLancamentoFim, granularidade, idEmpresas } = params;
+  const sql = buildSqlAgregLp(granularidade, idEmpresas);
+  const args = [dataLancamentoInicio, dataLancamentoFim, ...idEmpresas];
 
   try {
     const [rows] = (await pool.query(sql, args)) as [Record<string, unknown>[], unknown];
@@ -119,14 +115,14 @@ export async function queryDfcLancamentosLpDetalhe(params: {
   dataLancamentoInicio: string;
   dataLancamentoFim: string;
   granularidade: DfcAgendamentoGranularidade;
-  idEmpresa: number;
+  idEmpresas: number[];
   idsContaFinanceiro: number[];
   periodoBucket?: string | null;
 }): Promise<{ detalhes: DfcAgendamentoDetalheRow[]; erro?: string }> {
   const pool = getNomusPool();
   if (!pool) return { detalhes: [], erro: 'NOMUS_DB_URL não configurado' };
 
-  const { dataLancamentoInicio, dataLancamentoFim, granularidade, idEmpresa, idsContaFinanceiro, periodoBucket } = params;
+  const { dataLancamentoInicio, dataLancamentoFim, granularidade, idEmpresas, idsContaFinanceiro, periodoBucket } = params;
   const ids = [...new Set(idsContaFinanceiro.filter((n) => Number.isFinite(n) && n > 0))];
   if (ids.length === 0) return { detalhes: [] };
 
@@ -139,7 +135,7 @@ export async function queryDfcLancamentosLpDetalhe(params: {
     }
   }
   const placeholders = ids.map(() => '?').join(', ');
-  const args: unknown[] = [dataLancamentoInicio, dataLancamentoFim, idEmpresa];
+  const args: unknown[] = [dataLancamentoInicio, dataLancamentoFim, ...idEmpresas];
   args.push(...ids);
   if (periodoBucket) args.push(periodoBucket);
 
@@ -151,7 +147,7 @@ SELECT
   DATE(lf.dataCompetencia) AS dataVencimento,
   DATE(lf.dataLancamento) AS dataBaixa,
   lf.valor AS valorBaixado
-${SQL_WHERE_LP}
+${buildSqlWhereLp(idEmpresas)}
   AND lf.idContaFinanceiro IN (${placeholders})
   ${periodClause}
 ORDER BY valorBaixado DESC, lf.id DESC

@@ -19,7 +19,7 @@ export type ArvoreContasDfcProps = {
   granularidade: 'dia' | 'mes';
   dataInicio: string;
   dataFim: string;
-  idEmpresa?: number;
+  idEmpresas?: number[];
   loading?: boolean;
   error?: string | null;
   /** Quando true, a grade usa a altura disponível (ex.: modo tela inteira). */
@@ -28,12 +28,11 @@ export type ArvoreContasDfcProps = {
   filtroPlanoContas?: string;
 };
 
-/** Larguras e `left` cumulativo das colunas fixas (px). (Id e Tipo ocultos na grade.) */
+/** Larguras e `left` cumulativo das colunas fixas (px). Cód. integrado na coluna Conta. */
 const STICKY_COLS = [
-  { w: 40, l: 0 },
-  { w: 72, l: 40 },
-  { w: 220, l: 112 },
-  { w: 112, l: 332 },
+  { w: 40, l: 0 },    // chevron
+  { w: 260, l: 40 },  // Conta (nome + código prefixado)
+  { w: 110, l: 300 }, // Fluxo
 ] as const;
 const STICKY_TOTAL_W = STICKY_COLS.reduce((s, c) => s + c.w, 0);
 
@@ -69,27 +68,13 @@ function fundoListraNeutra(rowIdx: number): string {
 }
 
 /**
- * Fundo da linha: cores **opacas** para sticky; sintéticas (pais) em azul sky unificado,
- * exceto Entradas/Saídas operacionais e as raízes de fluxo (M0, M1, …).
+ * Fundo da linha: hierarquia clara via tons de cinza.
+ * Raízes de fluxo (M0, M1…) = separador escuro; sintéticas = cinza suave; analíticas = branco alternado.
  */
 function corFundoLinha(node: DfcEstruturaNo, rowIdx: number): string {
-  if (node.nome === 'Entradas operacionais' && node.macro === 'OPERACIONAL') {
-    return rowIdx % 2 === 0
-      ? 'bg-emerald-50 dark:bg-emerald-950'
-      : 'bg-emerald-100 dark:bg-emerald-950';
-  }
-  if (node.nome === 'Saídas operacionais' && node.macro === 'OPERACIONAL') {
-    return rowIdx % 2 === 0
-      ? 'bg-rose-50 dark:bg-rose-950'
-      : 'bg-rose-100 dark:bg-rose-950';
-  }
-  if (isLinhaRaizFluxoDfc(node)) {
-    return fundoListraNeutra(rowIdx);
-  }
-  if (node.tipo === 'S') {
-    return 'bg-sky-50 dark:bg-sky-950';
-  }
-  return fundoListraNeutra(rowIdx);
+  if (isLinhaRaizFluxoDfc(node)) return 'bg-slate-200 dark:bg-slate-700';
+  if (node.tipo === 'S') return 'bg-slate-50 dark:bg-slate-800/70';
+  return rowIdx % 2 === 0 ? 'bg-white dark:bg-slate-800' : 'bg-slate-50/60 dark:bg-slate-800/40';
 }
 
 function isDescendantPath(desc: string, ancestor: string): boolean {
@@ -195,9 +180,9 @@ function assignPathKeysRecursive(node: DfcEstruturaNo, base: string): void {
 }
 
 /**
- * Sob o macro operacional, substitui os filhos diretos de M0 por dois nós sintéticos
- * (Entradas operacionais / Saídas operacionais) com a mesma lógica do resumo em cruzamento.
- * Demais raízes inalteradas; `pathKey` de toda a floresta é recalculada.
+ * Renomeia os nós "Entradas" e "Saídas" do fluxo operacional para
+ * "Entradas operacionais" / "Saídas operacionais" (cores diferenciadas na grade).
+ * Suporta a nova estrutura (Entradas/Saídas já no JSON) e a antiga (nós soltos).
  */
 function montarRootsParaExibicao(roots: DfcEstruturaNo[]): DfcEstruturaNo[] {
   const cloned = JSON.parse(JSON.stringify(roots)) as DfcEstruturaNo[];
@@ -208,6 +193,18 @@ function montarRootsParaExibicao(roots: DfcEstruturaNo[]): DfcEstruturaNo[] {
   }
   const op = cloned[opIdx];
   const children = op.children ?? [];
+
+  // Nova estrutura: filhos diretos são "Entradas" e "Saídas"
+  const nEntradas = children.find((c) => c.nome === 'Entradas');
+  const nSaidas = children.find((c) => c.nome === 'Saídas');
+  if (nEntradas && nSaidas) {
+    nEntradas.nome = 'Entradas operacionais';
+    nSaidas.nome = 'Saídas operacionais';
+    cloned.forEach((r, i) => assignPathKeysRecursive(r, `M${i}`));
+    return cloned;
+  }
+
+  // Estrutura legada: filhos diretos eram as categorias de receita/saída
   const nRec = children.find((c) => c.nome === 'Receitas Operacionais');
   const nDev = children.find((c) => c.nome === 'Devoluções');
   const nNao = children.find((c) => c.nome === 'Receitas Não Operacionais');
@@ -277,7 +274,7 @@ export default function ArvoreContasDfc({
   granularidade,
   dataInicio,
   dataFim,
-  idEmpresa = 1,
+  idEmpresas = [1, 2],
   loading = false,
   error = null,
   telaCheia = false,
@@ -322,6 +319,36 @@ export default function ArvoreContasDfc({
     if (periodos.length === 0) return null;
     const op = rootsRaw.find((r) => r.macro === 'OPERACIONAL');
     if (!op?.children?.length) return null;
+
+    const opEx = roots.find((r) => r.macro === 'OPERACIONAL');
+    const base = opEx?.pathKey ?? op.pathKey;
+
+    // Nova estrutura: filhos diretos são "Entradas" e "Saídas"
+    const nEntradas = op.children.find((c) => c.nome === 'Entradas');
+    const nSaidas = op.children.find((c) => c.nome === 'Saídas');
+    if (nEntradas && nSaidas) {
+      // DEDUÇÕES DA RECEITA (id=377) são valores positivos no BD que reduzem as entradas
+      const nDed = nEntradas.children?.find((c) => c.id === 377);
+      const idsEntradasTotal = idsPorPathKeyRaw.get(nEntradas.pathKey) ?? [];
+      const idsDeducoes = nDed ? (idsPorPathKeyRaw.get(nDed.pathKey) ?? []) : [];
+      const dedSet = new Set(idsDeducoes);
+      const idsEntradasLiquidas = idsEntradasTotal.filter((id) => !dedSet.has(id));
+
+      const porPeriodoEntradas = periodos.map(
+        (p) =>
+          somaPeriodo(idsEntradasLiquidas, p, valoresPorConta) -
+          somaPeriodo(idsDeducoes, p, valoresPorConta)
+      );
+
+      const idsSaidas = idsPorPathKeyRaw.get(nSaidas.pathKey) ?? [];
+      const porPeriodoSaidas = periodos.map((p) => somaPeriodo(idsSaidas, p, valoresPorConta));
+
+      const fluxoPorPeriodo = periodos.map((_, i) => porPeriodoEntradas[i] - porPeriodoSaidas[i]);
+      const fluxoTotal = fluxoPorPeriodo.reduce((a, b) => a + b, 0);
+      return { opPathKey: base, porPeriodoEntradas, porPeriodoSaidas, fluxoPorPeriodo, fluxoTotal };
+    }
+
+    // Estrutura legada
     const nRec = op.children.find((c) => c.nome === 'Receitas Operacionais');
     const nDev = op.children.find((c) => c.nome === 'Devoluções');
     const nNao = op.children.find((c) => c.nome === 'Receitas Não Operacionais');
@@ -349,16 +376,7 @@ export default function ArvoreContasDfc({
 
     const fluxoPorPeriodo = periodos.map((_, i) => porPeriodoEntradas[i] - porPeriodoSaidas[i]);
     const fluxoTotal = fluxoPorPeriodo.reduce((a, b) => a + b, 0);
-
-    const opEx = roots.find((r) => r.macro === 'OPERACIONAL');
-    const base = opEx?.pathKey ?? op.pathKey;
-    return {
-      opPathKey: base,
-      porPeriodoEntradas,
-      porPeriodoSaidas,
-      fluxoPorPeriodo,
-      fluxoTotal,
-    };
+    return { opPathKey: base, porPeriodoEntradas, porPeriodoSaidas, fluxoPorPeriodo, fluxoTotal };
   }, [roots, rootsRaw, idsPorPathKeyRaw, periodos, valoresPorConta]);
 
   const temPivot = periodos.length > 0;
@@ -417,7 +435,7 @@ export default function ArvoreContasDfc({
           dataInicio={dataInicio}
           dataFim={dataFim}
           granularidade={granularidade}
-          idEmpresa={idEmpresa}
+          idEmpresas={idEmpresas}
         />
       ) : null}
 
@@ -430,27 +448,21 @@ export default function ArvoreContasDfc({
       >
         <table className="text-sm border-collapse" style={{ minWidth: temPivot ? STICKY_TOTAL_W + periodos.length * 96 + 120 : STICKY_TOTAL_W }}>
           <thead className="sticky top-0 z-30">
-            <tr className="bg-primary-600 text-white text-left shadow-sm">
+            <tr className="bg-slate-100 dark:bg-slate-700/90 text-left border-b-2 border-slate-200 dark:border-slate-600">
               <th
-                className="py-2.5 px-2 font-semibold sticky z-30 border-r border-primary-500/40 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.15)]"
+                className="py-2.5 px-2 text-xs font-semibold text-slate-500 dark:text-slate-400 sticky z-30 border-r border-slate-200 dark:border-slate-600 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.08)] bg-slate-100 dark:bg-slate-700/90"
                 style={{ left: STICKY_COLS[0].l, width: STICKY_COLS[0].w, minWidth: STICKY_COLS[0].w }}
                 aria-label="Expandir"
               />
               <th
-                className="py-2.5 px-2 font-semibold whitespace-nowrap sticky z-30 border-r border-primary-500/40 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.15)]"
+                className="py-2.5 px-3 text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wide sticky z-30 border-r border-slate-200 dark:border-slate-600 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.08)] bg-slate-100 dark:bg-slate-700/90"
                 style={{ left: STICKY_COLS[1].l, width: STICKY_COLS[1].w, minWidth: STICKY_COLS[1].w }}
               >
-                Cód.
+                Conta
               </th>
               <th
-                className="py-2.5 px-2 font-semibold sticky z-30 border-r border-primary-500/40 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.15)]"
+                className="py-2.5 px-3 text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wide whitespace-nowrap sticky z-30 border-r border-slate-200 dark:border-slate-600 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.12)] bg-slate-100 dark:bg-slate-700/90"
                 style={{ left: STICKY_COLS[2].l, width: STICKY_COLS[2].w, minWidth: STICKY_COLS[2].w }}
-              >
-                Nome
-              </th>
-              <th
-                className="py-2.5 px-2 font-semibold whitespace-nowrap sticky z-30 border-r border-primary-500/50 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.2)]"
-                style={{ left: STICKY_COLS[3].l, width: STICKY_COLS[3].w, minWidth: STICKY_COLS[3].w }}
               >
                 Fluxo
               </th>
@@ -458,7 +470,7 @@ export default function ArvoreContasDfc({
                 ? periodos.map((p) => (
                     <th
                       key={p}
-                      className="py-2.5 px-2 font-semibold text-right whitespace-nowrap bg-primary-600 min-w-[88px]"
+                      className="py-2.5 px-2 text-xs font-semibold text-slate-600 dark:text-slate-300 text-right whitespace-nowrap min-w-[88px]"
                       title={p}
                     >
                       {rotuloPeriodoCabecalho(p, granularidade)}
@@ -466,7 +478,7 @@ export default function ArvoreContasDfc({
                   ))
                 : null}
               {temPivot ? (
-                <th className="py-2.5 px-2 font-semibold text-right whitespace-nowrap bg-primary-700 min-w-[100px]">
+                <th className="py-2.5 px-2 text-xs font-semibold text-slate-700 dark:text-slate-200 text-right whitespace-nowrap min-w-[100px] bg-slate-200/60 dark:bg-slate-600/60">
                   Total
                 </th>
               ) : null}
@@ -475,23 +487,19 @@ export default function ArvoreContasDfc({
           <tbody>
             {visiveis.length === 0 && filtroAtivo ? (
               <tr>
-                <td colSpan={temPivot ? 5 + periodos.length : 4} className="py-8 px-4 text-center text-sm text-slate-500 dark:text-slate-400">
+                <td colSpan={temPivot ? 4 + periodos.length : 3} className="py-8 px-4 text-center text-sm text-slate-500 dark:text-slate-400">
                   Nenhuma conta encontrada para «{filtroPlanoContas.trim()}».
                 </td>
               </tr>
             ) : null}
             {visiveis.map(({ node, depth }, rowIdx) => {
-              const pad = depth * 14;
+              const pad = depth * 16;
               const temFilhos = (node.children?.length ?? 0) > 0;
               const aberto = filtroAtivo && temFilhos ? true : expanded.has(node.pathKey);
               const ids = idsPorPathKey.get(node.pathKey) ?? [];
               const bg = corFundoLinha(node, rowIdx);
               const synth = node.tipo === 'S';
-              const isGrupoOpResumo =
-                node.macro === 'OPERACIONAL' &&
-                (node.nome === 'Entradas operacionais' || node.nome === 'Saídas operacionais');
               const isRaizFluxoDfc = isLinhaRaizFluxoDfc(node);
-              const synthRing = synth && !isGrupoOpResumo && !isRaizFluxoDfc;
               const isRaizOperacional =
                 cruzamentoOperacional != null && node.pathKey === cruzamentoOperacional.opPathKey;
               const isResumoEntradasOp =
@@ -499,15 +507,15 @@ export default function ArvoreContasDfc({
               const isResumoSaidasOp =
                 cruzamentoOperacional != null && node.nome === 'Saídas operacionais' && node.macro === 'OPERACIONAL';
               const isResumoOpFormula = isResumoEntradasOp || isResumoSaidasOp;
+              /** Qualquer nó sintético de "Saídas" em qualquer fluxo */
+              const isSaidasNode = isResumoSaidasOp || (node.tipo === 'S' && node.nome === 'Saídas');
               return (
                 <tr
                   key={node.pathKey}
-                  className={`border-t border-slate-100 dark:border-slate-700/80 ${bg} ${
-                    synthRing ? 'ring-1 ring-inset ring-sky-300/40 dark:ring-sky-600/30' : ''
-                  }`}
+                  className={`border-t ${isRaizFluxoDfc ? 'border-slate-300 dark:border-slate-600' : 'border-slate-100 dark:border-slate-700/60'} ${bg}`}
                 >
                   <td
-                    className={`py-1.5 px-1 align-middle sticky z-20 border-r border-slate-200 dark:border-slate-600 ${bg}`}
+                    className={`py-2 px-1 align-middle sticky z-20 border-r border-slate-200 dark:border-slate-600 ${bg}`}
                     style={{ left: STICKY_COLS[0].l, width: STICKY_COLS[0].w, minWidth: STICKY_COLS[0].w }}
                   >
                     {temFilhos ? (
@@ -543,16 +551,10 @@ export default function ArvoreContasDfc({
                     )}
                   </td>
                   <td
-                    className={`py-1.5 px-2 text-xs tabular-nums whitespace-nowrap text-slate-600 dark:text-slate-400 align-middle sticky z-20 border-r border-slate-200 dark:border-slate-600 ${bg}`}
-                    style={{ left: STICKY_COLS[1].l, width: STICKY_COLS[1].w, minWidth: STICKY_COLS[1].w }}
-                  >
-                    {node.codigo || '—'}
-                  </td>
-                  <td
-                    className={`py-1.5 px-2 text-slate-800 dark:text-slate-200 align-middle sticky z-20 border-r border-slate-200 dark:border-slate-600 ${bg} ${
-                      ids.length > 0 ? 'cursor-pointer hover:underline decoration-slate-400/60' : ''
+                    className={`py-2 px-2 align-middle sticky z-20 border-r border-slate-200 dark:border-slate-600 ${bg} ${
+                      ids.length > 0 ? 'cursor-pointer' : ''
                     }`}
-                    style={{ left: STICKY_COLS[2].l, width: STICKY_COLS[2].w, minWidth: STICKY_COLS[2].w }}
+                    style={{ left: STICKY_COLS[1].l, width: STICKY_COLS[1].w, minWidth: STICKY_COLS[1].w }}
                     title={ids.length > 0 ? 'Clique para ver lançamentos no período filtrado' : undefined}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -560,13 +562,27 @@ export default function ArvoreContasDfc({
                       abrirDetalhe(ids, undefined, `${node.nome} · ${dataInicio} → ${dataFim}`);
                     }}
                   >
-                    <span className="inline-block" style={{ paddingLeft: pad }}>
+                    <span
+                      className={`inline-flex items-baseline gap-1.5 leading-snug ${
+                        isRaizFluxoDfc
+                          ? 'text-xs font-bold uppercase tracking-wide text-slate-600 dark:text-slate-300'
+                          : synth
+                            ? 'text-sm font-semibold text-slate-800 dark:text-slate-100'
+                            : 'text-sm text-slate-700 dark:text-slate-300'
+                      } ${ids.length > 0 ? 'hover:underline decoration-slate-400/50' : ''}`}
+                      style={{ paddingLeft: pad }}
+                    >
+                      {node.codigo && !isRaizFluxoDfc && (
+                        <span className="text-xs text-slate-400 dark:text-slate-500 font-normal shrink-0 tabular-nums">
+                          {node.codigo}
+                        </span>
+                      )}
                       {node.nome}
                     </span>
                   </td>
                   <td
-                    className={`py-1.5 px-2 align-middle sticky z-20 border-r border-slate-300 dark:border-slate-500 ${bg}`}
-                    style={{ left: STICKY_COLS[3].l, width: STICKY_COLS[3].w, minWidth: STICKY_COLS[3].w }}
+                    className={`py-2 px-2 align-middle sticky z-20 border-r border-slate-300 dark:border-slate-500 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.06)] ${bg}`}
+                    style={{ left: STICKY_COLS[2].l, width: STICKY_COLS[2].w, minWidth: STICKY_COLS[2].w }}
                   >
                     <span className={chipMacro(node.macro)}>{MACRO_LABEL[node.macro] ?? node.macro}</span>
                   </td>
@@ -583,11 +599,19 @@ export default function ArvoreContasDfc({
                           v = somaPeriodo(ids, p, valoresPorConta);
                         }
                         const podeDrill = ids.length > 0 && !isRaizOperacional;
+                        const alertaSaidas = isSaidasNode && granularidade === 'dia' && v > 150000;
+                        const corValor = alertaSaidas
+                          ? 'bg-red-600 text-white font-bold'
+                          : v < 0
+                            ? `text-red-600 dark:text-red-400 ${synth ? 'font-semibold' : ''} ${bg}`
+                            : v === 0
+                              ? `text-slate-300 dark:text-slate-600 ${bg}`
+                              : `${synth ? 'text-slate-800 dark:text-slate-100 font-semibold' : 'text-slate-700 dark:text-slate-200'} ${bg}`;
                         return (
                           <td
                             key={p}
-                            className={`py-1.5 px-2 text-right tabular-nums text-slate-700 dark:text-slate-200 ${bg} ${
-                              podeDrill ? 'cursor-pointer hover:bg-slate-200/60 dark:hover:bg-slate-600/40' : ''
+                            className={`py-2 px-2 text-right tabular-nums text-sm ${corValor} ${
+                              podeDrill ? 'cursor-pointer hover:brightness-95 dark:hover:brightness-110' : ''
                             }`}
                             title={
                               isRaizOperacional
@@ -608,22 +632,40 @@ export default function ArvoreContasDfc({
                               );
                             }}
                           >
-                            {nf.format(v)}
+                            {v === 0 ? <span className="text-slate-300 dark:text-slate-600">—</span> : nf.format(v)}
                           </td>
                         );
                       })
                     : null}
-                  {temPivot ? (
+                  {temPivot ? (() => {
+                    const totalSaidas =
+                      isResumoSaidasOp && cruzamentoOperacional
+                        ? cruzamentoOperacional.porPeriodoSaidas.reduce((a, b) => a + b, 0)
+                        : isSaidasNode
+                          ? periodos.reduce((s, p) => s + somaPeriodo(ids, p, valoresPorConta), 0)
+                          : null;
+                    const alertaTotalSaidas =
+                      isSaidasNode && granularidade === 'dia' && totalSaidas != null && totalSaidas > 150000;
+                    const totalV =
+                      isRaizOperacional && cruzamentoOperacional
+                        ? cruzamentoOperacional.fluxoTotal
+                        : isResumoEntradasOp && cruzamentoOperacional
+                          ? cruzamentoOperacional.porPeriodoEntradas.reduce((a, b) => a + b, 0)
+                          : isResumoSaidasOp && cruzamentoOperacional
+                            ? cruzamentoOperacional.porPeriodoSaidas.reduce((a, b) => a + b, 0)
+                            : periodos.reduce((s, p) => s + somaPeriodo(ids, p, valoresPorConta), 0);
+                    const corTotal = alertaTotalSaidas
+                      ? 'bg-red-600 text-white'
+                      : totalV < 0
+                        ? 'text-red-600 dark:text-red-400 bg-slate-100 dark:bg-slate-700/80'
+                        : totalV === 0
+                          ? 'text-slate-300 dark:text-slate-600 bg-slate-100 dark:bg-slate-700/80'
+                          : synth
+                            ? 'text-slate-900 dark:text-slate-50 bg-slate-100 dark:bg-slate-700/80'
+                            : 'text-slate-800 dark:text-slate-200 bg-slate-100 dark:bg-slate-700/80';
+                    return (
                     <td
-                      className={`py-1.5 px-2 text-right tabular-nums font-medium text-slate-800 dark:text-slate-100 ${
-                        isResumoEntradasOp
-                          ? 'bg-emerald-200 dark:bg-emerald-900'
-                          : isResumoSaidasOp
-                            ? 'bg-rose-200 dark:bg-rose-900'
-                            : synth && !isRaizFluxoDfc
-                              ? 'bg-sky-200 dark:bg-sky-900'
-                              : 'bg-slate-100 dark:bg-slate-700'
-                      } ${bg} ${
+                      className={`py-2 px-2 text-right tabular-nums text-sm font-semibold ${corTotal} ${
                         isRaizOperacional
                           ? ''
                           : ids.length > 0
@@ -649,17 +691,12 @@ export default function ArvoreContasDfc({
                         );
                       }}
                     >
-                      {nf.format(
-                        isRaizOperacional && cruzamentoOperacional
-                          ? cruzamentoOperacional.fluxoTotal
-                          : isResumoEntradasOp && cruzamentoOperacional
-                            ? cruzamentoOperacional.porPeriodoEntradas.reduce((a, b) => a + b, 0)
-                            : isResumoSaidasOp && cruzamentoOperacional
-                              ? cruzamentoOperacional.porPeriodoSaidas.reduce((a, b) => a + b, 0)
-                              : periodos.reduce((s, p) => s + somaPeriodo(ids, p, valoresPorConta), 0)
-                      )}
+                      {totalV === 0
+                        ? <span className="text-slate-300 dark:text-slate-600">—</span>
+                        : nf.format(totalV)}
                     </td>
-                  ) : null}
+                  );
+                  })() : null}
                 </tr>
               );
             })}

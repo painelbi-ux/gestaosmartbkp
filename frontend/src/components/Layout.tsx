@@ -9,6 +9,7 @@ import PermissionGuard from './PermissionGuard';
 import StatusCard from './StatusCard';
 import { getSycroOrderNotifications } from '../api/sycroorder';
 import { getSupportUnreadCount } from '../api/suporte';
+import { LayoutFocoProvider, useLayoutFoco } from '../contexts/LayoutFocoContext';
 
 function SunIcon() {
   return (
@@ -103,10 +104,27 @@ function getLabelForPath(path: string): string {
 }
 
 export default function Layout() {
+  return (
+    <LayoutFocoProvider>
+      <LayoutInner />
+    </LayoutFocoProvider>
+  );
+}
+
+function LayoutInner() {
   const navigate = useNavigate();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
   const { hasPermission, isMaster, grupo, nome, login, mustChangePassword, refreshUser } = useAuth();
+  const { modoFoco, sairModoFoco } = useLayoutFoco();
+
+  // Sai do modo foco ao pressionar Escape
+  useEffect(() => {
+    if (!modoFoco) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') sairModoFoco(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [modoFoco, sairModoFoco]);
   const [pcpOpen, setPcpOpen] = useState(false);
   const pcpRef = useRef<HTMLDivElement>(null);
   const [comunicacaoOpen, setComunicacaoOpen] = useState(false);
@@ -381,7 +399,7 @@ export default function Layout() {
 
   return (
     <div className="min-h-screen bg-slate-100 dark:bg-slate-900">
-      <header className="border-b border-slate-200 bg-white/80 dark:border-slate-700/50 dark:bg-slate-800/50 sticky top-0 z-40">
+      <header className={`border-b border-slate-200 bg-white/80 dark:border-slate-700/50 dark:bg-slate-800/50 sticky top-0 z-40 transition-all duration-200 ${modoFoco ? 'hidden' : ''}`}>
         <div className="max-w-screen-2xl mx-auto px-4 py-3 flex items-center justify-between">
           <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100 mr-6">Gestão Smart 2.0</h1>
           <nav className="flex items-center gap-1">
@@ -877,8 +895,8 @@ export default function Layout() {
         </div>
       </header>
 
-      <main className="w-full px-4 py-6 flex flex-col min-h-0">
-        {abas.length > 0 && (
+      <main className={`w-full px-4 flex flex-col min-h-0 ${modoFoco ? 'py-2' : 'py-6'}`}>
+        {abas.length > 0 && !modoFoco && (
           <div className="flex items-center gap-1 border-b border-slate-200 dark:border-slate-700 overflow-x-auto mb-4 shrink-0">
             {abas.map((aba, index) => {
               const ativa = location.pathname === aba.path;
