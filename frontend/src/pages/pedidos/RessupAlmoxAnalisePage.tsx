@@ -278,17 +278,11 @@ export default function RessupAlmoxAnalisePage() {
 
   useEffect(() => {
     if (!filtrosPopoverAberto) return;
-    const onDown = (e: MouseEvent) => {
-      if (novaAnaliseWrapRef.current?.contains(e.target as Node)) return;
-      setFiltrosPopoverAberto(false);
-    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setFiltrosPopoverAberto(false);
     };
-    document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
     return () => {
-      document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
   }, [filtrosPopoverAberto]);
@@ -632,13 +626,24 @@ export default function RessupAlmoxAnalisePage() {
             </button>
             {filtrosPopoverAberto && (
               <div
-                className="absolute right-0 top-full z-[55] mt-2 w-[min(100vw-2rem,56rem)] max-h-[min(85vh,560px)] overflow-y-auto overflow-x-hidden rounded-xl border border-slate-200 bg-white p-4 shadow-2xl dark:border-slate-600 dark:bg-slate-800 dark:shadow-black/40"
+                className="absolute right-0 top-full z-[55] mt-2 rounded-xl border border-slate-200 bg-white p-4 shadow-2xl dark:border-slate-600 dark:bg-slate-800 dark:shadow-black/40 overflow-auto"
+                style={{ resize: 'both', width: 'min(calc(100vw - 2rem), 56rem)', minWidth: '18rem', minHeight: '14rem', maxHeight: 'min(85vh, 560px)' }}
                 role="dialog"
                 aria-label="Filtros — nova análise"
               >
-                <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">
-                  Filtros
-                </p>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+                    Filtros
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setFiltrosPopoverAberto(false)}
+                    className="ml-2 flex items-center justify-center w-6 h-6 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition-colors"
+                    aria-label="Fechar painel de filtros"
+                  >
+                    ✕
+                  </button>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-end">
                   <MultiSelectWithSearch
                     label="Código do Produto"

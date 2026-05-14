@@ -940,7 +940,7 @@ export default function SycroOrderPage() {
                       {ordersByLane(id).length}
                     </span>
                   </div>
-                  <div className="p-2 space-y-2 min-h-[320px] overflow-y-auto max-h-[calc(100vh - 280px)] flex-1">
+                  <div className="p-2 space-y-2 min-h-[320px] overflow-y-auto max-h-[86rem] flex-1">
                     {ordersByLane(id).map((o) => {
                       const entregaLabel = entregaProximityLabel(o);
                       const unread = !o.read_by_me && o.status !== 'FINISHED';
@@ -1179,11 +1179,19 @@ export default function SycroOrderPage() {
             className="rounded-xl shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-slate-200 dark:border-slate-600 shrink-0">
-              <h2 id="modal-historico-title" className="text-lg font-semibold text-slate-800 dark:text-slate-100 truncate min-w-0 flex-1">
-                Histórico — {modalHistorico.order_number}
-              </h2>
-              <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-start justify-between gap-3 px-6 py-4 border-b border-slate-200 dark:border-slate-600 shrink-0">
+              <div className="min-w-0 flex-1">
+                <h2 id="modal-historico-title" className="text-lg font-semibold text-slate-800 dark:text-slate-100 truncate">
+                  Histórico — {modalHistorico.order_number}
+                </h2>
+                <p className="text-sm text-slate-600 dark:text-slate-400 truncate mt-0.5" title={modalHistorico.cliente_name ?? '—'}>
+                  {modalHistorico.cliente_name ?? '—'}
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-500 truncate" title={modalHistorico.vendedor_name ?? '—'}>
+                  {modalHistorico.vendedor_name ?? '—'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 mt-0.5">
                 {modalHistorico.can_respond !== false ? (
                   <button
                     type="button"
