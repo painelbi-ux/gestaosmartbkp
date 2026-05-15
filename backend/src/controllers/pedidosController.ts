@@ -283,12 +283,15 @@ export async function ajustarPrevisao(req: Request, res: Response): Promise<void
     return;
   }
 
-  const { previsao_nova, motivo, observacao, replicate_carrada } = parsed.data;
+  const { previsao_nova, motivo, observacao, replicate_carrada, rota } = parsed.data;
   const dataPrevisao = new Date(previsao_nova);
   if (Number.isNaN(dataPrevisao.getTime())) {
     res.status(400).json({ error: 'Data de previsão inválida.' });
     return;
   }
+  // `rota` informada => grava como override apenas naquela rota. Vazio/null => ajuste base.
+  // Combinada com `replicate_carrada=true`, replica nos demais PDs da rota e cada um vira override por rota.
+  const rotaOverride = typeof rota === 'string' && rota.trim() !== '' ? rota.trim() : null;
 
   const usuario = req.user?.login ?? 'anon';
   try {
@@ -326,6 +329,8 @@ export async function ajustarPrevisao(req: Request, res: Response): Promise<void
         previsao_nova: dataPrevisao,
         motivo,
         observacao: observacao ?? null,
+        // Se o ajuste for por rota (override), replica para os demais PDs da rota mantendo o mesmo escopo.
+        rota: rotaOverride,
       }));
       const resultado = await registrarAjustesPrevisaoLote(ajustes, usuario);
       if (resultado.erros.length > 0) {
@@ -378,7 +383,7 @@ export async function ajustarPrevisao(req: Request, res: Response): Promise<void
       return;
     }
 
-    await registrarAjustePrevisao(idPedido, dataPrevisao, motivo, usuario, observacao ?? undefined);
+    await registrarAjustePrevisao(idPedido, dataPrevisao, motivo, usuario, observacao ?? undefined, rotaOverride);
     invalidatePedidosCache();
     const pedido = await buscarPedidoPorId(idPedido);
     if (!pedido) {
@@ -565,6 +570,9 @@ export async function ajustarPrevisaoLote(req: Request, res: Response): Promise<
     previsao_nova: new Date(a.previsao_nova!),
     motivo: a.motivo ?? '',
     observacao: a.observacao ?? null,
+    // Quando o item vem da grade do Gerenciador (linhas selecionadas com rota específica),
+    // o frontend marca `apply_rota=true` para gravar override apenas naquela rota.
+    rota: a.apply_rota === true && typeof a.rota === 'string' && a.rota.trim() !== '' ? a.rota.trim() : null,
   }));
   const resultados = await registrarAjustesPrevisaoLote(ajustes, usuario);
   invalidatePedidosCache();
@@ -583,11 +591,14 @@ export async function ajustarPrevisaoLote(req: Request, res: Response): Promise<
   res.json(resultados);
 }
 
+const LIMPAR_HISTORICO_LOGINS = new Set(['master', 'marquesfilho']);
+
 /**
- * POST /api/pedidos/limpar-historico - remove todos os registros de alteração (apenas master, exige senha).
+ * POST /api/pedidos/limpar-historico - remove todos os registros de alteração (apenas master/marquesfilho, exige senha).
  */
 export async function limparHistorico(req: Request, res: Response): Promise<void> {
-  if (req.user?.login !== 'master') {
+  const userLogin = req.user?.login;
+  if (!userLogin || !LIMPAR_HISTORICO_LOGINS.has(userLogin)) {
     res.status(403).json({ error: 'Apenas o usuário master pode limpar o histórico de alterações.' });
     return;
   }
@@ -597,12 +608,12 @@ export async function limparHistorico(req: Request, res: Response): Promise<void
     return;
   }
   try {
-    const master = await prisma.usuario.findUnique({ where: { login: 'master' } });
-    if (!master) {
-      res.status(503).json({ error: 'Usuário master não encontrado.' });
+    const usuario = await prisma.usuario.findUnique({ where: { login: userLogin } });
+    if (!usuario) {
+      res.status(503).json({ error: 'Usuário não encontrado.' });
       return;
     }
-    const senhaOk = await bcrypt.compare(parsed.data.senha, master.senhaHash);
+    const senhaOk = await bcrypt.compare(parsed.data.senha, usuario.senhaHash);
     if (!senhaOk) {
       res.status(401).json({ error: 'Senha incorreta. Operação cancelada.' });
       return;

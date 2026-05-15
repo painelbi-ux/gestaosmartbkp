@@ -36,8 +36,12 @@ export type SupportTicketListItem = {
   createdAt: string;
   updatedAt: string;
   ownerLogin: string;
+  /** Nome do usuário que abriu o chamado (quando preenchido no cadastro). */
+  ownerNome: string | null;
   /** Notificações não lidas neste chamado (mensagem, status, etc.). */
   unreadUpdates: number;
+  /** Estado individual de leitura para o usuário atual (master). */
+  readByMe: boolean;
 };
 
 export type SupportTicketDetail = {
@@ -122,7 +126,12 @@ export async function listSupportTickets(params?: {
   if (params?.sortDir) qs.set('sortDir', params.sortDir);
   const query = qs.toString();
   const r = await apiJson<{ data: SupportTicketListItem[] }>(`/api/suporte/tickets${query ? `?${query}` : ''}`);
-  return (r.data ?? []).map((row) => ({ ...row, unreadUpdates: row.unreadUpdates ?? 0 }));
+  return (r.data ?? []).map((row) => ({
+    ...row,
+    ownerNome: row.ownerNome ?? null,
+    unreadUpdates: row.unreadUpdates ?? 0,
+    readByMe: !!row.readByMe,
+  }));
 }
 
 /** Total de atualizações em chamados ainda não “vistas” (abrir o detalhe zera as daquele chamado). */
@@ -169,5 +178,17 @@ export async function updateSupportStatus(ticketId: number, status: string): Pro
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Não foi possível alterar status.' }));
     throw new Error((err as { error?: string }).error ?? 'Não foi possível alterar status.');
+  }
+}
+
+/** Marca o chamado como lido (true) ou não lido (false) para o usuário master atual. */
+export async function setSupportTicketRead(ticketId: number, read: boolean): Promise<void> {
+  const res = await apiFetch(`/api/suporte/tickets/${ticketId}/read`, {
+    method: 'PUT',
+    body: { read },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Não foi possível atualizar leitura.' }));
+    throw new Error((err as { error?: string }).error ?? 'Não foi possível atualizar leitura.');
   }
 }

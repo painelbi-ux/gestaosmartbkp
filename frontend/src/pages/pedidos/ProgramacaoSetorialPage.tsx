@@ -22,6 +22,10 @@ type PlanningRow = {
   Recurso?: string;
   tipoF?: string;
   'Qtde Pendente Real': number;
+  /** Origem do último ajuste de previsão: 'override' (rota específica) ou 'base'. */
+  origem_ultimo_ajuste?: 'override' | 'base' | null;
+  /** Aviso: overrides em rotas que não aparecem mais para este (PD, item) — carrada migrada. */
+  carrada_migrada?: { rota: string; previsao: string }[] | null;
   [key: string]: any;
 };
 
@@ -327,13 +331,6 @@ export default function ProgramacaoSetorialPage({ onProgramacaoSalva }: Programa
         result = result.filter((item) => isRecursoPcp(item.Recurso ?? item['Recurso']));
       } else {
         result = result.filter((item) => String(item['Setor de Producao']) === sector);
-      }
-
-      const desc = (item: ProcessedItem) => String(item['Descricao do produto'] || '').toLowerCase();
-      const sectorNorm = normalize(sector);
-
-      if (sectorNorm.includes('porta-palete') || sectorNorm.includes('porta palete')) {
-        result = result.filter((item) => !desc(item).toUpperCase().startsWith('PORTA PALETE'));
       }
     }
 
@@ -789,7 +786,33 @@ export default function ProgramacaoSetorialPage({ onProgramacaoSalva }: Programa
                       <td className="p-3 text-slate-700 dark:text-slate-200 max-w-[180px] truncate" title={item.Observacoes}>
                         {item.Observacoes}
                       </td>
-                      <td className="p-3 whitespace-nowrap text-slate-700 dark:text-slate-200">{item.Previsao}</td>
+                      <td className="p-3 whitespace-nowrap text-slate-700 dark:text-slate-200">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span>{item.Previsao}</span>
+                          {item.origem_ultimo_ajuste === 'override' && (
+                            <span
+                              className="inline-flex items-center rounded-full bg-slate-200 dark:bg-slate-600 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:text-slate-200"
+                              title="Ajuste aplicado apenas nesta rota (override). Outras rotas mantêm a previsão base."
+                            >
+                              rota
+                            </span>
+                          )}
+                          {Array.isArray(item.carrada_migrada) && item.carrada_migrada.length > 0 && (
+                            <span
+                              role="img"
+                              aria-label="Carrada migrada"
+                              title={`Este pedido tem ajustes em rotas que não aparecem mais:\n${item.carrada_migrada!.map((m) => `  • ${m.rota} → ${m.previsao}`).join('\n')}\nRevise a previsão para a nova carrada.`}
+                              className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                                <line x1="12" y1="9" x2="12" y2="13" />
+                                <line x1="12" y1="17" x2="12.01" y2="17" />
+                              </svg>
+                            </span>
+                          )}
+                        </span>
+                      </td>
                       {showPD && <td className="p-3 text-slate-700 dark:text-slate-200">{item.PD}</td>}
                       <td className="p-3 text-slate-700 dark:text-slate-200">{item.Cod}</td>
                       <td className="p-3 text-slate-700 dark:text-slate-200 leading-snug">{item['Descricao do produto']}</td>

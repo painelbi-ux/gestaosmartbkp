@@ -1,9 +1,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef, useDeferredValue } from 'react';
+import { createPortal } from 'react-dom';
+import * as XLSX from 'xlsx';
 import { useOnSincronizado } from '../../hooks/useOnSincronizado';
+import { useAuth } from '../../contexts/AuthContext';
 import {
   listarRessupAlmoxRegistroPreview,
   obterOpcoesFiltroColetas,
   gravarRessupAlmoxAnalise,
+  atualizarRessupAlmoxAnalise,
+  processarRessupAlmoxAnalise,
+  concluirRessupAlmoxAnalise,
   listarRessupAlmoxAnalises,
   obterRessupAlmoxAnalise,
   type RessupAlmoxAnalisePayloadV1,
@@ -16,12 +22,17 @@ const COL_DEFS = [
   { key: 'codigo', label: 'Código' },
   { key: 'descricao', label: 'Descrição' },
   { key: 'undMedida', label: 'Und Medida' },
+  { key: 'coleta', label: 'Coleta' },
+  { key: 'itemCritico', label: 'Item crítico' },
   { key: 'qtdeEmp', label: 'Qtde Emp' },
   { key: 'cm', label: 'CM' },
   { key: 'dataSolicit', label: 'Data Solicit.' },
   { key: 'dataNecess', label: 'Data Necess.' },
   { key: 'qtdSolicit', label: 'Qtd Solicit.' },
+  { key: 'qtdeSug', label: 'Qtde Sug' },
+  { key: 'dataNecessSug', label: 'Data Necess Sug' },
   { key: 'qtdAprov', label: 'Qtd Aprov' },
+  { key: 'dataNecessAprov', label: 'Data Necess Aprov' },
   { key: 'estoqAtual', label: 'Estoq Atual' },
   { key: 'qtdeUltComp', label: 'Qtde Ultm Comp' },
   { key: 'dataUltEntrada', label: 'Data Ult Entrada' },
@@ -29,12 +40,31 @@ const COL_DEFS = [
   { key: 'estSeg', label: 'Est Seg' },
   { key: 'pcPend', label: 'PC Pend' },
   { key: 'agPag', label: 'Ag Pag' },
-  { key: 'itemCritico', label: 'Item crítico' },
-  { key: 'coleta', label: 'Coleta' },
   { key: 'saldoProjetado', label: 'Saldo projetado' },
 ] as const;
 
 type ColKey = (typeof COL_DEFS)[number]['key'];
+
+/** Colunas preenchidas pelo usuário na grade (gravadas no snapshot). */
+const NUMERIC_INPUT_KEYS = new Set<ColKey>(['qtdeSug', 'qtdAprov']);
+const DATE_INPUT_KEYS = new Set<ColKey>(['dataNecessSug', 'dataNecessAprov']);
+const EDITABLE_KEYS = new Set<ColKey>([...NUMERIC_INPUT_KEYS, ...DATE_INPUT_KEYS]);
+
+/**
+ * Colunas que ficam ocultas SOMENTE na grade (visíveis via tooltip em outra célula),
+ * mas continuam aparecendo no XLSX e no snapshot gravado.
+ */
+const GRADE_OCULTAS_COL_KEYS = new Set<ColKey>([
+  'undMedida',
+  'dataSolicit',
+  'dataNecess',
+  'dataUltEntrada',
+  'precoAnt',
+]);
+
+const COL_DEFS_GRADE = COL_DEFS.filter((c) => !GRADE_OCULTAS_COL_KEYS.has(c.key));
+
+type RowUserInputs = Partial<Record<ColKey, string>>;
 
 type ExcelFilterDraft = { search: string; selected: string[] };
 
@@ -43,7 +73,10 @@ type SortState = { key: ColKey; direction: 'asc' | 'desc' } | null;
 const STORAGE_COL_OCULTAS = 'ressupAlmox.colunasOcultas.v1';
 
 const BTN_PRIMARY =
-  'px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium text-sm transition shrink-0';
+  'px-3 py-1.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium text-sm transition shrink-0';
+
+const BTN_SECONDARY =
+  'px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-800 font-medium text-sm hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600';
 
 function loadColunasOcultasStorage(): string[] {
   try {
@@ -104,7 +137,35 @@ function fmtSaldoProjetado(row: Record<string, unknown>): string {
   return n.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
-function getRessupCell(row: Record<string, unknown>, key: ColKey): string {
+function fmtNumeroUsuario(v: string | null | undefined): string {
+  const raw = (v ?? '').trim();
+  if (!raw) return '—';
+  const n = Number(raw.replace(',', '.'));
+  if (!Number.isFinite(n)) return raw;
+  return n.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 4 });
+}
+
+function fmtDataUsuario(v: string | null | undefined): string {
+  const raw = (v ?? '').trim();
+  if (!raw) return '—';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [y, m, d] = raw.split('-');
+    return `${d}/${m}/${y}`;
+  }
+  return raw;
+}
+
+function getRessupCell(
+  row: Record<string, unknown>,
+  key: ColKey,
+  userInput?: RowUserInputs
+): string {
+  if (EDITABLE_KEYS.has(key)) {
+    const raw = userInput?.[key];
+    if (NUMERIC_INPUT_KEYS.has(key)) return fmtNumeroUsuario(raw);
+    if (DATE_INPUT_KEYS.has(key)) return fmtDataUsuario(raw);
+    return raw ?? '—';
+  }
   switch (key) {
     case 'codigo':
       return String(getRowValue(row, ['Codigo do Produto', 'codigo do produto']) ?? '').trim() || '—';
@@ -122,10 +183,6 @@ function getRessupCell(row: Record<string, unknown>, key: ColKey): string {
       return fmtData(getRowValue(row, ['Data Necessidade', 'data necessidade']));
     case 'qtdSolicit':
       return fmtNum(getRowValue(row, ['Qtd Liberada', 'qtd liberada']));
-    case 'qtdAprov':
-      return fmtNum(
-        getRowValue(row, ['Qtde Aprovada', 'qtde aprovada', 'Qtd Confirmada', 'qtd confirmada'])
-      );
     case 'estoqAtual':
       return fmtNum(getRowValue(row, ['Saldo Estoque', 'Saldo de Estoque', 'saldo estoque']));
     case 'qtdeUltComp':
@@ -165,8 +222,12 @@ function fmtIsoDataHora(iso: string): string {
   }
 }
 
-function valueForSort(row: Record<string, unknown>, key: ColKey): string | number {
-  const s = getRessupCell(row, key);
+function valueForSort(
+  row: Record<string, unknown>,
+  key: ColKey,
+  userInput?: RowUserInputs
+): string | number {
+  const s = getRessupCell(row, key, userInput);
   if (s === '—') return '';
   const forNum = s.replace(/\s/g, '').replace(/R\$\s?/i, '').replace(/\./g, '').replace(',', '.');
   const n = Number(forNum);
@@ -179,6 +240,7 @@ const inputClass =
   'w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 px-3 py-2 text-sm focus:ring-2 focus:ring-primary-600 focus:border-transparent min-h-[2.5rem]';
 
 export default function RessupAlmoxAnalisePage() {
+  const { login: authLogin } = useAuth();
   const [opcoesFiltro, setOpcoesFiltro] = useState<{ codigos: string[]; descricoes: string[]; coletas: string[] }>({
     codigos: [],
     descricoes: [],
@@ -205,30 +267,41 @@ export default function RessupAlmoxAnalisePage() {
   const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
   const [excelFilterDrafts, setExcelFilterDrafts] = useState<Record<string, ExcelFilterDraft>>({});
   const [colunaFiltroAberta, setColunaFiltroAberta] = useState<ColKey | null>(null);
+  const [filtroAbertoRect, setFiltroAbertoRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const filtroDropdownRef = useRef<HTMLDivElement>(null);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
   const [sortState, setSortState] = useState<SortState>(null);
 
   const [gravandoAnalise, setGravandoAnalise] = useState(false);
+  const [salvandoAlteracoes, setSalvandoAlteracoes] = useState(false);
+  const [processandoAnalise, setProcessandoAnalise] = useState(false);
+  const [concluindoAnalise, setConcluindoAnalise] = useState(false);
   const [feedbackGravacao, setFeedbackGravacao] = useState<{ ok: boolean; msg: string } | null>(null);
+  /** Valores digitados nas colunas editáveis (Qtde Sug, Data Necess Sug, Qtd Aprov, Data Necess Aprov), por __rowKey. */
+  const [userInputs, setUserInputs] = useState<Record<string, RowUserInputs>>({});
   /** Popover de filtros ao clicar em "Nova análise". */
   const [filtrosPopoverAberto, setFiltrosPopoverAberto] = useState(false);
   /** Exibe a grade após o primeiro "Filtrar" válido. */
   const [mostrarGradeAnalise, setMostrarGradeAnalise] = useState(false);
   /** Recarrega a lista do histórico (ex.: após gravar análise). */
   const [historicoVersao, setHistoricoVersao] = useState(0);
-  /** Modal só para visualizar um snapshot (detalhe). */
-  const [detalheModalOpen, setDetalheModalOpen] = useState(false);
   const [historicoLista, setHistoricoLista] = useState<RessupAlmoxAnaliseListItem[]>([]);
   const [historicoCarregando, setHistoricoCarregando] = useState(false);
   const [historicoErro, setHistoricoErro] = useState<string | null>(null);
-  const [historicoDetalheId, setHistoricoDetalheId] = useState<number | null>(null);
-  const [historicoDetalheCarregando, setHistoricoDetalheCarregando] = useState(false);
-  const [historicoDetalheErro, setHistoricoDetalheErro] = useState<string | null>(null);
-  const [historicoDetalhePayload, setHistoricoDetalhePayload] = useState<RessupAlmoxAnalisePayloadV1 | null>(null);
-  const [historicoDetalheMeta, setHistoricoDetalheMeta] = useState<{
+  /** Quando preenchido, a grade exibe um snapshot gravado (modo "visualização do histórico"). */
+  const [historicoVisualizado, setHistoricoVisualizado] = useState<{
+    id: number;
     createdAt: string;
     usuarioLogin: string;
     resumoFiltros: string | null;
+    status: 'em_processamento' | 'processado' | 'concluido';
+    processadoAt: string | null;
+    usuarioLoginProcessado: string | null;
+    concluidoAt: string | null;
+    usuarioLoginConcluido: string | null;
   } | null>(null);
+  const [historicoDetalheCarregando, setHistoricoDetalheCarregando] = useState(false);
+  const [historicoDetalheErro, setHistoricoDetalheErro] = useState<string | null>(null);
   const [opcoesCarregando, setOpcoesCarregando] = useState(false);
   const detalheHistoricoReqRef = useRef(0);
   const novaAnaliseWrapRef = useRef<HTMLDivElement>(null);
@@ -306,23 +379,23 @@ export default function RessupAlmoxAnalisePage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [colunasOcultasOpen]);
 
-  const chavesValidas = useMemo(() => new Set(COL_DEFS.map((c) => c.key)), []);
+  const chavesValidas = useMemo(() => new Set(COL_DEFS_GRADE.map((c) => c.key)), []);
 
   useEffect(() => {
     const ocultasValidas = colunasOcultas.filter((k) => chavesValidas.has(k));
-    if (ocultasValidas.length >= COL_DEFS.length) ocultasValidas.pop();
+    if (ocultasValidas.length >= COL_DEFS_GRADE.length) ocultasValidas.pop();
     if (ocultasValidas.length !== colunasOcultas.length || ocultasValidas.some((k, i) => k !== colunasOcultas[i])) {
       setColunasOcultas(ocultasValidas);
     }
   }, [chavesValidas, colunasOcultas]);
 
   const colunasVisiveisLista = useMemo(
-    () => COL_DEFS.filter((c) => !colunasOcultas.includes(c.key)),
+    () => COL_DEFS_GRADE.filter((c) => !colunasOcultas.includes(c.key)),
     [colunasOcultas]
   );
 
   const colunasOcultasLista = useMemo(
-    () => COL_DEFS.filter((c) => colunasOcultas.includes(c.key)),
+    () => COL_DEFS_GRADE.filter((c) => colunasOcultas.includes(c.key)),
     [colunasOcultas]
   );
 
@@ -363,19 +436,45 @@ export default function RessupAlmoxAnalisePage() {
     });
   };
 
+  const getRowKey = useCallback((row: Record<string, unknown>, idx: number): string => {
+    const k = row.__rowKey;
+    return typeof k === 'string' && k ? k : `row-${idx}`;
+  }, []);
+
+  const setRowInput = useCallback((rowKey: string, col: ColKey, value: string) => {
+    setUserInputs((prev) => {
+      const current = prev[rowKey] ?? {};
+      if ((current[col] ?? '') === value) return prev;
+      const nextRow: RowUserInputs = { ...current, [col]: value };
+      if (!value) delete nextRow[col];
+      const next = { ...prev };
+      if (Object.keys(nextRow).length === 0) delete next[rowKey];
+      else next[rowKey] = nextRow;
+      return next;
+    });
+  }, []);
+
   const valoresUnicosPorColuna = useMemo(() => {
     const out: Partial<Record<ColKey, string[]>> = {};
     for (const col of colunasVisiveisLista) {
       const values = new Set<string>();
-      for (const row of linhas) values.add(getRessupCell(row, col.key));
+      linhas.forEach((row, idx) => {
+        const inputs = userInputs[getRowKey(row, idx)];
+        values.add(getRessupCell(row, col.key, inputs));
+      });
       out[col.key] = [...values].sort((a, b) => a.localeCompare(b, 'pt-BR', { numeric: true, sensitivity: 'base' }));
     }
     return out;
-  }, [colunasVisiveisLista, linhas]);
+  }, [colunasVisiveisLista, linhas, userInputs, getRowKey]);
 
-  const abrirFiltroExcel = (key: ColKey) => {
+  const abrirFiltroExcel = (key: ColKey, e: React.MouseEvent<HTMLButtonElement>) => {
+    const btn = e.currentTarget;
+    const rect = btn.getBoundingClientRect();
     setColunaFiltroAberta((prev) => {
-      if (prev === key) return null;
+      if (prev === key) {
+        setFiltroAbertoRect(null);
+        return null;
+      }
       const valores = valoresUnicosPorColuna[key] ?? [];
       const filtroAtual = columnFilters[key];
       setExcelFilterDrafts((drafts) => ({
@@ -385,17 +484,45 @@ export default function RessupAlmoxAnalisePage() {
           selected: filtroAtual ? filtroAtual.split('\u0001') : valores,
         },
       }));
+      setFiltroAbertoRect({ top: rect.bottom + 4, left: rect.left, width: 288 });
       return key;
     });
   };
+
+  const fecharFiltroExcel = useCallback(() => {
+    setColunaFiltroAberta(null);
+    setFiltroAbertoRect(null);
+  }, []);
 
   const aplicarFiltroExcel = (key: ColKey) => {
     const draft = excelFilterDrafts[key];
     const valores = valoresUnicosPorColuna[key] ?? [];
     if (!draft || draft.selected.length === valores.length) setFiltroColuna(key, '');
     else setFiltroColuna(key, draft.selected.join('\u0001'));
-    setColunaFiltroAberta(null);
+    fecharFiltroExcel();
   };
+
+  // Fechar dropdown ao clicar fora
+  useEffect(() => {
+    if (!colunaFiltroAberta) return;
+    const handle = (e: MouseEvent) => {
+      if (filtroDropdownRef.current && !filtroDropdownRef.current.contains(e.target as Node)) {
+        fecharFiltroExcel();
+      }
+    };
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [colunaFiltroAberta, fecharFiltroExcel]);
+
+  // Fechar dropdown ao rolar a tabela
+  useEffect(() => {
+    if (!colunaFiltroAberta) return;
+    const el = tableScrollRef.current;
+    if (!el) return;
+    const handle = () => fecharFiltroExcel();
+    el.addEventListener('scroll', handle, { passive: true });
+    return () => el.removeEventListener('scroll', handle);
+  }, [colunaFiltroAberta, fecharFiltroExcel]);
 
   const deferredColumnFilters = useDeferredValue(columnFilters);
 
@@ -403,10 +530,11 @@ export default function RessupAlmoxAnalisePage() {
     const filtrosColuna = Object.entries(deferredColumnFilters)
       .map(([key, value]) => [key, value.trim().toLowerCase()] as const)
       .filter(([, value]) => value);
-    return linhas.filter((row) => {
+    return linhas.filter((row, idx) => {
+      const inputs = userInputs[getRowKey(row, idx)];
       for (const [key, value] of filtrosColuna) {
         const colKey = key as ColKey;
-        const cellText = getRessupCell(row, colKey);
+        const cellText = getRessupCell(row, colKey, inputs);
         const selected = value.split('\u0001').filter(Boolean);
         if (selected.length > 1 || value.includes('\u0001')) {
           if (!selected.includes(cellText)) return false;
@@ -414,27 +542,51 @@ export default function RessupAlmoxAnalisePage() {
       }
       return true;
     });
-  }, [linhas, deferredColumnFilters]);
+  }, [linhas, deferredColumnFilters, userInputs, getRowKey]);
 
   const linhasOrdenadas = useMemo(() => {
     if (!sortState) return linhasFiltradas;
     const dir = sortState.direction === 'asc' ? 1 : -1;
     return [...linhasFiltradas].sort((a, b) => {
-      const av = valueForSort(a, sortState.key);
-      const bv = valueForSort(b, sortState.key);
+      const ka = getRowKey(a, 0);
+      const kb = getRowKey(b, 0);
+      const av = valueForSort(a, sortState.key, userInputs[ka]);
+      const bv = valueForSort(b, sortState.key, userInputs[kb]);
       if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
       return String(av).localeCompare(String(bv), 'pt-BR', { numeric: true, sensitivity: 'base' }) * dir;
     });
-  }, [linhasFiltradas, sortState]);
+  }, [linhasFiltradas, sortState, userInputs, getRowKey]);
 
   const temFiltrosGrade =
     Object.keys(columnFilters).length > 0 || sortState != null || colunasOcultas.length > 0;
+
+  /** Navega entre inputs editáveis com Enter (linha abaixo) e Shift+Enter (linha acima). */
+  const handleInputEnterKey = useCallback((
+    e: React.KeyboardEvent<HTMLInputElement>,
+    rowIdx: number,
+    colKey: ColKey
+  ) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const targetIdx = e.shiftKey ? rowIdx - 1 : rowIdx + 1;
+    if (targetIdx < 0 || targetIdx >= linhasOrdenadas.length) return;
+    const targetRow = linhasOrdenadas[targetIdx];
+    const targetRowKey = getRowKey(targetRow, targetIdx);
+    const escapeAttr = (s: string) =>
+      typeof window.CSS?.escape === 'function'
+        ? window.CSS.escape(s)
+        : s.replace(/[^\w-]/g, (c) => `\\${c}`);
+    const selector = `[data-editinput][data-rowkey="${escapeAttr(targetRowKey)}"][data-colkey="${colKey}"]`;
+    const el = document.querySelector<HTMLInputElement>(selector);
+    if (el) { el.focus(); el.select(); }
+  }, [linhasOrdenadas, getRowKey]);
 
   const limparFiltrosGrade = () => {
     setColumnFilters({});
     setExcelFilterDrafts({});
     setSortState(null);
     setColunaFiltroAberta(null);
+    setFiltroAbertoRect(null);
   };
 
   const handleFiltrar = async () => {
@@ -449,10 +601,13 @@ export default function RessupAlmoxAnalisePage() {
     }
     setMsgFiltro(null);
     setMostrarGradeAnalise(true);
+    setHistoricoVisualizado(null);
+    setHistoricoDetalheErro(null);
     setLoading(true);
     setErroApi(null);
     setMsgLista(null);
     setLinhas([]);
+    setUserInputs({});
     const coletaApi = filterColeta
       .split(',')
       .map((x) => x.trim())
@@ -474,7 +629,9 @@ export default function RessupAlmoxAnalisePage() {
         setErroApi(r.error);
         setLinhas([]);
       } else {
-        setLinhas(r.data);
+        setLinhas(
+          r.data.map((row, idx) => ({ ...row, __rowKey: `row-${idx}` }))
+        );
         if (r.message && r.data.length === 0) setMsgLista(r.message);
       }
     } catch (e) {
@@ -502,20 +659,30 @@ export default function RessupAlmoxAnalisePage() {
     setGravandoAnalise(true);
     setFeedbackGravacao(null);
     const columnDefs = COL_DEFS.map((c) => ({ key: c.key, label: c.label }));
-    const displayRows: Record<string, string>[] = linhasOrdenadas.map((row) => {
+    const displayRows: Record<string, string>[] = linhasOrdenadas.map((row, idx) => {
+      const inputs = userInputs[getRowKey(row, idx)];
       const o: Record<string, string> = {};
-      for (const c of COL_DEFS) o[c.key] = getRessupCell(row, c.key);
+      for (const c of COL_DEFS) o[c.key] = getRessupCell(row, c.key, inputs);
       return o;
     });
     const rawRows: Record<string, unknown>[] = linhasOrdenadas.map(
       (row) => JSON.parse(JSON.stringify(row)) as Record<string, unknown>
     );
-    const payload: RessupAlmoxAnalisePayloadV1 = {
+    const userInputsSnapshot: Record<string, RowUserInputs> = {};
+    linhasOrdenadas.forEach((row, idx) => {
+      const key = getRowKey(row, idx);
+      const inputs = userInputs[key];
+      if (inputs && Object.keys(inputs).length > 0) {
+        userInputsSnapshot[key] = { ...inputs };
+      }
+    });
+    const payload: RessupAlmoxAnalisePayloadV1 & { userInputs?: Record<string, RowUserInputs> } = {
       version: 1,
       columnDefs,
       displayRows,
       rawRows,
       aplicado,
+      userInputs: userInputsSnapshot,
       savedUi: {
         colunasOcultas: [...colunasOcultas],
         columnFilters: { ...columnFilters },
@@ -531,9 +698,20 @@ export default function RessupAlmoxAnalisePage() {
         setFeedbackGravacao({ ok: false, msg: r.error ?? 'Não foi possível gravar.' });
       } else {
         setHistoricoVersao((v) => v + 1);
+        setHistoricoVisualizado({
+          id: r.id!,
+          createdAt: r.createdAt ?? new Date().toISOString(),
+          usuarioLogin: r.usuarioLogin ?? authLogin ?? '',
+          resumoFiltros: resumoFiltros ?? null,
+          status: 'em_processamento',
+          processadoAt: null,
+          usuarioLoginProcessado: null,
+          concluidoAt: null,
+          usuarioLoginConcluido: null,
+        });
         setFeedbackGravacao({
           ok: true,
-          msg: `Análise gravada com sucesso (registro nº ${r.id ?? '?'}).`,
+          msg: `Análise gravada (nº ${r.id ?? '?'}) com status "Em processamento". Você pode editar os campos e salvar as alterações.`,
         });
       }
     } catch (e) {
@@ -548,26 +726,188 @@ export default function RessupAlmoxAnalisePage() {
     colunasOcultas,
     columnFilters,
     sortState,
+    userInputs,
+    getRowKey,
+    authLogin,
   ]);
 
-  const fecharDetalheModal = useCallback(() => {
+  /** Atualiza o payload de uma análise em_processamento ou processado sem mudar o status. */
+  const salvarAlteracoesAnalise = useCallback(async () => {
+    if (!historicoVisualizado || historicoVisualizado.status === 'concluido') return;
+    if (!aplicado || linhasOrdenadas.length === 0) return;
+    setSalvandoAlteracoes(true);
+    setFeedbackGravacao(null);
+    const columnDefs = COL_DEFS.map((c) => ({ key: c.key, label: c.label }));
+    const displayRows: Record<string, string>[] = linhasOrdenadas.map((row, idx) => {
+      const inputs = userInputs[getRowKey(row, idx)];
+      const o: Record<string, string> = {};
+      for (const c of COL_DEFS) o[c.key] = getRessupCell(row, c.key, inputs);
+      return o;
+    });
+    const rawRows: Record<string, unknown>[] = linhasOrdenadas.map(
+      (row) => JSON.parse(JSON.stringify(row)) as Record<string, unknown>
+    );
+    const userInputsSnapshot: Record<string, RowUserInputs> = {};
+    linhasOrdenadas.forEach((row, idx) => {
+      const key = getRowKey(row, idx);
+      const inputs = userInputs[key];
+      if (inputs && Object.keys(inputs).length > 0) userInputsSnapshot[key] = { ...inputs };
+    });
+    const payload: RessupAlmoxAnalisePayloadV1 & { userInputs?: Record<string, RowUserInputs> } = {
+      version: 1,
+      columnDefs,
+      displayRows,
+      rawRows,
+      aplicado,
+      userInputs: userInputsSnapshot,
+      savedUi: {
+        colunasOcultas: [...colunasOcultas],
+        columnFilters: { ...columnFilters },
+        sort: sortState ? { key: sortState.key, direction: sortState.direction } : null,
+      },
+    };
+    try {
+      const r = await atualizarRessupAlmoxAnalise(historicoVisualizado.id, {
+        resumoFiltros: resumoFiltros ?? undefined,
+        payload,
+      });
+      if (!r.ok) {
+        setFeedbackGravacao({ ok: false, msg: r.error ?? 'Não foi possível salvar as alterações.' });
+      } else {
+        setHistoricoVersao((v) => v + 1);
+        setFeedbackGravacao({ ok: true, msg: 'Alterações salvas com sucesso.' });
+      }
+    } catch (e) {
+      setFeedbackGravacao({ ok: false, msg: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSalvandoAlteracoes(false);
+    }
+  }, [
+    historicoVisualizado,
+    aplicado,
+    linhasOrdenadas,
+    resumoFiltros,
+    colunasOcultas,
+    columnFilters,
+    sortState,
+    userInputs,
+    getRowKey,
+  ]);
+
+  /** Muda o status de uma análise em_processamento para processado. */
+  const processarAnalise = useCallback(async () => {
+    if (!historicoVisualizado || historicoVisualizado.status !== 'em_processamento') return;
+    setProcessandoAnalise(true);
+    setFeedbackGravacao(null);
+    try {
+      const r = await processarRessupAlmoxAnalise(historicoVisualizado.id);
+      if (!r.ok) {
+        setFeedbackGravacao({ ok: false, msg: r.error ?? 'Não foi possível processar a análise.' });
+      } else {
+        const agora = new Date().toISOString();
+        setHistoricoVisualizado((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'processado',
+                processadoAt: agora,
+                usuarioLoginProcessado: authLogin ?? '',
+              }
+            : prev
+        );
+        setHistoricoVersao((v) => v + 1);
+        setFeedbackGravacao({ ok: true, msg: 'Análise marcada como processada. A grade agora está somente leitura.' });
+      }
+    } catch (e) {
+      setFeedbackGravacao({ ok: false, msg: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setProcessandoAnalise(false);
+    }
+  }, [historicoVisualizado, authLogin]);
+
+  /** Muda o status de uma análise processado para concluido. */
+  const concluirAnalise = useCallback(async () => {
+    if (!historicoVisualizado || historicoVisualizado.status !== 'processado') return;
+    setConcluindoAnalise(true);
+    setFeedbackGravacao(null);
+    try {
+      const r = await concluirRessupAlmoxAnalise(historicoVisualizado.id);
+      if (!r.ok) {
+        setFeedbackGravacao({ ok: false, msg: r.error ?? 'Não foi possível concluir a análise.' });
+      } else {
+        const agora = new Date().toISOString();
+        setHistoricoVisualizado((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'concluido',
+                concluidoAt: agora,
+                usuarioLoginConcluido: authLogin ?? '',
+              }
+            : prev
+        );
+        setHistoricoVersao((v) => v + 1);
+        setFeedbackGravacao({ ok: true, msg: 'Análise concluída. A grade está totalmente bloqueada para edição.' });
+      }
+    } catch (e) {
+      setFeedbackGravacao({ ok: false, msg: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setConcluindoAnalise(false);
+    }
+  }, [historicoVisualizado, authLogin]);
+
+  /**
+   * Exporta as linhas filtradas/ordenadas para XLSX usando TODAS as colunas (mesmo as ocultas na grade),
+   * respeitando apenas o que o usuário ocultou manualmente via o ícone de "olho".
+   */
+  const exportarExcel = useCallback(() => {
+    if (linhasOrdenadas.length === 0) return;
+    const colunasExport = COL_DEFS.filter((c) => !colunasOcultas.includes(c.key));
+    const headers = colunasExport.map((c) => c.label);
+    const rows = linhasOrdenadas.map((row, idx) => {
+      const inputs = userInputs[getRowKey(row, idx)];
+      return colunasExport.map((c) => {
+        const cell = getRessupCell(row, c.key, inputs);
+        return cell === '—' ? '' : cell;
+      });
+    });
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Ressup Almox');
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    XLSX.writeFile(wb, `ressup-almox-${ts}.xlsx`);
+  }, [colunasOcultas, linhasOrdenadas, userInputs, getRowKey]);
+
+  const fecharVisualizacaoHistorico = useCallback(() => {
     detalheHistoricoReqRef.current += 1;
     setHistoricoDetalheCarregando(false);
-    setDetalheModalOpen(false);
-    setHistoricoDetalheId(null);
-    setHistoricoDetalhePayload(null);
-    setHistoricoDetalheMeta(null);
     setHistoricoDetalheErro(null);
+    setHistoricoVisualizado(null);
+    setMostrarGradeAnalise(false);
+    setLinhas([]);
+    setUserInputs({});
+    setAplicado(null);
+    setFeedbackGravacao(null);
+    setColumnFilters({});
+    setExcelFilterDrafts({});
+    setSortState(null);
+    setColunaFiltroAberta(null);
+    setMsgLista(null);
+    setErroApi(null);
   }, []);
 
+  /**
+   * Carrega um snapshot do histórico na MESMA grade usada durante a criação da análise:
+   * hidrata `linhas` (rawRows), `aplicado`, `userInputs` e a UI persistida (colunas ocultas,
+   * filtros por coluna e ordenação). Mantém a grade editável para que o usuário possa ajustar
+   * e, se quiser, gravar como nova análise.
+   */
   const abrirDetalheHistorico = useCallback(async (id: number) => {
     const req = ++detalheHistoricoReqRef.current;
     setHistoricoDetalheErro(null);
-    setHistoricoDetalheId(id);
-    setDetalheModalOpen(true);
     setHistoricoDetalheCarregando(true);
-    setHistoricoDetalhePayload(null);
-    setHistoricoDetalheMeta(null);
+    setFeedbackGravacao(null);
+    setColunasOcultasOpen(false);
     try {
       const r = await obterRessupAlmoxAnalise(id);
       if (req !== detalheHistoricoReqRef.current) return;
@@ -575,46 +915,153 @@ export default function RessupAlmoxAnalisePage() {
         setHistoricoDetalheErro(r.error);
         return;
       }
-      setHistoricoDetalheMeta({
+      const payload = r.payload;
+      if (!payload) {
+        setHistoricoDetalheErro('Snapshot sem dados legíveis.');
+        return;
+      }
+
+      const rawRows = Array.isArray(payload.rawRows) ? payload.rawRows : [];
+      const linhasHidr = rawRows.map((row, idx) => {
+        const o: Record<string, unknown> = { ...(row as Record<string, unknown>) };
+        const k = o.__rowKey;
+        if (typeof k !== 'string' || !k) o.__rowKey = `row-${idx}`;
+        return o;
+      });
+
+      const ui = payload.savedUi ?? null;
+      const ocultasValidas = Array.isArray(ui?.colunasOcultas)
+        ? ui!.colunasOcultas.filter((k) => chavesValidas.has(k as ColKey))
+        : [];
+      const filtrosUi = ui?.columnFilters && typeof ui.columnFilters === 'object'
+        ? (ui.columnFilters as Record<string, string>)
+        : {};
+      const sortUi = ui?.sort ?? null;
+
+      const inputsRaw = (payload as RessupAlmoxAnalisePayloadV1 & {
+        userInputs?: Record<string, RowUserInputs>;
+      }).userInputs;
+      const inputs = inputsRaw && typeof inputsRaw === 'object' ? inputsRaw : {};
+
+      setMostrarGradeAnalise(true);
+      setLinhas(linhasHidr);
+      setAplicado({
+        codigo: payload.aplicado?.codigo ?? '',
+        descricao: payload.aplicado?.descricao ?? '',
+        coleta: payload.aplicado?.coleta ?? '',
+      });
+      setUserInputs(inputs);
+      setColunasOcultas(ocultasValidas);
+      setColumnFilters(filtrosUi);
+      setExcelFilterDrafts({});
+      setSortState(
+        sortUi && typeof sortUi === 'object' && 'key' in sortUi
+          ? { key: sortUi.key as ColKey, direction: sortUi.direction as 'asc' | 'desc' }
+          : null
+      );
+      setColunaFiltroAberta(null);
+      setMsgLista(null);
+      setErroApi(null);
+      setLoading(false);
+      setFiltrosPopoverAberto(false);
+      setHistoricoVisualizado({
+        id: r.id,
         createdAt: r.createdAt,
         usuarioLogin: r.usuarioLogin,
         resumoFiltros: r.resumoFiltros,
+        status: r.status,
+        processadoAt: r.processadoAt,
+        usuarioLoginProcessado: r.usuarioLoginProcessado,
+        concluidoAt: r.concluidoAt,
+        usuarioLoginConcluido: r.usuarioLoginConcluido,
       });
-      setHistoricoDetalhePayload(r.payload);
     } catch (e) {
       if (req !== detalheHistoricoReqRef.current) return;
       setHistoricoDetalheErro(e instanceof Error ? e.message : String(e));
     } finally {
       if (req === detalheHistoricoReqRef.current) setHistoricoDetalheCarregando(false);
     }
-  }, []);
+  }, [chavesValidas]);
 
   const colSpanGrade = Math.max(1, colunasVisiveisLista.length);
 
-  const overlayPrincipalAtivo = loading || gravandoAnalise || opcoesCarregando;
+  /** Análise totalmente bloqueada para edição */
+  const analiseReadOnly = historicoVisualizado?.status === 'concluido';
+  /** Análise com edição restrita apenas às colunas de aprovação */
+  const apenasAprovEditavel = historicoVisualizado?.status === 'processado';
+
+  const overlayPrincipalAtivo =
+    loading || gravandoAnalise || salvandoAlteracoes || processandoAnalise || concluindoAnalise || opcoesCarregando || historicoDetalheCarregando;
   const overlayPrincipalMsg = gravandoAnalise
     ? 'Gravando análise…'
-    : loading
-      ? 'Consultando Nomus (produtos e registro da coleta)…'
-      : opcoesCarregando
-        ? 'Carregando opções de filtro…'
-        : 'Carregando informações...';
+    : salvandoAlteracoes
+      ? 'Salvando alterações…'
+      : processandoAnalise
+        ? 'Processando análise…'
+        : concluindoAnalise
+          ? 'Concluindo análise…'
+          : loading
+            ? 'Consultando Nomus (produtos e registro da coleta)…'
+            : historicoDetalheCarregando
+              ? 'Carregando análise gravada…'
+              : opcoesCarregando
+                ? 'Carregando opções de filtro…'
+                : 'Carregando informações...';
 
   const historicoListaOverlayAtivo = historicoCarregando;
-  const detalheModalOverlayAtivo = historicoDetalheCarregando;
 
   return (
-    <div className="relative flex flex-col flex-1 min-h-0 p-4 max-w-[1920px] mx-auto w-full">
+    <div className="relative flex flex-col flex-1 min-h-0 p-3 max-w-[1920px] mx-auto w-full">
       <CarregandoInformacoesOverlay show={overlayPrincipalAtivo} mensagem={overlayPrincipalMsg} mode="viewport" />
 
       <>
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between shrink-0">
-          <div>
-            <p className="text-xs font-medium text-primary-600 dark:text-primary-400 uppercase tracking-wide">PCP</p>
-            <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Ressup Almox</h1>
-            <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Histórico de análises gravadas no sistema.</p>
+        <div className="mb-2 flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between shrink-0">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <div>
+                <p className="text-xs font-medium text-primary-600 dark:text-primary-400 uppercase tracking-wide leading-none mb-0.5">PCP</p>
+                <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100 leading-tight">Ressup Almox</h1>
+              </div>
+              {/* Badge de status inline com o título quando há análise aberta */}
+              {mostrarGradeAnalise && historicoVisualizado && (
+                <span className={`self-end mb-0.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                  historicoVisualizado.status === 'concluido'
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                    : historicoVisualizado.status === 'processado'
+                      ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300'
+                      : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                }`}>
+                  {historicoVisualizado.status === 'concluido' ? '✓ Concluído' : historicoVisualizado.status === 'processado' ? '◎ Processado' : '● Em processamento'}
+                </span>
+              )}
+            </div>
+            {/* Subtítulo compacto com metadados da análise */}
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap gap-x-3 gap-y-0">
+              {mostrarGradeAnalise && historicoVisualizado ? (
+                <>
+                  <span><span className="font-medium">Criada em:</span> {fmtIsoDataHora(historicoVisualizado.createdAt)} por {historicoVisualizado.usuarioLogin}</span>
+                  {historicoVisualizado.processadoAt && <span><span className="font-medium">Processada por:</span> {historicoVisualizado.usuarioLoginProcessado ?? '—'}</span>}
+                  {historicoVisualizado.concluidoAt && <span><span className="font-medium">Concluída por:</span> {historicoVisualizado.usuarioLoginConcluido ?? '—'}</span>}
+                  {historicoVisualizado.resumoFiltros && <span><span className="font-medium">Filtros:</span> {historicoVisualizado.resumoFiltros}</span>}
+                </>
+              ) : mostrarGradeAnalise ? (
+                <span>Análise atual — ajuste, grave e exporte os dados do Nomus.</span>
+              ) : (
+                <span>Histórico de análises gravadas no sistema.</span>
+              )}
+            </p>
           </div>
-          <div ref={novaAnaliseWrapRef} className="relative shrink-0 self-start sm:self-auto">
+          <div ref={novaAnaliseWrapRef} className="flex shrink-0 flex-wrap items-center gap-2 self-start">
+            {mostrarGradeAnalise && (
+              <button
+                type="button"
+                onClick={fecharVisualizacaoHistorico}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                title="Voltar para a lista de análises gravadas"
+              >
+                ← Voltar ao histórico
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setFiltrosPopoverAberto((o) => !o)}
@@ -624,156 +1071,275 @@ export default function RessupAlmoxAnalisePage() {
             >
               Nova análise
             </button>
-            {filtrosPopoverAberto && (
-              <div
-                className="absolute right-0 top-full z-[55] mt-2 rounded-xl border border-slate-200 bg-white p-4 shadow-2xl dark:border-slate-600 dark:bg-slate-800 dark:shadow-black/40 overflow-auto"
-                style={{ resize: 'both', width: 'min(calc(100vw - 2rem), 56rem)', minWidth: '18rem', minHeight: '14rem', maxHeight: 'min(85vh, 560px)' }}
-                role="dialog"
-                aria-label="Filtros — nova análise"
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide">
-                    Filtros
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setFiltrosPopoverAberto(false)}
-                    className="ml-2 flex items-center justify-center w-6 h-6 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition-colors"
-                    aria-label="Fechar painel de filtros"
-                  >
-                    ✕
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-end">
-                  <MultiSelectWithSearch
-                    label="Código do Produto"
-                    placeholder="Todos"
-                    options={opcoesFiltro.codigos}
-                    value={filterCodigo}
-                    onChange={(v) => setFilterCodigo(v.split(',').map((s) => s.trim()).filter(Boolean).join(', '))}
-                    labelClass={labelClass}
-                    inputClass={inputClass}
-                    minWidth="180px"
-                    optionLabel="códigos"
-                  />
-                  <MultiSelectWithSearch
-                    label="Descrição do Produto"
-                    placeholder="Todas"
-                    options={opcoesFiltro.descricoes}
-                    value={filterDescricao}
-                    onChange={(v) => setFilterDescricao(v.split(',').map((s) => s.trim()).filter(Boolean).join(', '))}
-                    labelClass={labelClass}
-                    inputClass={inputClass}
-                    minWidth="200px"
-                    optionLabel="descrições"
-                  />
-                  <MultiSelectWithSearch
-                    label="Nome da coleta"
-                    placeholder="Todas"
-                    options={opcoesFiltro.coletas}
-                    value={filterColeta}
-                    onChange={(v) => setFilterColeta(v.split(',').map((s) => s.trim()).filter(Boolean).join(', '))}
-                    labelClass={labelClass}
-                    inputClass={inputClass}
-                    minWidth="200px"
-                    optionLabel="coletas"
-                  />
-                </div>
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void handleFiltrar()}
-                    disabled={loading}
-                    className="inline-flex items-center justify-center rounded-lg bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 px-4 py-2 text-sm font-medium hover:bg-slate-700 dark:hover:bg-slate-300 disabled:opacity-50"
-                  >
-                    Filtrar
-                  </button>
-                </div>
-                {msgFiltro && (
-                  <p className="mt-3 text-sm text-amber-700 dark:text-amber-300" role="alert">
-                    {msgFiltro}
-                  </p>
-                )}
-              </div>
-            )}
           </div>
         </div>
 
-          <div className="relative flex-1 min-h-0 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/80 p-4 shadow-sm overflow-auto">
-            <CarregandoInformacoesOverlay
-              show={historicoListaOverlayAtivo}
-              mensagem="Carregando informações..."
-              mode="contained"
-              className="rounded-xl"
-            />
-            {historicoErro && !historicoCarregando && (
-              <p className="text-sm text-red-600 dark:text-red-300">{historicoErro}</p>
-            )}
-            {!historicoCarregando && !historicoErro && historicoLista.length === 0 && (
-              <p className="text-sm text-slate-600 dark:text-slate-400">
-                Nenhuma análise gravada ainda. Use <span className="font-medium">Nova análise</span> para consultar o Nomus e gravar um snapshot.
-              </p>
-            )}
-            {!historicoCarregando && historicoLista.length > 0 && (
-              <table className="w-full text-left text-sm border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-600 dark:bg-slate-900/50">
-                    <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Data</th>
-                    <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Usuário</th>
-                    <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Qtde de linhas</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {historicoLista.map((h) => (
-                    <tr
-                      key={h.id}
-                      tabIndex={0}
-                      className="border-b border-slate-100 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500"
-                      title="Clique para ver o snapshot gravado"
-                      onClick={() => void abrirDetalheHistorico(h.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          void abrirDetalheHistorico(h.id);
-                        }
-                      }}
-                    >
-                      <td className="py-2 px-2 whitespace-nowrap text-slate-800 dark:text-slate-200">
-                        {fmtIsoDataHora(h.createdAt)}
-                      </td>
-                      <td className="py-2 px-2 text-slate-800 dark:text-slate-200">{h.usuarioLogin}</td>
-                      <td className="py-2 px-2 text-slate-800 dark:text-slate-200">{h.linhaCount}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+        {filtrosPopoverAberto && (
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+            onClick={() => setFiltrosPopoverAberto(false)}
+            role="presentation"
+          >
+            <div
+              className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xl dark:border-slate-600 dark:bg-slate-800 dark:shadow-black/40 overflow-auto"
+              style={{
+                resize: 'both',
+                overflow: 'auto',
+                width: 'min(calc(100vw - 2rem), 72rem)',
+                height: 'min(calc(100vh - 4rem), 34rem)',
+                minWidth: '20rem',
+                minHeight: '16rem',
+                maxWidth: 'calc(100vw - 2rem)',
+                maxHeight: 'calc(100vh - 2rem)',
+              }}
+              onClick={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Filtros — nova análise"
+            >
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+                  Filtros
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setFiltrosPopoverAberto(false)}
+                  className="ml-2 flex items-center justify-center w-6 h-6 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition-colors"
+                  aria-label="Fechar painel de filtros"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-end">
+                <MultiSelectWithSearch
+                  label="Código do Produto"
+                  placeholder="Todos"
+                  options={opcoesFiltro.codigos}
+                  value={filterCodigo}
+                  onChange={(v) => setFilterCodigo(v.split(',').map((s) => s.trim()).filter(Boolean).join(', '))}
+                  labelClass={labelClass}
+                  inputClass={inputClass}
+                  minWidth="180px"
+                  optionLabel="códigos"
+                />
+                <MultiSelectWithSearch
+                  label="Descrição do Produto"
+                  placeholder="Todas"
+                  options={opcoesFiltro.descricoes}
+                  value={filterDescricao}
+                  onChange={(v) => setFilterDescricao(v.split(',').map((s) => s.trim()).filter(Boolean).join(', '))}
+                  labelClass={labelClass}
+                  inputClass={inputClass}
+                  minWidth="200px"
+                  optionLabel="descrições"
+                />
+                <MultiSelectWithSearch
+                  label="Nome da coleta"
+                  placeholder="Todas"
+                  options={opcoesFiltro.coletas}
+                  value={filterColeta}
+                  onChange={(v) => setFilterColeta(v.split(',').map((s) => s.trim()).filter(Boolean).join(', '))}
+                  labelClass={labelClass}
+                  inputClass={inputClass}
+                  minWidth="200px"
+                  optionLabel="coletas"
+                />
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleFiltrar()}
+                  disabled={loading}
+                  className="inline-flex items-center justify-center rounded-lg bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 px-4 py-2 text-sm font-medium hover:bg-slate-700 dark:hover:bg-slate-300 disabled:opacity-50"
+                >
+                  Filtrar
+                </button>
+              </div>
+              {msgFiltro && (
+                <p className="mt-3 text-sm text-amber-700 dark:text-amber-300" role="alert">
+                  {msgFiltro}
+                </p>
+              )}
+            </div>
           </div>
+        )}
+
+          {!mostrarGradeAnalise && (
+            <div className="relative flex-1 min-h-0 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/80 p-4 shadow-sm overflow-auto">
+              <CarregandoInformacoesOverlay
+                show={historicoListaOverlayAtivo}
+                mensagem="Carregando informações..."
+                mode="contained"
+                className="rounded-xl"
+              />
+              {/* Legenda dos status */}
+              <div className="mb-4 flex flex-wrap gap-x-6 gap-y-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-900/40">
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">● Em processamento</span>
+                  <span className="text-xs text-slate-600 dark:text-slate-400">Criado, mas ainda sugerindo quantidades e datas.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-800 dark:bg-blue-900/40 dark:text-blue-300">◎ Processado</span>
+                  <span className="text-xs text-slate-600 dark:text-slate-400">Quantidades e datas sugeridas e gravadas, mas pendente análise.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">✓ Concluído</span>
+                  <span className="text-xs text-slate-600 dark:text-slate-400">Quantidades e datas analisadas e concluídas.</span>
+                </div>
+              </div>
+              {historicoErro && !historicoCarregando && (
+                <p className="text-sm text-red-600 dark:text-red-300">{historicoErro}</p>
+              )}
+              {!historicoCarregando && !historicoErro && historicoLista.length === 0 && (
+                <p className="text-sm text-slate-600 dark:text-slate-400">
+                  Nenhuma análise gravada ainda. Use <span className="font-medium">Nova análise</span> para consultar o Nomus e gravar um snapshot.
+                </p>
+              )}
+              {!historicoCarregando && historicoLista.length > 0 && (
+                <table className="w-full text-left text-sm border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-600 dark:bg-slate-900/50">
+                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Data</th>
+                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Status</th>
+                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Criado por</th>
+                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200 text-center">Linhas</th>
+                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Processado por</th>
+                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Concluído por</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historicoLista.map((h) => {
+                      const selecionada = historicoVisualizado?.id === h.id;
+                      return (
+                        <tr
+                          key={h.id}
+                          tabIndex={0}
+                          aria-selected={selecionada}
+                          className={`border-b border-slate-100 dark:border-slate-700 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 ${
+                            selecionada
+                              ? 'bg-primary-50 dark:bg-primary-900/30'
+                              : 'hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                          }`}
+                          title="Clique para abrir esta análise na grade"
+                          onClick={() => void abrirDetalheHistorico(h.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              void abrirDetalheHistorico(h.id);
+                            }
+                          }}
+                        >
+                          <td className="py-2 px-2 whitespace-nowrap text-slate-800 dark:text-slate-200">
+                            {fmtIsoDataHora(h.createdAt)}
+                          </td>
+                          <td className="py-2 px-2 whitespace-nowrap">
+                            {h.status === 'concluido' ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+                                ✓ Concluído
+                              </span>
+                            ) : h.status === 'processado' ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-800 dark:bg-blue-900/40 dark:text-blue-300">
+                                ◎ Processado
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                                ● Em processamento
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-2 text-slate-800 dark:text-slate-200">{h.usuarioLogin}</td>
+                          <td className="py-2 px-2 text-center text-slate-800 dark:text-slate-200">{h.linhaCount}</td>
+                          <td className="py-2 px-2 text-slate-500 dark:text-slate-400">
+                            {h.usuarioLoginProcessado ?? '—'}
+                          </td>
+                          <td className="py-2 px-2 text-slate-500 dark:text-slate-400">
+                            {h.usuarioLoginConcluido ?? '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
 
       {mostrarGradeAnalise && (
-      <div className="mt-6 flex flex-col flex-1 min-h-0 gap-2 border-t border-slate-200 dark:border-slate-700 pt-4">
-        <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide shrink-0">
-          Análise atual
-        </p>
+      <div className="flex flex-col flex-1 min-h-0 gap-1.5">
+        {historicoDetalheErro && (
+          <p className="text-sm text-red-700 dark:text-red-300 shrink-0" role="alert">
+            {historicoDetalheErro}
+          </p>
+        )}
         {erroApi && (
           <p className="text-sm text-red-700 dark:text-red-300 shrink-0" role="alert">
             {erroApi}
           </p>
         )}
-      <div className="flex flex-col flex-1 min-h-0 gap-2">
-        <div className="flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div className="flex flex-col flex-1 min-h-0 gap-1">
+        <div className="flex flex-wrap items-center justify-between gap-1.5 shrink-0">
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={limparFiltrosGrade} className={BTN_PRIMARY} title="Limpar filtros e ordenação da grade (mantém dados carregados)">
-              Limpar filtros da grade
-            </button>
+            {!analiseReadOnly && (
+              <button type="button" onClick={limparFiltrosGrade} className={BTN_PRIMARY} title="Limpar filtros e ordenação da grade (mantém dados carregados)">
+                Limpar filtros da grade
+              </button>
+            )}
+            {/* Sem historicoVisualizado = análise nova → botão "Gravar análise" cria registro */}
+            {!historicoVisualizado && (
+              <button
+                type="button"
+                onClick={() => void gravarSnapshotAnalise()}
+                disabled={gravandoAnalise || linhasOrdenadas.length === 0 || aplicado == null}
+                className={BTN_SECONDARY}
+                title="Grava no banco local um snapshot (status: em processamento) das linhas exibidas"
+              >
+                Gravar análise
+              </button>
+            )}
+            {/* Em processamento ou processado → botão "Salvar alterações" atualiza payload existente */}
+            {(historicoVisualizado?.status === 'em_processamento' || historicoVisualizado?.status === 'processado') && (
+              <button
+                type="button"
+                onClick={() => void salvarAlteracoesAnalise()}
+                disabled={salvandoAlteracoes || linhasOrdenadas.length === 0}
+                className={BTN_SECONDARY}
+                title="Salva as alterações dos campos editáveis"
+              >
+                Salvar alterações
+              </button>
+            )}
+            {/* Em processamento → botão "Marcar como Processado" */}
+            {historicoVisualizado?.status === 'em_processamento' && (
+              <button
+                type="button"
+                onClick={() => void processarAnalise()}
+                disabled={processandoAnalise}
+                className="px-3 py-1.5 rounded-lg border border-blue-400 bg-blue-600 text-white font-medium text-sm hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-700 dark:hover:bg-blue-600"
+                title="Marca como Processado — apenas Qtd Aprov e Data Necess Aprov ficam editáveis"
+              >
+                Marcar como Processado
+              </button>
+            )}
+            {/* Processado → botão "Concluir análise" */}
+            {historicoVisualizado?.status === 'processado' && (
+              <button
+                type="button"
+                onClick={() => void concluirAnalise()}
+                disabled={concluindoAnalise}
+                className="px-3 py-1.5 rounded-lg border border-emerald-400 bg-emerald-600 text-white font-medium text-sm hover:bg-emerald-700 disabled:opacity-50 dark:bg-emerald-700 dark:hover:bg-emerald-600"
+                title="Conclui a análise — todos os campos ficam somente leitura"
+              >
+                Concluir análise
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => void gravarSnapshotAnalise()}
-              disabled={gravandoAnalise || linhasOrdenadas.length === 0 || aplicado == null}
-              className="px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 font-medium text-sm hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600"
-              title="Grava no banco local um snapshot das linhas exibidas (ordem e células atuais) e dos dados brutos do Nomus"
+              onClick={exportarExcel}
+              disabled={linhasOrdenadas.length === 0}
+              className="px-3 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 font-medium text-sm hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200 dark:hover:bg-emerald-900/50"
+              title="Exporta as colunas visíveis (com os valores digitados) para um arquivo XLSX"
             >
-              Gravar análise
+              Exportar Excel
             </button>
             {temFiltrosGrade && linhas.length > 0 && (
               <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -841,7 +1407,7 @@ export default function RessupAlmoxAnalisePage() {
         )}
 
         <div className="flex-1 min-h-0 overflow-auto min-w-0 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm">
-          <div className="overflow-x-auto max-h-[75vh] overflow-y-auto">
+          <div ref={tableScrollRef} className="overflow-x-auto max-h-[calc(100vh-10rem)] overflow-y-auto">
             <table className="w-full text-sm text-left border-collapse min-w-[900px]">
               <thead className="sticky top-0 z-20">
                 <tr className="bg-primary-600 text-white">
@@ -855,7 +1421,7 @@ export default function RessupAlmoxAnalisePage() {
                         <span className="flex shrink-0 flex-col gap-0.5">
                           <button
                             type="button"
-                            onClick={() => abrirFiltroExcel(col.key)}
+                            onClick={(e) => abrirFiltroExcel(col.key, e)}
                             className={`rounded border border-white/25 px-1 py-0.5 text-[9px] leading-none hover:bg-white/15 ${
                               columnFilters[col.key] || sortState?.key === col.key ? 'text-amber-200' : 'text-white/90'
                             }`}
@@ -883,117 +1449,6 @@ export default function RessupAlmoxAnalisePage() {
                           </button>
                         </span>
                       </div>
-                      {colunaFiltroAberta === col.key && (
-                        <div className="absolute left-1 top-full z-50 mt-1 w-72 rounded-lg border border-slate-300 bg-white p-2 text-slate-800 shadow-xl dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSortState({ key: col.key, direction: 'asc' });
-                              setColunaFiltroAberta(null);
-                            }}
-                            className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-700"
-                          >
-                            A↧ Classificar de A a Z
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSortState({ key: col.key, direction: 'desc' });
-                              setColunaFiltroAberta(null);
-                            }}
-                            className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-700"
-                          >
-                            Z↧ Classificar de Z a A
-                          </button>
-                          <div className="my-2 border-t border-slate-200 dark:border-slate-600" />
-                          <input
-                            type="text"
-                            value={excelFilterDrafts[col.key]?.search ?? ''}
-                            onChange={(e) =>
-                              setExcelFilterDrafts((prev) => ({
-                                ...prev,
-                                [col.key]: {
-                                  search: e.target.value,
-                                  selected: prev[col.key]?.selected ?? (valoresUnicosPorColuna[col.key] ?? []),
-                                },
-                              }))
-                            }
-                            placeholder="Pesquisar"
-                            className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
-                            autoFocus
-                          />
-                          <div className="mt-2 max-h-44 overflow-auto rounded border border-slate-200 p-1 dark:border-slate-600">
-                            {(() => {
-                              const valores = valoresUnicosPorColuna[col.key] ?? [];
-                              const draft = excelFilterDrafts[col.key] ?? { search: '', selected: valores };
-                              const visiveis = valores.filter((v) =>
-                                v.toLowerCase().includes(draft.search.trim().toLowerCase())
-                              );
-                              const todosVisiveisSelecionados = visiveis.every((v) => draft.selected.includes(v));
-                              const toggle = (value: string, checked: boolean) => {
-                                setExcelFilterDrafts((prev) => {
-                                  const atual = prev[col.key] ?? { search: '', selected: valores };
-                                  const set = new Set(atual.selected);
-                                  if (checked) set.add(value);
-                                  else set.delete(value);
-                                  return { ...prev, [col.key]: { ...atual, selected: [...set] } };
-                                });
-                              };
-                              return (
-                                <>
-                                  <label className="flex items-center gap-2 px-1 py-1 text-xs font-medium">
-                                    <input
-                                      type="checkbox"
-                                      checked={todosVisiveisSelecionados}
-                                      onChange={(e) => {
-                                        const checked = e.target.checked;
-                                        setExcelFilterDrafts((prev) => {
-                                          const atual = prev[col.key] ?? { search: '', selected: valores };
-                                          const set = new Set(atual.selected);
-                                          for (const v of visiveis) {
-                                            if (checked) set.add(v);
-                                            else set.delete(v);
-                                          }
-                                          return { ...prev, [col.key]: { ...atual, selected: [...set] } };
-                                        });
-                                      }}
-                                    />
-                                    (Selecionar Tudo)
-                                  </label>
-                                  {visiveis.map((value) => (
-                                    <label key={value} className="flex items-center gap-2 px-1 py-0.5 text-xs">
-                                      <input
-                                        type="checkbox"
-                                        checked={draft.selected.includes(value)}
-                                        onChange={(e) => toggle(value, e.target.checked)}
-                                      />
-                                      <span className="truncate" title={value}>
-                                        {value}
-                                      </span>
-                                    </label>
-                                  ))}
-                                </>
-                              );
-                            })()}
-                          </div>
-                          <div className="mt-2 flex justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => aplicarFiltroExcel(col.key)}
-                              className="rounded border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-700"
-                            >
-                              OK
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setColunaFiltroAberta(null)}
-                              className="rounded border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-700"
-                            >
-                              Cancelar
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </th>
                   ))}
                 </tr>
@@ -1026,19 +1481,99 @@ export default function RessupAlmoxAnalisePage() {
                 )}
                 {!loading &&
                   linhasOrdenadas.map((row, idx) => {
-                    const idProduto = Number(getRowValue(row, ['Id Produto', 'id produto', 'idProduto']) ?? 0);
-                    const idSol = getRowValue(row, ['Id Solicitação', 'Id Solicitacao', 'id solicitacao']);
-                    const key = `${idProduto}-${String(idSol ?? idx)}-${idx}`;
+                    const rowKey = getRowKey(row, idx);
+                    const inputs = userInputs[rowKey];
+                    /** Tooltips concentram informações ocultas da grade em colunas-âncora. */
+                    const tooltipCodigo = `Und Medida: ${getRessupCell(row, 'undMedida', inputs)}`;
+                    const tooltipQtdSolicit =
+                      `Data Solicit.: ${getRessupCell(row, 'dataSolicit', inputs)}\n` +
+                      `Data Necess.: ${getRessupCell(row, 'dataNecess', inputs)}`;
+                    const tooltipQtdeUltComp =
+                      `Data Ult Entrada: ${getRessupCell(row, 'dataUltEntrada', inputs)}\n` +
+                      `Preço Ant: ${getRessupCell(row, 'precoAnt', inputs)}`;
                     return (
-                      <tr key={key} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">
-                        {colunasVisiveisLista.map((col) => (
-                          <td
-                            key={col.key}
-                            className="border border-slate-200 dark:border-slate-600 px-1 py-1 align-top text-xs break-words dark:text-slate-200"
-                          >
-                            {getRessupCell(row, col.key)}
-                          </td>
-                        ))}
+                      <tr key={rowKey} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">
+                        {colunasVisiveisLista.map((col) => {
+                          if (NUMERIC_INPUT_KEYS.has(col.key)) {
+                            // qtdeSug: somente leitura quando processado ou concluido
+                            // qtdAprov: somente leitura apenas quando concluido
+                            const isReadOnly = analiseReadOnly || (apenasAprovEditavel && col.key === 'qtdeSug');
+                            if (isReadOnly) {
+                              return (
+                                <td key={col.key} className="border border-slate-200 dark:border-slate-600 px-1 py-1 align-top text-xs break-words text-right dark:text-slate-200">
+                                  {fmtNumeroUsuario(inputs?.[col.key])}
+                                </td>
+                              );
+                            }
+                            return (
+                              <td
+                                key={col.key}
+                                className="border border-slate-200 dark:border-slate-600 px-1 py-1 align-top text-xs break-words dark:text-slate-200"
+                              >
+                                <input
+                                  type="number"
+                                  inputMode="decimal"
+                                  step="any"
+                                  min={0}
+                                  value={inputs?.[col.key] ?? ''}
+                                  onChange={(e) => setRowInput(rowKey, col.key, e.target.value)}
+                                  onKeyDown={(e) => handleInputEnterKey(e, idx, col.key)}
+                                  data-editinput
+                                  data-rowkey={rowKey}
+                                  data-colkey={col.key}
+                                  className="w-full min-w-[5rem] rounded border border-slate-300 bg-white px-1.5 py-1 text-right text-xs text-slate-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-slate-500 dark:bg-slate-700 dark:text-slate-100"
+                                  placeholder="—"
+                                  aria-label={col.label}
+                                />
+                              </td>
+                            );
+                          }
+                          if (DATE_INPUT_KEYS.has(col.key)) {
+                            // dataNecessSug: somente leitura quando processado ou concluido
+                            // dataNecessAprov: somente leitura apenas quando concluido
+                            const isReadOnly = analiseReadOnly || (apenasAprovEditavel && col.key === 'dataNecessSug');
+                            if (isReadOnly) {
+                              return (
+                                <td key={col.key} className="border border-slate-200 dark:border-slate-600 px-1 py-1 align-top text-xs break-words dark:text-slate-200">
+                                  {fmtDataUsuario(inputs?.[col.key])}
+                                </td>
+                              );
+                            }
+                            return (
+                              <td
+                                key={col.key}
+                                className="border border-slate-200 dark:border-slate-600 px-1 py-1 align-top text-xs break-words dark:text-slate-200"
+                              >
+                                <input
+                                  type="date"
+                                  value={inputs?.[col.key] ?? ''}
+                                  onChange={(e) => setRowInput(rowKey, col.key, e.target.value)}
+                                  onKeyDown={(e) => handleInputEnterKey(e, idx, col.key)}
+                                  data-editinput
+                                  data-rowkey={rowKey}
+                                  data-colkey={col.key}
+                                  className="w-full min-w-[8rem] rounded border border-slate-300 bg-white px-1.5 py-1 text-xs text-slate-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-slate-500 dark:bg-slate-700 dark:text-slate-100"
+                                  aria-label={col.label}
+                                />
+                              </td>
+                            );
+                          }
+                          let tooltip: string | undefined;
+                          if (col.key === 'codigo') tooltip = tooltipCodigo;
+                          else if (col.key === 'qtdSolicit') tooltip = tooltipQtdSolicit;
+                          else if (col.key === 'qtdeUltComp') tooltip = tooltipQtdeUltComp;
+                          return (
+                            <td
+                              key={col.key}
+                              title={tooltip}
+                              className={`border border-slate-200 dark:border-slate-600 px-1 py-1 align-top text-xs break-words dark:text-slate-200 ${
+                                tooltip ? 'cursor-help' : ''
+                              }`}
+                            >
+                              {getRessupCell(row, col.key, inputs)}
+                            </td>
+                          );
+                        })}
                       </tr>
                     );
                   })}
@@ -1051,87 +1586,122 @@ export default function RessupAlmoxAnalisePage() {
       )}
         </>
 
-      {detalheModalOpen && historicoDetalheId != null && (
+      {/* Dropdown de filtro por coluna renderizado via portal fora do overflow da tabela */}
+      {colunaFiltroAberta && filtroAbertoRect && createPortal(
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60"
-          onClick={fecharDetalheModal}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="ressup-historico-detalhe-titulo"
+          ref={filtroDropdownRef}
+          style={{
+            position: 'fixed',
+            top: Math.min(filtroAbertoRect.top, window.innerHeight - 380),
+            left: Math.max(4, Math.min(filtroAbertoRect.left, window.innerWidth - 296)),
+            width: 288,
+            zIndex: 9999,
+          }}
+          className="rounded-lg border border-slate-300 bg-white p-2 text-slate-800 shadow-2xl dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+          onMouseDown={(e) => e.stopPropagation()}
         >
-          <div
-            className="flex max-h-[90vh] w-full max-w-5xl flex-col rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-600 dark:bg-slate-800"
-            onClick={(e) => e.stopPropagation()}
+          <button
+            type="button"
+            onClick={() => { setSortState({ key: colunaFiltroAberta, direction: 'asc' }); fecharFiltroExcel(); }}
+            className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-700"
           >
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-600">
-              <h2 id="ressup-historico-detalhe-titulo" className="text-lg font-semibold text-slate-800 dark:text-slate-100">
-                Análise #{historicoDetalheId}
-              </h2>
-              <button
-                type="button"
-                onClick={fecharDetalheModal}
-                className="rounded-lg px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
-              >
-                Fechar
-              </button>
-            </div>
-            <div className="relative min-h-0 flex-1 overflow-auto p-4">
-              <CarregandoInformacoesOverlay
-                show={detalheModalOverlayAtivo}
-                mensagem="Carregando snapshot…"
-                mode="contained"
-              />
-              {historicoDetalheErro && (
-                <p className="mb-3 text-sm text-red-600 dark:text-red-300">{historicoDetalheErro}</p>
-              )}
-              {!historicoDetalheCarregando && historicoDetalheMeta && (
-                <div className="mb-4 space-y-1 text-sm text-slate-700 dark:text-slate-200">
-                  <p>
-                    <span className="font-medium">Data:</span> {fmtIsoDataHora(historicoDetalheMeta.createdAt)}
-                  </p>
-                  <p>
-                    <span className="font-medium">Usuário:</span> {historicoDetalheMeta.usuarioLogin}
-                  </p>
-                </div>
-              )}
-              {!historicoDetalheCarregando && historicoDetalhePayload && (
-                <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-600">
-                  <table className="w-full text-xs border-collapse min-w-[900px]">
-                    <thead className="bg-primary-600 text-white">
-                      <tr>
-                        {historicoDetalhePayload.columnDefs.map((c) => (
-                          <th
-                            key={c.key}
-                            className="border border-primary-500/40 px-1 py-1.5 font-semibold text-center whitespace-normal break-words"
-                          >
-                            {c.label}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {historicoDetalhePayload.displayRows.map((dr, i) => (
-                        <tr key={i} className="border-b border-slate-200 dark:border-slate-600">
-                          {historicoDetalhePayload.columnDefs.map((c) => (
-                            <td
-                              key={c.key}
-                              className="border border-slate-200 px-1 py-1 align-top break-words text-slate-800 dark:text-slate-200 dark:border-slate-600"
-                            >
-                              {dr[c.key] ?? '—'}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {!historicoDetalheCarregando && !historicoDetalhePayload && !historicoDetalheErro && (
-                <p className="text-sm text-amber-700 dark:text-amber-300">Snapshot sem dados legíveis.</p>
-              )}
-            </div>
+            A↧ Classificar de A a Z
+          </button>
+          <button
+            type="button"
+            onClick={() => { setSortState({ key: colunaFiltroAberta, direction: 'desc' }); fecharFiltroExcel(); }}
+            className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-700"
+          >
+            Z↧ Classificar de Z a A
+          </button>
+          <div className="my-2 border-t border-slate-200 dark:border-slate-600" />
+          <input
+            type="text"
+            value={excelFilterDrafts[colunaFiltroAberta]?.search ?? ''}
+            onChange={(e) =>
+              setExcelFilterDrafts((prev) => ({
+                ...prev,
+                [colunaFiltroAberta]: {
+                  search: e.target.value,
+                  selected: prev[colunaFiltroAberta]?.selected ?? (valoresUnicosPorColuna[colunaFiltroAberta] ?? []),
+                },
+              }))
+            }
+            placeholder="Pesquisar"
+            className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+            autoFocus
+          />
+          <div className="mt-2 max-h-44 overflow-auto rounded border border-slate-200 p-1 dark:border-slate-600">
+            {(() => {
+              const key = colunaFiltroAberta;
+              const valores = valoresUnicosPorColuna[key] ?? [];
+              const draft = excelFilterDrafts[key] ?? { search: '', selected: valores };
+              const visiveis = valores.filter((v) =>
+                v.toLowerCase().includes(draft.search.trim().toLowerCase())
+              );
+              const todosVisiveisSelecionados = visiveis.every((v) => draft.selected.includes(v));
+              const toggle = (value: string, checked: boolean) => {
+                setExcelFilterDrafts((prev) => {
+                  const atual = prev[key] ?? { search: '', selected: valores };
+                  const set = new Set(atual.selected);
+                  if (checked) set.add(value);
+                  else set.delete(value);
+                  return { ...prev, [key]: { ...atual, selected: [...set] } };
+                });
+              };
+              return (
+                <>
+                  <label className="flex items-center gap-2 px-1 py-1 text-xs font-medium">
+                    <input
+                      type="checkbox"
+                      checked={todosVisiveisSelecionados}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setExcelFilterDrafts((prev) => {
+                          const atual = prev[key] ?? { search: '', selected: valores };
+                          const set = new Set(atual.selected);
+                          for (const v of visiveis) {
+                            if (checked) set.add(v);
+                            else set.delete(v);
+                          }
+                          return { ...prev, [key]: { ...atual, selected: [...set] } };
+                        });
+                      }}
+                    />
+                    (Selecionar Tudo)
+                  </label>
+                  {visiveis.map((value) => (
+                    <label key={value} className="flex items-center gap-2 px-1 py-0.5 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={draft.selected.includes(value)}
+                        onChange={(e) => toggle(value, e.target.checked)}
+                      />
+                      <span className="truncate" title={value}>{value}</span>
+                    </label>
+                  ))}
+                </>
+              );
+            })()}
           </div>
-        </div>
+          <div className="mt-2 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => aplicarFiltroExcel(colunaFiltroAberta)}
+              className="rounded border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-700"
+            >
+              OK
+            </button>
+            <button
+              type="button"
+              onClick={fecharFiltroExcel}
+              className="rounded border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-700"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

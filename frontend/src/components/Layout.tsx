@@ -115,7 +115,7 @@ function LayoutInner() {
   const navigate = useNavigate();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
-  const { hasPermission, isMaster, grupo, nome, login, mustChangePassword, refreshUser } = useAuth();
+  const { hasPermission, isMaster, grupo, nome, login, mustChangePassword, refreshUser, telaInicialPath } = useAuth();
   const { modoFoco, sairModoFoco } = useLayoutFoco();
 
   // Sai do modo foco ao pressionar Escape
@@ -239,20 +239,36 @@ function LayoutInner() {
     setSuporteOpen(menu === 'suporte');
   }, []);
 
+  /** Ref para ter sempre o valor mais recente de telaInicialPath dentro de callbacks. */
+  const telaInicialPathRef = useRef(telaInicialPath);
+  useEffect(() => { telaInicialPathRef.current = telaInicialPath; }, [telaInicialPath]);
+
   /** Abas abertas no topo da área de conteúdo (cada submenu/rota em uma aba). */
   const [abas, setAbas] = useState<{ id: string; path: string; label: string }[]>(() => {
     const path = location.pathname || '/';
+    if (path === '/') return []; // InicioPage redireciona para telaInicial; não criar aba para '/'
     return [{ id: path, path, label: getLabelForPath(path) }];
   });
 
   useEffect(() => {
     const path = location.pathname || '/';
+    if (path === '/') return; // nunca adicionar aba para a rota de redirecionamento inicial
     setAbas((prev) => {
       const exists = prev.some((a) => a.path === path);
       if (exists) return prev;
       return [...prev, { id: path, path, label: getLabelForPath(path) }];
     });
   }, [location.pathname]);
+
+  /** Garante que a aba fixa da tela principal do grupo esteja sempre presente na barra de abas. */
+  useEffect(() => {
+    if (!telaInicialPath || telaInicialPath === '/') return;
+    setAbas((prev) => {
+      if (prev.some((a) => a.path === telaInicialPath)) return prev;
+      // Insere como primeira aba (aba fixa)
+      return [{ id: telaInicialPath, path: telaInicialPath, label: getLabelForPath(telaInicialPath) }, ...prev];
+    });
+  }, [telaInicialPath]);
 
   const navigateAposFecharRef = useRef<string | null>(null);
   const dragTabIndexRef = useRef<number | null>(null);
@@ -291,19 +307,22 @@ function LayoutInner() {
   }, []);
 
   const fecharAba = useCallback((pathToClose: string) => {
+    // A aba fixa (tela principal do grupo) nunca pode ser fechada
+    const pinnedPath = telaInicialPathRef.current;
+    if (pinnedPath && pathToClose === pinnedPath) return;
+
     const pathname = location.pathname;
     setAbas((prev) => {
       const idx = prev.findIndex((a) => a.path === pathToClose);
       if (idx < 0) return prev;
       const next = prev.filter((a) => a.path !== pathToClose);
       if (next.length === 0) {
-        const fallbackPath = '/';
-        navigateAposFecharRef.current = fallbackPath;
-        return [{ id: fallbackPath, path: fallbackPath, label: getLabelForPath(fallbackPath) }];
+        // Sem abas restantes e sem aba fixa configurada: mantém a última
+        return prev;
       }
       if (pathname === pathToClose) {
         const target = next[Math.min(idx, next.length - 1)];
-        navigateAposFecharRef.current = target?.path ?? '/';
+        navigateAposFecharRef.current = target?.path ?? pinnedPath ?? '/';
       }
       return next;
     });
@@ -900,16 +919,13 @@ function LayoutInner() {
           <div className="flex items-center gap-1 border-b border-slate-200 dark:border-slate-700 overflow-x-auto mb-4 shrink-0">
             {abas.map((aba, index) => {
               const ativa = location.pathname === aba.path;
-              const isPinnedHome = aba.path === '/';
+              const isPinned = !!telaInicialPath && aba.path === telaInicialPath;
               return (
                 <div
                   key={aba.id}
-                  draggable={!isPinnedHome}
+                  draggable={!isPinned}
                   onDragStart={(e) => {
-                    if (isPinnedHome) {
-                      e.preventDefault();
-                      return;
-                    }
+                    if (isPinned) { e.preventDefault(); return; }
                     const target = e.target as HTMLElement;
                     if (target.closest('button[aria-label="Fechar aba"]')) {
                       e.preventDefault();
@@ -947,22 +963,18 @@ function LayoutInner() {
                       if (justDraggedRef.current) return;
                       navigate(aba.path);
                     }}
-                    className="truncate max-w-[200px] text-left inline-flex items-center"
-                    title={aba.path === '/' ? 'Abas' : aba.label}
-                    aria-label={aba.path === '/' ? 'Abas' : aba.label}
+                    className="truncate max-w-[200px] text-left inline-flex items-center gap-1"
+                    title={isPinned ? `${aba.label} (aba fixa)` : aba.label}
+                    aria-label={aba.label}
                   >
-                    {aba.path === '/' ? (
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                        <rect x="3" y="5" width="18" height="14" rx="2" ry="2" />
-                        <line x1="3" y1="9" x2="21" y2="9" />
-                        <line x1="8" y1="5" x2="8" y2="9" />
-                        <line x1="13" y1="5" x2="13" y2="9" />
+                    {isPinned && (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden className="shrink-0 opacity-60">
+                        <path d="M16 12V4h1a1 1 0 0 0 0-2H7a1 1 0 0 0 0 2h1v8l-2 2v2h5v6h2v-6h5v-2l-2-2z"/>
                       </svg>
-                    ) : (
-                      aba.label
                     )}
+                    {aba.label}
                   </button>
-                  {!isPinnedHome && (
+                  {!isPinned && (
                     <button
                       type="button"
                       onClick={(e) => {

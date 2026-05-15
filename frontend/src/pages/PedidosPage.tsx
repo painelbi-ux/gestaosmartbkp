@@ -89,7 +89,7 @@ export default function PedidosPage() {
   const podeExportarGrade = hasPermission(PERMISSOES.PCP_EXPORTAR_GRADE) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
   const podeImportarXlsx = hasPermission(PERMISSOES.PCP_IMPORTAR_XLSX) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
   const podeAjustarPrevisao = hasPermission(PERMISSOES.PCP_AJUSTAR_PREVISAO) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
-  const isMaster = login === 'master';
+  const isMaster = login === 'master' || login === 'marquesfilho';
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -741,7 +741,13 @@ export default function PedidosPage() {
 
       {modalLoteOpen && (
         <ModalReprogramacaoLote
-          ids={Array.from(selectedIds)}
+          linhas={Array.from(selectedIds).map((id) => {
+            const p = pedidos.find((x) => x.id_pedido === id) as Record<string, unknown> | undefined;
+            const rota = p
+              ? String(p['Observacoes'] ?? p['Observações'] ?? p['rota'] ?? '').trim()
+              : '';
+            return { id_pedido: id, rota: rota || undefined };
+          })}
           onClose={() => setModalLoteOpen(false)}
           onSuccess={(resultado) => {
             setSelectedIds(new Set());

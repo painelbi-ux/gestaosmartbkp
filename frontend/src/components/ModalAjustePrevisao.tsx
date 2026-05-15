@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { z } from 'zod';
 import { listarPedidos, type Pedido } from '../api/pedidos';
 import { listarMotivosSugestao, type MotivoSugestao } from '../api/motivosSugestao';
@@ -9,6 +9,7 @@ import {
   isCarradaRota,
   isExcludedSqlRotaCategory,
   normalizePdLabelForCompare,
+  normalizeRotaNameStr,
   rotaFromPedidoRow,
 } from '../utils/rotaCarrada';
 
@@ -30,6 +31,21 @@ interface ModalAjustePrevisaoProps {
   onError: (msg: string) => void;
 }
 
+type FlowStep = 'form' | 'multiplas_rotas' | 'carrada_confirm';
+
+/** Decisão acumulada ao longo dos steps do fluxo. */
+type PendingDecision = {
+  data: { previsao_nova: string; motivo: string; observacao?: string };
+  /** Override por rota. null = ajuste base (vale em todas as rotas do PD/item). */
+  rotaOverride: string | null;
+  /** Outras rotas em que o mesmo (PD, item) aparece, além da rota atual. */
+  outrasRotasDoItem: string[];
+  /** Se a rota atual é "ROTA …" com 2+ PDs distintos (precisa perguntar replicate_carrada). */
+  precisaConfirmarCarrada: boolean;
+  /** Resultado da pergunta "replicate_carrada" (preenchido após o step). */
+  replicateCarrada: boolean | null;
+};
+
 export default function ModalAjustePrevisao({
   pedido,
   onClose,
@@ -47,9 +63,10 @@ export default function ModalAjustePrevisao({
   const [sugestoes, setSugestoes] = useState<MotivoSugestao[]>([]);
   const [loadingSugestoes, setLoadingSugestoes] = useState(false);
   const [abrirGerenciar, setAbrirGerenciar] = useState(false);
-  const [flowStep, setFlowStep] = useState<'form' | 'carrada_confirm'>('form');
+  const [flowStep, setFlowStep] = useState<FlowStep>('form');
   const [carradaRotaNome, setCarradaRotaNome] = useState('');
   const [carradaCheckLoading, setCarradaCheckLoading] = useState(false);
+  const pendingRef = useRef<PendingDecision | null>(null);
   const { hasPermission } = useAuth();
   const podeGerenciarMotivos =
     hasPermission(PERMISSOES.PCP_MOTIVO_CRIAR) ||
@@ -73,6 +90,7 @@ export default function ModalAjustePrevisao({
     if (!pedido) return;
     setFlowStep('form');
     setCarradaRotaNome('');
+    pendingRef.current = null;
     setPrevisaoNova(
       pedido.previsao_entrega_atualizada ? String(pedido.previsao_entrega_atualizada).slice(0, 10) : ''
     );
@@ -90,26 +108,26 @@ export default function ModalAjustePrevisao({
     ? String(pedido.previsao_entrega_atualizada).slice(0, 10)
     : '';
 
-  const runSave = async (
-    replicateCarrada: boolean,
-    data: { previsao_nova: string; motivo: string; observacao?: string }
-  ) => {
+  /** Executa a gravação respeitando a decisão acumulada. */
+  const runSave = async (decision: PendingDecision) => {
     if (!pedido) return;
     setLoading(true);
     try {
+      const replicateCarrada = decision.replicateCarrada === true;
       const { ajustarPrevisao } = await import('../api/pedidos');
       const atualizado = await ajustarPrevisao(pedido.id_pedido, {
-        previsao_nova: data.previsao_nova,
-        motivo: data.motivo,
-        observacao: data.observacao || null,
+        previsao_nova: decision.data.previsao_nova,
+        motivo: decision.data.motivo,
+        observacao: decision.data.observacao || null,
         replicate_carrada: replicateCarrada ? true : undefined,
+        rota: decision.rotaOverride ?? undefined,
       });
       let meta: AjustePrevisaoSuccessMeta | undefined;
       if (replicateCarrada) {
-        const rota = rotaFromPedidoRow(pedido as Record<string, unknown>).trim();
-        if (rota) {
+        const rotaAtual = rotaFromPedidoRow(pedido as Record<string, unknown>).trim();
+        if (rotaAtual) {
           try {
-            const res = await listarPedidos({ observacoes: rota, limit: 500, page: 1 });
+            const res = await listarPedidos({ observacoes: rotaAtual, limit: 500, page: 1 });
             meta = { atualizadosMesmaCarrada: Array.isArray(res.data) ? res.data : [] };
           } catch {
             // Ajuste já persistiu; sem a lista a grade só atualiza a linha do item escolhido até o próximo carregamento.
@@ -125,9 +143,25 @@ export default function ModalAjustePrevisao({
     }
   };
 
+  /** Avança a máquina de estados para o próximo step pendente (ou grava se já não há mais). */
+  const advanceFlow = async (decision: PendingDecision) => {
+    if (decision.outrasRotasDoItem.length > 0 && decision.rotaOverride === null && !pendingRef.current?.rotaOverride) {
+      // Step 1 ainda não foi resolvido (rotaOverride é "indefinida" inicialmente; usamos null como base).
+      // Como `rotaOverride` é base por default, precisamos uma forma de detectar "ainda não decidiu".
+      // Solução: o caller já decidiu antes de chamar, então este branch nunca é atingido a partir daqui.
+    }
+    if (decision.precisaConfirmarCarrada && decision.replicateCarrada === null) {
+      pendingRef.current = decision;
+      setFlowStep('carrada_confirm');
+      return;
+    }
+    pendingRef.current = null;
+    await runSave(decision);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (flowStep === 'carrada_confirm') return;
+    if (flowStep !== 'form') return;
     const previsaoNovaNorm = previsao_nova.trim().slice(0, 10);
     if (previsaoAtualStr && previsaoNovaNorm === previsaoAtualStr) {
       setErrors({ previsao_nova: 'A data não foi alterada.' });
@@ -137,62 +171,134 @@ export default function ModalAjustePrevisao({
     const parsed = ajusteSchema.safeParse({ previsao_nova, motivo, observacao });
     if (!parsed.success) {
       const fieldErrors: Record<string, string> = {};
-      parsed.error.flatten().fieldErrors?.previsao_nova &&
-        (fieldErrors.previsao_nova = parsed.error.flatten().fieldErrors.previsao_nova[0]);
-      parsed.error.flatten().fieldErrors?.motivo &&
-        (fieldErrors.motivo = parsed.error.flatten().fieldErrors.motivo[0]);
+      const flat = parsed.error.flatten().fieldErrors;
+      if (flat?.previsao_nova?.[0]) fieldErrors.previsao_nova = flat.previsao_nova[0];
+      if (flat?.motivo?.[0]) fieldErrors.motivo = flat.motivo[0];
       setErrors(fieldErrors);
       return;
     }
     setErrors({});
 
-    const rota = rotaFromPedidoRow(pedido as Record<string, unknown>);
-    if (!isCarradaRota(rota) || isExcludedSqlRotaCategory(rota)) {
-      await runSave(false, parsed.data);
-      return;
-    }
+    const rotaAtual = rotaFromPedidoRow(pedido as Record<string, unknown>);
+    const rotaAtualNorm = normalizeRotaNameStr(rotaAtual);
+    const pdAtual = normalizePdLabelForCompare(String((pedido as Record<string, unknown>)['PD'] ?? '').trim());
+    const codAtual = String((pedido as Record<string, unknown>)['Cod'] ?? pedido.produto ?? '').trim();
 
     setCarradaCheckLoading(true);
+    let outrasRotasDoItem: string[] = [];
+    let precisaConfirmarCarrada = false;
+
     try {
-      const res = await listarPedidos({ observacoes: rota.trim(), limit: 500, page: 1 });
-      if (res.erroConexao) {
-        onError(`Não foi possível consultar o Gerenciador de Pedidos: ${res.erroConexao}`);
-        return;
+      // Verificação 1: (PD, item) em 2+ rotas distintas?
+      if (pdAtual && codAtual) {
+        try {
+          const resPd = await listarPedidos({ pd: pdAtual, limit: 500, page: 1 });
+          if (resPd.erroConexao) {
+            onError(`Não foi possível consultar o Gerenciador de Pedidos: ${resPd.erroConexao}`);
+            return;
+          }
+          const rows = resPd.data ?? [];
+          const rotasUnicas = new Map<string, string>(); // normalizada -> original
+          for (const r of rows) {
+            const rRec = r as Record<string, unknown>;
+            const pdR = normalizePdLabelForCompare(String(rRec['PD'] ?? '').trim());
+            const codR = String(rRec['Cod'] ?? '').trim();
+            if (pdR !== pdAtual || codR !== codAtual) continue;
+            const rotaR = rotaFromPedidoRow(rRec).trim();
+            if (!rotaR) continue;
+            // Considera só rotas "carrada" não excluídas (mesma regra do backend).
+            if (!isCarradaRota(rotaR) || isExcludedSqlRotaCategory(rotaR)) continue;
+            const norm = normalizeRotaNameStr(rotaR);
+            if (!rotasUnicas.has(norm)) rotasUnicas.set(norm, rotaR);
+          }
+          for (const [norm, original] of rotasUnicas) {
+            if (norm !== rotaAtualNorm) outrasRotasDoItem.push(original);
+          }
+        } catch {
+          // se falhar essa consulta, segue o fluxo legado (sem step de múltiplas rotas)
+          outrasRotasDoItem = [];
+        }
       }
-      const rows = res.data ?? [];
-      const pds = new Set(
-        rows.map((r) => normalizePdLabelForCompare(String((r as Record<string, unknown>)['PD'] ?? '').trim())).filter(Boolean)
-      );
-      if (pds.size <= 1) {
-        await runSave(false, parsed.data);
-        return;
+
+      // Verificação 2: rota atual é "ROTA …" com 2+ PDs distintos?
+      if (isCarradaRota(rotaAtual) && !isExcludedSqlRotaCategory(rotaAtual)) {
+        try {
+          const resRota = await listarPedidos({ observacoes: rotaAtual.trim(), limit: 500, page: 1 });
+          if (!resRota.erroConexao) {
+            const rows = resRota.data ?? [];
+            const pds = new Set(
+              rows
+                .map((r) => normalizePdLabelForCompare(String((r as Record<string, unknown>)['PD'] ?? '').trim()))
+                .filter(Boolean)
+            );
+            precisaConfirmarCarrada = pds.size > 1;
+          }
+        } catch {
+          precisaConfirmarCarrada = false;
+        }
       }
-      setCarradaRotaNome(rota);
-      setFlowStep('carrada_confirm');
-    } catch {
-      onError('Erro ao consultar o Gerenciador de Pedidos. Tente novamente.');
     } finally {
       setCarradaCheckLoading(false);
     }
-  };
 
-  const handleCarradaConfirmSim = () => {
-    const parsed = ajusteSchema.safeParse({ previsao_nova, motivo, observacao });
-    if (!parsed.success) {
-      const fieldErrors: Record<string, string> = {};
-      parsed.error.flatten().fieldErrors?.previsao_nova &&
-        (fieldErrors.previsao_nova = parsed.error.flatten().fieldErrors.previsao_nova[0]);
-      parsed.error.flatten().fieldErrors?.motivo &&
-        (fieldErrors.motivo = parsed.error.flatten().fieldErrors.motivo[0]);
-      setErrors(fieldErrors);
+    const decision: PendingDecision = {
+      data: parsed.data,
+      rotaOverride: null,
+      outrasRotasDoItem,
+      precisaConfirmarCarrada,
+      replicateCarrada: precisaConfirmarCarrada ? null : false,
+    };
+
+    if (outrasRotasDoItem.length > 0) {
+      pendingRef.current = decision;
+      setCarradaRotaNome(rotaAtual);
+      setFlowStep('multiplas_rotas');
       return;
     }
-    setFlowStep('form');
-    void runSave(true, parsed.data);
+    if (precisaConfirmarCarrada) {
+      pendingRef.current = decision;
+      setCarradaRotaNome(rotaAtual);
+      setFlowStep('carrada_confirm');
+      return;
+    }
+    await runSave(decision);
   };
 
-  const handleCarradaConfirmNao = () => {
+  // ---------- step "multiplas_rotas" ----------
+  const handleMultiplasRotasTodas = async () => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    const decision: PendingDecision = { ...pending, rotaOverride: null };
     setFlowStep('form');
+    await advanceFlow(decision);
+  };
+
+  const handleMultiplasRotasSomenteEsta = async () => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    const rotaAtual = rotaFromPedidoRow(pedido as Record<string, unknown>).trim();
+    const decision: PendingDecision = { ...pending, rotaOverride: rotaAtual || null };
+    setFlowStep('form');
+    await advanceFlow(decision);
+  };
+
+  // ---------- step "carrada_confirm" ----------
+  const handleCarradaConfirmSim = async () => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    const decision: PendingDecision = { ...pending, replicateCarrada: true };
+    setFlowStep('form');
+    pendingRef.current = null;
+    await runSave(decision);
+  };
+
+  const handleCarradaConfirmNao = async () => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    const decision: PendingDecision = { ...pending, replicateCarrada: false };
+    setFlowStep('form');
+    pendingRef.current = null;
+    await runSave(decision);
   };
 
   return (
@@ -284,24 +390,78 @@ export default function ModalAjustePrevisao({
           </div>
         </form>
 
-        {flowStep === 'carrada_confirm' && (
+        {flowStep === 'multiplas_rotas' && pendingRef.current && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-black/50 p-4">
+            <div className="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 p-4 shadow-xl">
+              <h4 className="font-semibold text-slate-900 dark:text-slate-100 mb-2">Item presente em várias rotas</h4>
+              <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
+                Este item (PD <strong>{String(pd)}</strong> · Cód <strong>{String(cod)}</strong>) aparece em outras carradas além de <strong>{carradaRotaNome || 'esta rota'}</strong>:
+              </p>
+              <ul className="mb-3 max-h-32 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 px-3 py-2 text-xs text-slate-700 dark:text-slate-200 space-y-1">
+                {pendingRef.current.outrasRotasDoItem.map((r) => (
+                  <li key={r}>• {r}</li>
+                ))}
+              </ul>
+              <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
+                Onde aplicar a nova previsão?
+              </p>
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleMultiplasRotasSomenteEsta()}
+                  disabled={loading}
+                  className="w-full px-4 py-2.5 rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white text-sm font-medium text-left"
+                >
+                  <span className="block font-semibold">Apenas nesta rota</span>
+                  <span className="block text-xs text-primary-100 font-normal mt-0.5">
+                    {carradaRotaNome || 'rota atual'} — as outras mantêm a previsão atual
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleMultiplasRotasTodas()}
+                  disabled={loading}
+                  className="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700 text-left"
+                >
+                  <span className="block font-semibold">Em todas as rotas em que este item aparece</span>
+                  <span className="block text-xs text-slate-500 dark:text-slate-400 font-normal mt-0.5">
+                    A data fica igual em todas as carradas (comportamento anterior).
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    pendingRef.current = null;
+                    setFlowStep('form');
+                  }}
+                  disabled={loading}
+                  className="w-full px-4 py-2 rounded-lg text-slate-500 dark:text-slate-400 text-sm hover:bg-slate-100 dark:hover:bg-slate-700"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {flowStep === 'carrada_confirm' && pendingRef.current && (
           <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-black/50 p-4">
             <div className="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 p-4 shadow-xl">
               <h4 className="font-semibold text-slate-900 dark:text-slate-100 mb-2">Replicação na mesma carrada</h4>
               <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-                Este pedido está presente na <strong>{carradaRotaNome}</strong> e a mesma possui outros pedidos. Quando você informar a nova data deste item, essa mesma data será replicada para todos os outros itens de pedido que também estão nessa ROTA (mesmo motivo e observação). Deseja continuar?
+                A rota <strong>{carradaRotaNome}</strong> possui outros pedidos. Quando você informar a nova data deste item, essa mesma data {pendingRef.current.rotaOverride ? 'pode ser replicada como override desta mesma rota para os outros pedidos' : 'pode ser replicada para todos os pedidos desta ROTA'} (mesmo motivo e observação). Deseja continuar?
               </p>
               <div className="flex gap-3 justify-end">
                 <button
                   type="button"
-                  onClick={handleCarradaConfirmNao}
+                  onClick={() => void handleCarradaConfirmNao()}
                   className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 text-sm font-medium"
                 >
                   Não
                 </button>
                 <button
                   type="button"
-                  onClick={handleCarradaConfirmSim}
+                  onClick={() => void handleCarradaConfirmSim()}
                   disabled={loading}
                   className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white text-sm font-medium"
                 >

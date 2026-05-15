@@ -8,10 +8,18 @@ datasource db {
   url      = env("DB_URL")
 }
 
-// Tabela auxiliar para ajustes manuais de previsão de entrega (histórico)
+// Tabela auxiliar para ajustes manuais de previsão de entrega (histórico).
+//
+// Granularidade do ajuste:
+//   - `rota = NULL`  → ajuste base (vale para todas as rotas/romaneios em que o mesmo (PD, item) aparecer).
+//   - `rota != NULL` → override por rota (vale só naquela rota). Conteúdo do campo: nome da observação/rota
+//                      do romaneio (`de.observacoes` no Nomus) já normalizado (lower, sem acentos, trim).
+//
+// Leitura hierárquica (rowNomusToPedido): override por rota atual > base > dataParametro do Nomus.
 model PedidoPrevisaoAjuste {
   id            Int      @id @default(autoincrement())
   id_pedido     String   // ID do pedido no ERP (varchar para compatibilidade)
+  rota          String?  // Nome normalizado da rota (override). NULL = ajuste base.
   previsao_nova DateTime
   motivo        String
   observacao    String?
@@ -19,6 +27,7 @@ model PedidoPrevisaoAjuste {
   data_ajuste   DateTime @default(now())
 
   @@index([id_pedido])
+  @@index([id_pedido, rota])
   @@index([data_ajuste])
   @@map("pedido_previsao_ajuste")
 }
@@ -455,15 +464,22 @@ model SycroOrderNotification {
 
 /// Snapshot gravado pelo usuário na tela Ressup Almox — análise (grade + linhas Nomus).
 model RessupAlmoxAnalise {
-  id             Int      @id @default(autoincrement())
-  createdAt      DateTime @default(now())
+  id             Int       @id @default(autoincrement())
+  createdAt      DateTime  @default(now())
   usuarioLogin   String
   resumoFiltros  String?
-  linhaCount     Int      @default(0)
-  /// JSON: version, columnDefs, displayRows, rawRows, aplicado, savedUi
+  linhaCount     Int       @default(0)
+  /// JSON: version, columnDefs, displayRows, rawRows, aplicado, savedUi, userInputs
   payload        String
+  /// "em_processamento" | "processado" | "concluido"
+  status                 String    @default("em_processamento")
+  processadoAt           DateTime?
+  usuarioLoginProcessado String?
+  concluidoAt            DateTime?
+  usuarioLoginConcluido  String?
 
   @@index([createdAt])
+  @@index([status])
   @@map("ressup_almox_analise")
 }
 
@@ -488,12 +504,26 @@ model SupportTicket {
   anexos             SupportTicketAttachment[]
   historicoStatus    SupportTicketStatusHistory[]
   notificacoes       SupportTicketNotification[]
+  reads              SupportTicketRead[]
 
   @@index([ownerLogin])
   @@index([status])
   @@index([prioridade])
   @@index([createdAt])
   @@map("support_ticket")
+}
+
+/// Estado de leitura individual do chamado por usuário (lido/não lido por master).
+model SupportTicketRead {
+  ticketId  Int
+  userLogin String
+  readAt    DateTime? // quando preenchido = lido; null = não lido (master pode reverter)
+  updatedAt DateTime  @updatedAt
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@id([ticketId, userLogin])
+  @@index([userLogin])
+  @@map("support_ticket_read")
 }
 
 /// Mensagens no histórico do chamado (usuário comum e master).

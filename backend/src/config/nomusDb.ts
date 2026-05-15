@@ -20,9 +20,9 @@ function parseNomusUrl(url: string): mysql.PoolOptions {
       password: decodeURIComponent(u.password || ''),
       database,
       waitForConnections: true,
-      connectionLimit: 5,
+      connectionLimit: 10,
       queueLimit: 0,
-      connectTimeout: 10000,
+      connectTimeout: 15000,
     };
   } catch {
     return { uri: url, waitForConnections: true, connectionLimit: 5, queueLimit: 0 };

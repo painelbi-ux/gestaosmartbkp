@@ -133,52 +133,168 @@ function chavePedidoItem(id: string): string {
   return String(id ?? '').trim();
 }
 
-/** Último e penúltimo ajuste por id_pedido (para Previsão atual e Previsão anterior). */
+/**
+ * Normaliza nome de rota/observação para chave de comparação (override por rota).
+ * Igual à `normalizeRotaNameStr` do frontend (`utils/rotaCarrada.ts`).
+ * Vazio -> '' (representa ajuste base; quando persistido na coluna `rota`, gravamos NULL).
+ */
+export function normalizeRotaForChave(rota: string | null | undefined): string {
+  return String(rota ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '');
+}
+
+/** Último e penúltimo ajuste por idChave (para Previsão atual e Previsão anterior). */
 type AjusteInfo = {
   ultimo: { previsao_nova: Date; motivo: string | null; observacao: string | null };
   penultimo: Date | null;
+  /** Origem do ajuste exibido como "atual". */
+  origem: 'override' | 'base';
+  /**
+   * Aviso de "carrada migrada": rotas em que existe override para o mesmo (PD, item) mas
+   * que NÃO aparecem mais na leitura atual do Nomus. O frontend exibe badge na linha.
+   */
+  carradaMigrada?: { rota: string; previsao: Date }[];
 };
 
 /** Linha bruta do SQLite (datas podem vir como string, número ou timestamp ms). */
-type AjusteRow = { id: number; id_pedido: string; previsao_nova: unknown; motivo: string; observacao: string | null; data_ajuste: unknown };
+type AjusteRow = {
+  id: number;
+  id_pedido: string;
+  rota: string | null;
+  previsao_nova: unknown;
+  motivo: string;
+  observacao: string | null;
+  data_ajuste: unknown;
+};
 
-/** Busca último e penúltimo ajuste pela chave canônica pedido+item (alinha com histórico e com mudanças de carrada no ERP). */
-async function obterUltimoEPenultimoPorPedido(ids: string[]): Promise<Map<string, AjusteInfo>> {
-  if (ids.length === 0) return new Map();
+/** Item de entrada para o lookup hierárquico: idChave (idRomaneio-idPedido-idProduto) + rota da linha. */
+type LinhaLookup = { idChave: string; rota: string };
+
+/**
+ * Busca último e penúltimo ajuste por (idChave, rota) com regra hierárquica:
+ *   1) Existe ajuste com `rota = rota_da_linha`?     -> usa (origem: 'override').
+ *   2) Senão, existe ajuste base (`rota = NULL`)?    -> usa (origem: 'base').
+ *   3) Senão, mapa não contém o idChave (caller usa `dataParametro`).
+ *
+ * Também detecta "carrada migrada": para cada (PD, item), se existem overrides em rotas que
+ * NÃO aparecem mais na leitura atual do Nomus, anexa um aviso a TODAS as linhas desse (PD, item).
+ */
+async function obterUltimoEPenultimoPorPedido(linhas: LinhaLookup[]): Promise<Map<string, AjusteInfo>> {
+  if (linhas.length === 0) return new Map();
   const result = new Map<string, AjusteInfo>();
-  const idsUnicos = [...new Set(ids)].filter((id) => id != null && String(id).trim() !== '');
   try {
     const todos = await prisma.pedidoPrevisaoAjuste.findMany({
-      select: { id: true, id_pedido: true, previsao_nova: true, motivo: true, observacao: true, data_ajuste: true },
+      select: { id: true, id_pedido: true, rota: true, previsao_nova: true, motivo: true, observacao: true, data_ajuste: true },
       orderBy: [{ data_ajuste: 'desc' }, { id: 'desc' }],
     });
-    const porCanonico = new Map<string, AjusteRow[]>();
+
+    // Agrupa ajustes por canon pedido+item, separando base (rota = NULL) e overrides por rota normalizada.
+    const baseByCanon = new Map<string, AjusteRow[]>();
+    const overrideByCanonRota = new Map<string, Map<string, AjusteRow[]>>();
     for (const a of todos) {
       const idNorm = String(a.id_pedido ?? '').trim();
       if (!idNorm) continue;
       const canon = chavePedidoItem(idNorm);
-      const list = porCanonico.get(canon) ?? [];
-      list.push(a as AjusteRow);
-      porCanonico.set(canon, list);
+      const rotaNorm = normalizeRotaForChave(a.rota);
+      if (!rotaNorm) {
+        const list = baseByCanon.get(canon) ?? [];
+        list.push(a as AjusteRow);
+        baseByCanon.set(canon, list);
+      } else {
+        let byRota = overrideByCanonRota.get(canon);
+        if (!byRota) {
+          byRota = new Map<string, AjusteRow[]>();
+          overrideByCanonRota.set(canon, byRota);
+        }
+        const list = byRota.get(rotaNorm) ?? [];
+        list.push(a as AjusteRow);
+        byRota.set(rotaNorm, list);
+      }
     }
-    for (const [, list] of porCanonico) {
+
+    const sortDesc = (list: AjusteRow[]) => {
       list.sort((x, y) => {
         const tx = parseDateFromDb(x.data_ajuste).getTime();
         const ty = parseDateFromDb(y.data_ajuste).getTime();
         if (ty !== tx) return ty - tx;
         return (y.id ?? 0) - (x.id ?? 0);
       });
+    };
+    for (const list of baseByCanon.values()) sortDesc(list);
+    for (const byRota of overrideByCanonRota.values()) {
+      for (const list of byRota.values()) sortDesc(list);
     }
-    for (const idChave of idsUnicos) {
-      const canon = chavePedidoItem(String(idChave).trim());
-      const list = porCanonico.get(canon);
-      if (!list || list.length === 0) continue;
-      const ultimo = list[0]!;
-      const penultimo = list[1]?.previsao_nova ?? null;
-      result.set(idChave, {
-        ultimo: { previsao_nova: parseDateFromDb(ultimo.previsao_nova), motivo: ultimo.motivo, observacao: ultimo.observacao ?? null },
-        penultimo: penultimo != null ? parseDateFromDb(penultimo) : null,
-      });
+
+    // Conjunto de rotas atualmente presentes na grade para cada canon.
+    const rotasAtuaisPorCanon = new Map<string, Set<string>>();
+    for (const linha of linhas) {
+      const canon = chavePedidoItem(String(linha.idChave ?? '').trim());
+      if (!canon) continue;
+      const rotaNorm = normalizeRotaForChave(linha.rota);
+      const set = rotasAtuaisPorCanon.get(canon) ?? new Set<string>();
+      if (rotaNorm) set.add(rotaNorm);
+      rotasAtuaisPorCanon.set(canon, set);
+    }
+
+    // Pré-calcula aviso de "carrada migrada" por canon: overrides em rotas que não aparecem mais.
+    const avisoPorCanon = new Map<string, { rota: string; previsao: Date }[]>();
+    for (const [canon, byRota] of overrideByCanonRota) {
+      const rotasAtuais = rotasAtuaisPorCanon.get(canon) ?? new Set<string>();
+      const orfas: { rota: string; previsao: Date }[] = [];
+      for (const [rotaNorm, list] of byRota) {
+        if (rotasAtuais.has(rotaNorm)) continue;
+        const head = list[0];
+        if (!head) continue;
+        orfas.push({ rota: rotaNorm, previsao: parseDateFromDb(head.previsao_nova) });
+      }
+      if (orfas.length > 0) avisoPorCanon.set(canon, orfas);
+    }
+
+    for (const linha of linhas) {
+      const idChave = String(linha.idChave ?? '').trim();
+      if (!idChave) continue;
+      const canon = chavePedidoItem(idChave);
+      const rotaNorm = normalizeRotaForChave(linha.rota);
+      const overrides = rotaNorm ? overrideByCanonRota.get(canon)?.get(rotaNorm) ?? [] : [];
+      const bases = baseByCanon.get(canon) ?? [];
+
+      let info: AjusteInfo | null = null;
+      if (overrides.length > 0) {
+        const ultimo = overrides[0]!;
+        const penultimo = overrides[1]?.previsao_nova ?? null;
+        info = {
+          ultimo: { previsao_nova: parseDateFromDb(ultimo.previsao_nova), motivo: ultimo.motivo, observacao: ultimo.observacao ?? null },
+          penultimo: penultimo != null ? parseDateFromDb(penultimo) : null,
+          origem: 'override',
+        };
+      } else if (bases.length > 0) {
+        const ultimo = bases[0]!;
+        const penultimo = bases[1]?.previsao_nova ?? null;
+        info = {
+          ultimo: { previsao_nova: parseDateFromDb(ultimo.previsao_nova), motivo: ultimo.motivo, observacao: ultimo.observacao ?? null },
+          penultimo: penultimo != null ? parseDateFromDb(penultimo) : null,
+          origem: 'base',
+        };
+      }
+      if (info) {
+        const aviso = avisoPorCanon.get(canon);
+        if (aviso) info.carradaMigrada = aviso;
+        result.set(idChave, info);
+      } else {
+        const aviso = avisoPorCanon.get(canon);
+        if (aviso) {
+          // Linha ainda não tem ajuste, mas houve override em rota órfã para o mesmo (PD, item).
+          result.set(idChave, {
+            ultimo: { previsao_nova: new Date(0), motivo: null, observacao: null },
+            penultimo: null,
+            origem: 'base',
+            carradaMigrada: aviso,
+          });
+        }
+      }
     }
   } catch (err) {
     console.error('[obterUltimoEPenultimoPorPedido] Prisma falhou:', err instanceof Error ? err.message : err);
@@ -197,10 +313,14 @@ function rowNomusToPedido(
   const qtde = Number(row['Qtde pedida'] ?? 0);
   const previsaoOriginal = row['dataParametro'] != null ? new Date(row['dataParametro'] as string | Date) : new Date();
   const info = ajustePorId.get(idChave);
-  const previsaoAtualizada = info ? info.ultimo.previsao_nova : previsaoOriginal;
-  const motivoAjuste = info?.ultimo.motivo ?? null;
-  const observacaoAjuste = info?.ultimo.observacao ?? null;
+  // Só substitui a previsão original quando há ajuste de verdade (timestamp > 0).
+  const temAjusteReal = !!info && info.ultimo.previsao_nova.getTime() > 0;
+  const previsaoAtualizada = temAjusteReal ? info!.ultimo.previsao_nova : previsaoOriginal;
+  const motivoAjuste = temAjusteReal ? info!.ultimo.motivo : null;
+  const observacaoAjuste = temAjusteReal ? info!.ultimo.observacao : null;
   const previsaoAnterior = info?.penultimo ?? previsaoOriginal;
+  const origemAjuste = temAjusteReal ? info!.origem : null;
+  const carradaMigrada = info?.carradaMigrada ?? null;
 
   const statusSql = row['StatusPedido'] ?? row['statusPedido'];
   const status =
@@ -220,6 +340,8 @@ function rowNomusToPedido(
     previsao_anterior: previsaoAnterior,
     motivo_ultimo_ajuste: motivoAjuste,
     observacao_ultimo_ajuste: observacaoAjuste,
+    origem_ultimo_ajuste: origemAjuste,
+    carrada_migrada: carradaMigrada,
     Status: status,
   } as PedidoRow;
 }
@@ -610,8 +732,13 @@ export async function listarPedidos(filtros: FiltrosPedidos = {}): Promise<{
     } else {
       const [rows] = await pool.query(SQL_BASE_NOMUS);
       const list = (Array.isArray(rows) ? rows : []) as Record<string, unknown>[];
-      const ids = [...new Set(list.map((r) => String(r['idChave'] ?? '').trim()).filter(Boolean))];
-      const ajustePorId = await obterUltimoEPenultimoPorPedido(ids);
+      const linhasLookup: LinhaLookup[] = list
+        .map((r) => ({
+          idChave: String(r['idChave'] ?? '').trim(),
+          rota: String(r['Observacoes'] ?? r['Observações'] ?? '').trim(),
+        }))
+        .filter((l) => l.idChave !== '');
+      const ajustePorId = await obterUltimoEPenultimoPorPedido(linhasLookup);
       resultado = list.map((r) => rowNomusToPedido(r, ajustePorId));
       cachePedidos = { data: resultado, expiresAt: now + CACHE_PEDIDOS_TTL_MS };
       setLastSyncErp();
@@ -1355,20 +1482,29 @@ function toNoonUTC(d: Date): Date {
   return new Date(Date.UTC(y, m, day, 12, 0, 0, 0));
 }
 
-/** Grava ajuste no SQLite (não altera o Nomus). */
+/**
+ * Grava ajuste no SQLite (não altera o Nomus).
+ *
+ * Granularidade:
+ *   - `rota` omitido/null/'' -> ajuste BASE (vale em todas as rotas em que o (PD, item) aparecer).
+ *   - `rota` informado       -> override APENAS naquela rota (armazenado normalizado).
+ */
 export async function registrarAjustePrevisao(
   idPedido: string,
   previsaoNova: Date,
   motivo: string,
   usuario: string,
-  observacao?: string | null
+  observacao?: string | null,
+  rota?: string | null
 ): Promise<void> {
   const dataNormalizada = toNoonUTC(previsaoNova);
   const idNorm = (idPedido ?? '').trim();
+  const rotaNorm = normalizeRotaForChave(rota);
   await prisma.$transaction(async (tx) => {
     await tx.pedidoPrevisaoAjuste.create({
       data: {
         id_pedido: idNorm,
+        rota: rotaNorm ? rotaNorm : null,
         previsao_nova: dataNormalizada,
         motivo,
         observacao: observacao ?? null,
@@ -1381,26 +1517,50 @@ export async function registrarAjustePrevisao(
   invalidatePedidosCache();
 }
 
-/** Última previsão por id_pedido (só SQLite, sem Nomus). */
-async function obterUltimaPrevisaoPorIds(ids: string[]): Promise<Map<string, Date>> {
-  if (ids.length === 0) return new Map();
-  const idsNorm = ids.map((id) => String(id).trim()).filter(Boolean);
-  if (idsNorm.length === 0) return new Map();
+/**
+ * Última previsão "efetiva" por (id_pedido, rota) — usada apenas para deduplicar inserts no lote.
+ * Respeita a hierarquia override > base do (PD, item).
+ */
+async function obterUltimaPrevisaoPorChave(
+  chaves: { id_pedido: string; rota: string | null }[]
+): Promise<Map<string, Date>> {
+  if (chaves.length === 0) return new Map();
   const rows = await prisma.pedidoPrevisaoAjuste.findMany({
-    select: { id_pedido: true, previsao_nova: true },
+    select: { id_pedido: true, rota: true, previsao_nova: true },
     orderBy: [{ data_ajuste: 'desc' }, { id: 'desc' }],
   });
-  const latestByCanon = new Map<string, Date>();
+  // canon -> base mais recente
+  const baseByCanon = new Map<string, Date>();
+  // canon -> rota_norm -> override mais recente
+  const overrideByCanonRota = new Map<string, Map<string, Date>>();
   for (const r of rows) {
-    const c = chavePedidoItem(String(r.id_pedido ?? '').trim());
-    if (!c) continue;
-    if (!latestByCanon.has(c)) latestByCanon.set(c, r.previsao_nova);
+    const canon = chavePedidoItem(String(r.id_pedido ?? '').trim());
+    if (!canon) continue;
+    const rotaNorm = normalizeRotaForChave(r.rota);
+    if (!rotaNorm) {
+      if (!baseByCanon.has(canon)) baseByCanon.set(canon, r.previsao_nova);
+    } else {
+      let byRota = overrideByCanonRota.get(canon);
+      if (!byRota) {
+        byRota = new Map<string, Date>();
+        overrideByCanonRota.set(canon, byRota);
+      }
+      if (!byRota.has(rotaNorm)) byRota.set(rotaNorm, r.previsao_nova);
+    }
   }
   const map = new Map<string, Date>();
-  for (const id of idsNorm) {
-    const c = chavePedidoItem(id);
-    const d = latestByCanon.get(c);
-    if (d) map.set(id, d);
+  for (const k of chaves) {
+    const idNorm = String(k.id_pedido ?? '').trim();
+    if (!idNorm) continue;
+    const canon = chavePedidoItem(idNorm);
+    const rotaNorm = normalizeRotaForChave(k.rota);
+    const dOverride = rotaNorm ? overrideByCanonRota.get(canon)?.get(rotaNorm) : undefined;
+    const dBase = baseByCanon.get(canon);
+    const efetiva = dOverride ?? dBase;
+    if (efetiva) {
+      const mapKey = `${idNorm}|${rotaNorm}`;
+      map.set(mapKey, efetiva);
+    }
   }
   return map;
 }
@@ -1410,6 +1570,8 @@ export interface AjusteLoteItem {
   previsao_nova: Date;
   motivo: string;
   observacao?: string | null;
+  /** Quando informado, grava como override apenas para esta rota. Caso contrário, grava como base. */
+  rota?: string | null;
 }
 
 export interface RegistrarAjustesLoteResult {
@@ -1422,6 +1584,7 @@ export interface RegistrarAjustesLoteResult {
 /**
  * Registra vários ajustes em uma única transação (createMany).
  * Ignora itens cuja previsão já é a mesma (evita linhas duplicadas no histórico).
+ * Cada item pode trazer `rota` para gravar como override por rota (ou omitir para ajuste base).
  */
 export async function registrarAjustesPrevisaoLote(
   ajustes: AjusteLoteItem[],
@@ -1431,23 +1594,33 @@ export async function registrarAjustesPrevisaoLote(
     return { ok: 0, erros: [] };
   }
 
-  const ids = [...new Set(ajustes.map((a) => a.id_pedido))];
-  const ultimaPrevisaoPorId = await obterUltimaPrevisaoPorIds(ids);
+  // Para deduplicar precisamos saber a previsão efetiva ATUAL por (id_pedido, rota).
+  const chaves = ajustes.map((a) => ({ id_pedido: a.id_pedido, rota: a.rota ?? null }));
+  const ultimaPrevisaoPorChave = await obterUltimaPrevisaoPorChave(chaves);
 
   const toDateOnly = (d: Date) => new Date(d).toISOString().slice(0, 10);
-  const toInsert: { id_pedido: string; previsao_nova: Date; motivo: string; observacao: string | null }[] = [];
+  const toInsert: { id_pedido: string; rota: string | null; previsao_nova: Date; motivo: string; observacao: string | null }[] = [];
   let skipped = 0;
 
   for (const a of ajustes) {
     const idNorm = (a.id_pedido ?? '').trim();
+    const rotaNorm = normalizeRotaForChave(a.rota);
+    const rotaParaGravar = rotaNorm ? rotaNorm : null;
     const nova = new Date(a.previsao_nova);
-    const atual = ultimaPrevisaoPorId.get(idNorm);
+    const mapKey = `${idNorm}|${rotaNorm}`;
+    const atual = ultimaPrevisaoPorChave.get(mapKey);
     if (atual && toDateOnly(atual) === toDateOnly(nova)) {
       skipped += 1;
       continue;
     }
     const observacao = a.observacao != null && String(a.observacao).trim() !== '' ? String(a.observacao).trim() : null;
-    toInsert.push({ id_pedido: idNorm, previsao_nova: toNoonUTC(nova), motivo: a.motivo, observacao });
+    toInsert.push({
+      id_pedido: idNorm,
+      rota: rotaParaGravar,
+      previsao_nova: toNoonUTC(nova),
+      motivo: a.motivo,
+      observacao,
+    });
   }
 
   try {
@@ -1456,6 +1629,7 @@ export async function registrarAjustesPrevisaoLote(
       await prisma.pedidoPrevisaoAjuste.createMany({
         data: toInsert.map((a) => ({
           id_pedido: a.id_pedido,
+          rota: a.rota,
           previsao_nova: a.previsao_nova,
           motivo: a.motivo,
           observacao: a.observacao,

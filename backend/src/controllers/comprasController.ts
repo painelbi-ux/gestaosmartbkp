@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import {
   listarProdutosColeta,
   buscarRegistroColetaNomus,
+  buscarRegistroColetaNomusComFiltros,
   listarFornecedoresAtivos,
   listarCondicoesPagamentoNomus,
   listarFormasPagamentoNomus,
@@ -102,166 +103,39 @@ function parseCommaParts(s?: string): string[] {
     .filter(Boolean);
 }
 
-/**
- * Mesmos filtros de produtos-coleta; códigos, descrições e nomes de coleta podem vir separados por vírgula
- * (OR entre termos do mesmo campo; combinação cartesiana entre campos preenchidos).
- */
-async function listarProdutosColetaMerged(filtros: {
-  codigo?: string;
-  descricao?: string;
-  familia?: string;
-  fornecedor?: string;
-  coleta?: string;
-  diaSemana?: string;
-  apenasComSolicitacao?: boolean;
-}): Promise<{ data: ProdutoColetaRow[]; erro?: string }> {
-  const codigoParts = parseCommaParts(filtros.codigo);
-  const descricaoParts = parseCommaParts(filtros.descricao);
-  const coletaParts = parseCommaParts(filtros.coleta);
-
-  const base = {
-    familia: filtros.familia,
-    fornecedor: filtros.fornecedor,
-    diaSemana: filtros.diaSemana,
-    apenasComSolicitacao: filtros.apenasComSolicitacao,
-  };
-
-  const cods: (string | undefined)[] = codigoParts.length > 0 ? [...codigoParts] : [undefined];
-  const descs: (string | undefined)[] = descricaoParts.length > 0 ? [...descricaoParts] : [undefined];
-  const cols: (string | undefined)[] = coletaParts.length > 0 ? [...coletaParts] : [undefined];
-
-  const merged = new Map<string, ProdutoColetaRow>();
-  const merge = (data: ProdutoColetaRow[]) => {
-    for (const r of data) {
-      const k = `${r.idProduto}-${r.codigoSolicitacao ?? 'n'}`;
-      merged.set(k, r);
-    }
-  };
-
-  let fezConsulta = false;
-  for (const co of cols) {
-    for (const cod of cods) {
-      for (const des of descs) {
-        if (cod == null && des == null && co == null) continue;
-        fezConsulta = true;
-        const r = await listarProdutosColeta({
-          ...base,
-          ...(cod != null ? { codigo: cod } : {}),
-          ...(des != null ? { descricao: des } : {}),
-          ...(co != null ? { coleta: co } : {}),
-        });
-        if (r.erro) return { data: [], erro: r.erro };
-        merge(r.data);
-      }
-    }
-  }
-
-  if (!fezConsulta) {
-    const r = await listarProdutosColeta(base);
-    if (r.erro) return { data: [], erro: r.erro };
-    merge(r.data);
-  }
-
-  return { data: Array.from(merged.values()) };
-}
-
-/**
- * Evita repetir o SQL pesado do Nomus para o mesmo produto: agrupa todos os itens (várias SCs)
- * numa única chamada quando há poucos `idProduto` distintos. Só fatia quando o IN (ids) ficaria grande.
- */
-function chunkItensRegistroPorProdutosDistintos(
-  itens: { idProduto: number; idSolicitacao: number | null }[],
-  maxProdutosDistintosPorQuery: number
-): { idProduto: number; idSolicitacao: number | null }[][] {
-  if (itens.length === 0) return [];
-  const nDistintos = new Set(itens.map((i) => i.idProduto)).size;
-  if (nDistintos <= maxProdutosDistintosPorQuery) return [itens];
-
-  const chunks: { idProduto: number; idSolicitacao: number | null }[][] = [];
-  let cur: { idProduto: number; idSolicitacao: number | null }[] = [];
-  const idsNoChunk = new Set<number>();
-
-  for (const it of itens) {
-    const novoProduto = !idsNoChunk.has(it.idProduto);
-    if (novoProduto && idsNoChunk.size >= maxProdutosDistintosPorQuery && cur.length > 0) {
-      chunks.push(cur);
-      cur = [];
-      idsNoChunk.clear();
-    }
-    cur.push(it);
-    idsNoChunk.add(it.idProduto);
-  }
-  if (cur.length > 0) chunks.push(cur);
-  return chunks;
-}
-
-const RESSUP_ALMOX_MAX_PRODUTOS_DISTINTOS_POR_QUERY = 200;
 
 /**
  * GET /api/compras/ressup-almox/registro-preview
- * Lista linhas do SQL de registro da coleta (Nomus) para os mesmos filtros de produtos-coleta.
+ *
+ * Versão otimizada (2026-05): executa UMA única query ao Nomus aplicando os filtros de
+ * código/descrição/coleta diretamente no SQL de registro (SQL_REGISTRO_COLETA_BASE).
+ * O fluxo anterior fazia duas queries pesadas em cadeia (listarProdutos → buscarRegistro);
+ * agora é uma única query, eliminando ~50% das viagens ao banco externo.
  */
 export async function getRessupAlmoxRegistroPreview(req: Request, res: Response): Promise<void> {
   const codigo = typeof req.query.codigo === 'string' ? req.query.codigo.trim() : undefined;
   const descricao = typeof req.query.descricao === 'string' ? req.query.descricao.trim() : undefined;
-  const familia = typeof req.query.familia === 'string' ? req.query.familia.trim() : undefined;
-  const fornecedor = typeof req.query.fornecedor === 'string' ? req.query.fornecedor.trim() : undefined;
   const coleta = typeof req.query.coleta === 'string' ? req.query.coleta.trim() : undefined;
-  const diaSemana = typeof req.query.diaSemana === 'string' ? req.query.diaSemana.trim() : undefined;
   const apenasComSolicitacao = req.query.apenasComSolicitacao === 'true' || req.query.apenasComSolicitacao === '1';
 
-  const { data: produtos, erro: erroLista } = await listarProdutosColetaMerged({
-    codigo: codigo || undefined,
-    descricao: descricao || undefined,
-    familia: familia || undefined,
-    fornecedor: fornecedor || undefined,
-    coleta: coleta || undefined,
-    diaSemana: diaSemana || undefined,
+  const { rows, erro } = await buscarRegistroColetaNomusComFiltros({
+    codigos: parseCommaParts(codigo),
+    descricoes: parseCommaParts(descricao),
+    coletas: parseCommaParts(coleta),
     apenasComSolicitacao: apenasComSolicitacao || undefined,
   });
 
-  if (erroLista) {
-    res.status(503).json({ error: erroLista, data: [] });
+  if (erro) {
+    res.status(503).json({ error: erro, data: [] });
     return;
   }
 
-  if (produtos.length === 0) {
+  if (rows.length === 0) {
     res.json({ data: [], message: 'Nenhum produto encontrado com os filtros informados.' });
     return;
   }
 
-  const itens = produtos.map((p) => {
-    const idProduto = Number(p.idProduto);
-    const sid = p.codigoSolicitacao != null ? Number(p.codigoSolicitacao) : NaN;
-    return {
-      idProduto: Number.isFinite(idProduto) && idProduto > 0 ? idProduto : 0,
-      idSolicitacao: Number.isFinite(sid) && sid > 0 ? sid : null,
-    };
-  }).filter((i) => i.idProduto > 0);
-
-  if (itens.length === 0) {
-    res.json({ data: [], message: 'Nenhum item válido após filtrar produtos.' });
-    return;
-  }
-
-  const allRows: Record<string, unknown>[] = [];
-  let nomusErro: string | undefined;
-  const chunks = chunkItensRegistroPorProdutosDistintos(itens, RESSUP_ALMOX_MAX_PRODUTOS_DISTINTOS_POR_QUERY);
-  for (const chunk of chunks) {
-    const { rows, erro } = await buscarRegistroColetaNomus(chunk);
-    if (erro) {
-      nomusErro = erro;
-      break;
-    }
-    allRows.push(...rows);
-  }
-
-  if (nomusErro) {
-    res.status(503).json({ error: nomusErro, data: [] });
-    return;
-  }
-
-  res.json({ data: allRows });
+  res.json({ data: rows });
 }
 
 const RESSUP_ALMOX_ANALISE_PAYLOAD_MAX_CHARS = 24 * 1024 * 1024;
@@ -318,12 +192,131 @@ export async function postRessupAlmoxAnalise(req: Request, res: Response): Promi
         resumoFiltros: resumo || null,
         linhaCount: displayRows.length,
         payload: jsonStr,
+        status: 'em_processamento',
       },
     });
-    res.status(201).json({ id: row.id, ok: true });
+    res.status(201).json({
+      id: row.id,
+      ok: true,
+      status: row.status,
+      createdAt: row.createdAt.toISOString(),
+      usuarioLogin: row.usuarioLogin,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[comprasController] postRessupAlmoxAnalise:', msg);
+    res.status(503).json({ error: msg });
+  }
+}
+
+/**
+ * PUT /api/compras/ressup-almox/analises/:id
+ * Atualiza o payload de uma análise com status "em_processamento" (edição de campos pelo usuário).
+ */
+export async function putRessupAlmoxAnalise(req: Request, res: Response): Promise<void> {
+  const login = req.user?.login?.trim();
+  if (!login) {
+    res.status(401).json({ error: 'Sessão inválida.' });
+    return;
+  }
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'ID inválido.' });
+    return;
+  }
+  const existing = await prisma.ressupAlmoxAnalise.findUnique({
+    where: { id },
+    select: { status: true },
+  });
+  if (!existing) {
+    res.status(404).json({ error: 'Análise não encontrada.' });
+    return;
+  }
+  if (existing.status === 'concluido') {
+    res.status(409).json({ error: 'Análise já concluída. Não é mais possível editá-la.' });
+    return;
+  }
+  let body = req.body as { resumoFiltros?: unknown; payload?: unknown };
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body) as { resumoFiltros?: unknown; payload?: unknown };
+    } catch {
+      res.status(400).json({ error: 'Body JSON inválido.' });
+      return;
+    }
+  }
+  const resumo =
+    typeof body.resumoFiltros === 'string' ? body.resumoFiltros.trim().slice(0, 2000) : null;
+  const val = validarPayloadRessupAnalise(body.payload);
+  if (!val.ok) {
+    res.status(400).json({ error: val.error });
+    return;
+  }
+  const jsonStr = JSON.stringify(val.payload);
+  if (jsonStr.length > RESSUP_ALMOX_ANALISE_PAYLOAD_MAX_CHARS) {
+    res.status(413).json({
+      error: 'Snapshot muito grande para gravar. Reduza os filtros de carga ou o volume de linhas.',
+    });
+    return;
+  }
+  const displayRows = val.payload.displayRows as unknown[];
+  try {
+    await prisma.ressupAlmoxAnalise.update({
+      where: { id },
+      data: {
+        resumoFiltros: resumo || null,
+        linhaCount: displayRows.length,
+        payload: jsonStr,
+      },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[comprasController] putRessupAlmoxAnalise:', msg);
+    res.status(503).json({ error: msg });
+  }
+}
+
+/**
+ * PATCH /api/compras/ressup-almox/analises/:id/processar
+ * Muda o status de "em_processamento" para "processado", registrando quem processou.
+ */
+export async function patchRessupAlmoxAnaliseProcessar(req: Request, res: Response): Promise<void> {
+  const login = req.user?.login?.trim();
+  if (!login) {
+    res.status(401).json({ error: 'Sessão inválida.' });
+    return;
+  }
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'ID inválido.' });
+    return;
+  }
+  const existing = await prisma.ressupAlmoxAnalise.findUnique({
+    where: { id },
+    select: { status: true },
+  });
+  if (!existing) {
+    res.status(404).json({ error: 'Análise não encontrada.' });
+    return;
+  }
+  if (existing.status === 'processado') {
+    res.status(409).json({ error: 'Análise já processada.' });
+    return;
+  }
+  try {
+    await prisma.ressupAlmoxAnalise.update({
+      where: { id },
+      data: {
+        status: 'processado',
+        processadoAt: new Date(),
+        usuarioLoginProcessado: login,
+      },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[comprasController] patchRessupAlmoxAnaliseProcessar:', msg);
     res.status(503).json({ error: msg });
   }
 }
@@ -337,7 +330,18 @@ export async function getRessupAlmoxAnalises(req: Request, res: Response): Promi
     const rows = await prisma.ressupAlmoxAnalise.findMany({
       orderBy: { createdAt: 'desc' },
       take: lim,
-      select: { id: true, createdAt: true, usuarioLogin: true, resumoFiltros: true, linhaCount: true },
+      select: {
+        id: true,
+        createdAt: true,
+        usuarioLogin: true,
+        resumoFiltros: true,
+        linhaCount: true,
+        status: true,
+        processadoAt: true,
+        usuarioLoginProcessado: true,
+        concluidoAt: true,
+        usuarioLoginConcluido: true,
+      },
     });
     res.json({
       data: rows.map((r) => ({
@@ -346,6 +350,11 @@ export async function getRessupAlmoxAnalises(req: Request, res: Response): Promi
         usuarioLogin: r.usuarioLogin,
         resumoFiltros: r.resumoFiltros,
         linhaCount: r.linhaCount,
+        status: r.status,
+        processadoAt: r.processadoAt ? r.processadoAt.toISOString() : null,
+        usuarioLoginProcessado: r.usuarioLoginProcessado ?? null,
+        concluidoAt: r.concluidoAt ? r.concluidoAt.toISOString() : null,
+        usuarioLoginConcluido: r.usuarioLoginConcluido ?? null,
       })),
     });
   } catch (err) {
@@ -384,11 +393,64 @@ export async function getRessupAlmoxAnaliseById(req: Request, res: Response): Pr
       usuarioLogin: row.usuarioLogin,
       resumoFiltros: row.resumoFiltros,
       linhaCount: row.linhaCount,
+      status: row.status,
+      processadoAt: row.processadoAt ? row.processadoAt.toISOString() : null,
+      usuarioLoginProcessado: row.usuarioLoginProcessado ?? null,
+      concluidoAt: row.concluidoAt ? row.concluidoAt.toISOString() : null,
+      usuarioLoginConcluido: row.usuarioLoginConcluido ?? null,
       payload,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[comprasController] getRessupAlmoxAnaliseById:', msg);
+    res.status(503).json({ error: msg });
+  }
+}
+
+/**
+ * PATCH /api/compras/ressup-almox/analises/:id/concluir
+ * Muda o status de "processado" para "concluido", registrando quem concluiu.
+ */
+export async function patchRessupAlmoxAnaliseConcluir(req: Request, res: Response): Promise<void> {
+  const login = req.user?.login?.trim();
+  if (!login) {
+    res.status(401).json({ error: 'Sessão inválida.' });
+    return;
+  }
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'ID inválido.' });
+    return;
+  }
+  const existing = await prisma.ressupAlmoxAnalise.findUnique({
+    where: { id },
+    select: { status: true },
+  });
+  if (!existing) {
+    res.status(404).json({ error: 'Análise não encontrada.' });
+    return;
+  }
+  if (existing.status === 'concluido') {
+    res.status(409).json({ error: 'Análise já concluída.' });
+    return;
+  }
+  if (existing.status === 'em_processamento') {
+    res.status(409).json({ error: 'A análise precisa estar com status "processado" antes de ser concluída.' });
+    return;
+  }
+  try {
+    await prisma.ressupAlmoxAnalise.update({
+      where: { id },
+      data: {
+        status: 'concluido',
+        concluidoAt: new Date(),
+        usuarioLoginConcluido: login,
+      },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[comprasController] patchRessupAlmoxAnaliseConcluir:', msg);
     res.status(503).json({ error: msg });
   }
 }

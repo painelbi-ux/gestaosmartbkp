@@ -9,6 +9,13 @@ export interface Pedido {
   previsao_entrega_atualizada: string;
   /** Penúltimo registro do histórico (previsão antes da última alteração). Exibido como "Previsão anterior". */
   previsao_anterior?: string;
+  /** Origem do último ajuste exibido: 'override' (rota específica) ou 'base' (vale em todas as rotas). null = sem ajuste. */
+  origem_ultimo_ajuste?: 'override' | 'base' | null;
+  /**
+   * Aviso "carrada migrada": existem ajustes (overrides) por rota para este (PD, item) em rotas que
+   * NÃO aparecem mais na leitura atual do Nomus. Exibido como badge na grade para alertar o PCP.
+   */
+  carrada_migrada?: { rota: string; previsao: string }[] | null;
   [key: string]: unknown;
 }
 
@@ -331,6 +338,12 @@ export async function ajustarPrevisao(
     observacao?: string | null;
     /** Replica para todos os itens da mesma rota/carrada (ROTA …). */
     replicate_carrada?: boolean;
+    /**
+     * Quando informado, grava o ajuste como override apenas para esta rota (Observacoes).
+     * Útil quando o mesmo (PD, item) está em 2+ rotas e o PCP quer datas distintas por rota.
+     * Omitir/null = ajuste base (vale em todas as rotas em que o (PD, item) aparecer).
+     */
+    rota?: string | null;
   }
 ): Promise<Pedido> {
   const res = await apiFetch(`/api/pedidos/${encodeURIComponent(idPedido)}/ajustar-previsao`, {
@@ -352,8 +365,14 @@ export type AjustePrevisaoLoteItem = {
   observacao?: string | null;
   /** Enviado pelo import: previsão atual (coluna Previsão) para validar data divergente. */
   previsao_atual?: string;
-  /** Enviado pelo import: rota/carrada (coluna Observacoes) para validar mesma data por carrada. */
+  /** Rota/carrada da linha. Usada para validar mesma data por carrada e, quando `apply_rota=true`, para gravar override por rota. */
   rota?: string;
+  /**
+   * Quando true, o ajuste é gravado como override APENAS na `rota` informada.
+   * Usado pelo botão de Reprogramar em Lote (linhas da grade têm rota específica).
+   * Quando false/omitido, grava como ajuste base (vale em todas as rotas do (PD, item)).
+   */
+  apply_rota?: boolean;
 };
 
 export type AjustePrevisaoLoteResultado = {

@@ -2,7 +2,7 @@ import { Router, type RequestHandler } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/requirePermission.js';
 import { PERMISSOES } from '../config/permissoes.js';
-import { getProdutosColeta, getRessupAlmoxRegistroPreview, postRessupAlmoxAnalise, getRessupAlmoxAnalises, getRessupAlmoxAnaliseById, getColetasPrecos, getColetasPrecosDebug, getOpcoesFiltroColetas, getOpcoesVinculoFinalizacao, getOpcoesVinculoErroOperacional, getDashboardErrosVinculoOperacional, getColetasBloqueantes, postCienciaColeta, postConfirmarColeta, getFornecedores, getCondicoesPagamento, getFormasPagamento, putColetaFornecedores, getPrecosColeta, getPrecosCotacao, postPrecosCotacao, patchObservacoesColeta, patchEnviarAprovacao, patchCancelarCotacao, patchReabrirColeta, patchFinalizarCotacao, patchRegistroQtdeAprovada, patchEnviarFinanceiro, deleteColetaPrecos, deleteColetaItem, deleteColetaTodosItens, postColetaItens } from '../controllers/comprasController.js';
+import { getProdutosColeta, getRessupAlmoxRegistroPreview, postRessupAlmoxAnalise, putRessupAlmoxAnalise, patchRessupAlmoxAnaliseProcessar, patchRessupAlmoxAnaliseConcluir, getRessupAlmoxAnalises, getRessupAlmoxAnaliseById, getColetasPrecos, getColetasPrecosDebug, getOpcoesFiltroColetas, getOpcoesVinculoFinalizacao, getOpcoesVinculoErroOperacional, getDashboardErrosVinculoOperacional, getColetasBloqueantes, postCienciaColeta, postConfirmarColeta, getFornecedores, getCondicoesPagamento, getFormasPagamento, putColetaFornecedores, getPrecosColeta, getPrecosCotacao, postPrecosCotacao, patchObservacoesColeta, patchEnviarAprovacao, patchCancelarCotacao, patchReabrirColeta, patchFinalizarCotacao, patchRegistroQtdeAprovada, patchEnviarFinanceiro, deleteColetaPrecos, deleteColetaItem, deleteColetaTodosItens, postColetaItens } from '../controllers/comprasController.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -49,6 +49,21 @@ router.get(
   '/ressup-almox/analises/:id',
   requirePermission(PERMISSOES.COMPRAS_VER),
   async503(getRessupAlmoxAnaliseById)
+);
+router.put(
+  '/ressup-almox/analises/:id',
+  requirePermission(PERMISSOES.COMPRAS_VER),
+  async503(putRessupAlmoxAnalise)
+);
+router.patch(
+  '/ressup-almox/analises/:id/processar',
+  requirePermission(PERMISSOES.COMPRAS_VER),
+  async503(patchRessupAlmoxAnaliseProcessar)
+);
+router.patch(
+  '/ressup-almox/analises/:id/concluir',
+  requirePermission(PERMISSOES.COMPRAS_VER),
+  async503(patchRessupAlmoxAnaliseConcluir)
 );
 
 router.get(

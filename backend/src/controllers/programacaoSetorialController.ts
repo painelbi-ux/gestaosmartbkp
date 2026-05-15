@@ -16,6 +16,10 @@ type PlanningItem = {
   Recurso?: string;
   tipoF?: string;
   'Qtde Pendente Real': number;
+  /** Origem do último ajuste de previsão: 'override' (rota específica) ou 'base'. null = sem ajuste. */
+  origem_ultimo_ajuste?: 'override' | 'base' | null;
+  /** Aviso de carrada migrada: overrides em rotas que não aparecem mais para este (PD, item). */
+  carrada_migrada?: { rota: string; previsao: string }[] | null;
 };
 
 function formatDateDDMMYYYY(value: unknown): string {
@@ -34,6 +38,15 @@ function toPlanningItem(row: any): PlanningItem | null {
 
   const previsaoDate = row?.previsao_entrega_atualizada ?? row?.previsao_entrega;
   const previsao = formatDateDDMMYYYY(previsaoDate);
+
+  const carradaMigradaRaw = row?.carrada_migrada;
+  const carradaMigrada =
+    Array.isArray(carradaMigradaRaw) && carradaMigradaRaw.length > 0
+      ? carradaMigradaRaw.map((m: any) => ({
+          rota: String(m?.rota ?? ''),
+          previsao: formatDateDDMMYYYY(m?.previsao),
+        }))
+      : null;
 
   return {
     idChave: String(row?.id_pedido ?? row?.idChave ?? ''),
@@ -54,6 +67,8 @@ function toPlanningItem(row: any): PlanningItem | null {
       return t != null && String(t).trim() !== '' ? String(t) : undefined;
     })(),
     'Qtde Pendente Real': qtdePend,
+    origem_ultimo_ajuste: (row?.origem_ultimo_ajuste ?? null) as 'override' | 'base' | null,
+    carrada_migrada: carradaMigrada,
   };
 }
 

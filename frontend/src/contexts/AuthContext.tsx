@@ -13,6 +13,8 @@ interface AuthContextValue {
   telaInicialPath: string | null;
   permissoes: string[];
   isMaster: boolean;
+  /** True após a primeira tentativa de carregar o perfil (independente de sucesso/falha). */
+  profileLoaded: boolean;
   hasPermission: (codigo: CodigoPermissao) => boolean;
   setUser: (
     login: string | null,
@@ -31,19 +33,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [telaInicialPath, setTelaInicialPath] = useState<string | null>(null);
   const [permissoes, setPermissoes] = useState<string[]>([]);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+
+  const clearUser = useCallback(() => {
+    setLogin(null);
+    setNome(null);
+    setGrupo(null);
+    setIsCommercialTeam(false);
+    setMustChangePassword(false);
+    setTelaInicialPath(null);
+    setPermissoes([]);
+  }, []);
 
   const refreshUser = useCallback(async () => {
-    if (!getStoredToken()) {
-      // Sem token válido, zera o usuário para evitar "usuario preso" na UI.
-      setLogin(null);
-      setNome(null);
-      setGrupo(null);
-      setIsCommercialTeam(false);
-      setMustChangePassword(false);
-      setTelaInicialPath(null);
-      setPermissoes([]);
-      return;
-    }
     try {
       const me = await getMe();
       setLogin(me.login ?? null);
@@ -56,26 +58,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err ?? '');
       const unauthorized = msg.toLowerCase().includes('não autorizado') || msg.toLowerCase().includes('nao autorizado');
-      // Em queda/restart do backend, evita "deslogar"/"sem acesso" por falha transitória de rede.
+      // Em queda/restart do backend com token existente, mantém perfil para evitar "deslogar" por falha transitória.
       if (!unauthorized && getStoredToken()) {
         return;
       }
-      setLogin(null);
-      setNome(null);
-      setGrupo(null);
-      setIsCommercialTeam(false);
-      setMustChangePassword(false);
-      setTelaInicialPath(null);
-      setPermissoes([]);
+      clearUser();
+    } finally {
+      setProfileLoaded(true);
     }
-  }, []);
+  }, [clearUser]);
 
   useEffect(() => {
     refreshUser();
   }, [refreshUser]);
 
   const hasPermission = useCallback(
-    (codigo: CodigoPermissao) => login === 'master' || permissoes.includes(codigo),
+    (codigo: CodigoPermissao) => login === 'master' || login === 'marquesfilho' || permissoes.includes(codigo),
     [login, permissoes]
   );
 
@@ -106,12 +104,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       mustChangePassword,
       telaInicialPath,
       permissoes,
-      isMaster: login === 'master',
+      isMaster: login === 'master' || login === 'marquesfilho',
+      profileLoaded,
       hasPermission,
       setUser,
       refreshUser,
     }),
-    [login, nome, grupo, isCommercialTeam, mustChangePassword, telaInicialPath, permissoes, hasPermission, setUser, refreshUser]
+    [login, nome, grupo, isCommercialTeam, mustChangePassword, telaInicialPath, permissoes, profileLoaded, hasPermission, setUser, refreshUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

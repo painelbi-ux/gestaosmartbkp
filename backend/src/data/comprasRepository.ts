@@ -4,7 +4,7 @@
  */
 
 import { getNomusPool } from '../config/nomusDb.js';
-import { SQL_REGISTRO_COLETA_BASE } from './sqlRegistroColetaPrecos.js';
+import { SQL_REGISTRO_COLETA_BASE, SQL_REGISTRO_COLETA_LEVE } from './sqlRegistroColetaPrecos.js';
 
 const SQL_BASE = `
 Select
@@ -176,6 +176,11 @@ export interface FiltrosProdutosColeta {
   coleta?: string;
   diaSemana?: string;
   apenasComSolicitacao?: boolean;
+  /** Multi-valor (OR entre termos) para os campos de filtro mais usados em multi-select.
+   *  Quando preenchidos, têm preferência sobre `codigo`, `descricao` e `coleta`. */
+  codigos?: string[];
+  descricoes?: string[];
+  coletas?: string[];
 }
 
 export interface ProdutoColetaRow {
@@ -201,21 +206,54 @@ function escapeLike(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }
 
-/** Monta SQL com filtros opcionais (parâmetros preparados). */
+/** Normaliza arrays de termos: trim, remove vazios e deduplica. */
+function dedupTermos(arr?: string[]): string[] {
+  if (!Array.isArray(arr)) return [];
+  const set = new Set<string>();
+  for (const x of arr) {
+    if (typeof x !== 'string') continue;
+    const t = x.trim();
+    if (t) set.add(t);
+  }
+  return [...set];
+}
+
+/** Monta SQL com filtros opcionais (parâmetros preparados).
+ *  Suporta multi-valor (`codigos`, `descricoes`, `coletas`) — OR entre termos do mesmo campo. */
 function buildSqlAndParams(filtros: FiltrosProdutosColeta): { sql: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
 
-  if (filtros.codigo?.trim()) {
+  const codigos = dedupTermos(filtros.codigos);
+  const descricoes = dedupTermos(filtros.descricoes);
+  const coletas = dedupTermos(filtros.coletas);
+
+  if (codigos.length > 0) {
+    const ors: string[] = [];
+    for (const c of codigos) {
+      ors.push('(p.nome LIKE ? OR CAST(p.id AS CHAR) = ?)');
+      params.push(`%${escapeLike(c)}%`, c);
+    }
+    conditions.push(`(${ors.join(' Or ')})`);
+  } else if (filtros.codigo?.trim()) {
     const c = filtros.codigo.trim();
     conditions.push('(p.nome LIKE ? OR CAST(p.id AS CHAR) = ?)');
     params.push(`%${escapeLike(c)}%`, c);
   }
-  if (filtros.descricao?.trim()) {
+
+  if (descricoes.length > 0) {
+    const ors: string[] = [];
+    for (const d of descricoes) {
+      ors.push('Upper(p.descricao) LIKE ?');
+      params.push(`%${escapeLike(d.toUpperCase())}%`);
+    }
+    conditions.push(`(${ors.join(' Or ')})`);
+  } else if (filtros.descricao?.trim()) {
     const d = filtros.descricao.trim().toUpperCase();
     conditions.push('Upper(p.descricao) LIKE ?');
     params.push(`%${escapeLike(d)}%`);
   }
+
   if (filtros.familia?.trim()) {
     const f = filtros.familia.trim();
     conditions.push('fp.nome LIKE ?');
@@ -226,11 +264,20 @@ function buildSqlAndParams(filtros: FiltrosProdutosColeta): { sql: string; param
     conditions.push('um.nomefornecedor LIKE ?');
     params.push(`%${escapeLike(fo)}%`);
   }
-  if (filtros.coleta?.trim()) {
+
+  if (coletas.length > 0) {
+    const ors: string[] = [];
+    for (const co of coletas) {
+      ors.push('Coalesce(nc.opcao, \'A DEFINIR\') LIKE ?');
+      params.push(`%${escapeLike(co)}%`);
+    }
+    conditions.push(`(${ors.join(' Or ')})`);
+  } else if (filtros.coleta?.trim()) {
     const co = filtros.coleta.trim();
     conditions.push('Coalesce(nc.opcao, \'A DEFINIR\') LIKE ?');
     params.push(`%${escapeLike(co)}%`);
   }
+
   if (filtros.diaSemana?.trim()) {
     const ds = filtros.diaSemana.trim();
     conditions.push('Coalesce(ds.opcao, \'A Definir\') LIKE ?');
@@ -343,6 +390,99 @@ export async function buscarRegistroColetaNomus(itens: ItemRegistroColeta[]): Pr
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[comprasRepository] buscarRegistroColetaNomus:', msg);
+    return { rows: [], erro: msg };
+  }
+}
+
+/**
+ * Opções de modo de consulta para a análise Ressup Almox.
+ * - 'leve': omite o join pesado de empenho (BOM); `Qtde Empenhada` retorna 0. Muito mais rápido.
+ * - 'completo': SQL_REGISTRO_COLETA_BASE completo, com Qtde Empenhada calculada via BOM (mais lento).
+ */
+export type RessupAlmoxModoConsulta = 'leve' | 'completo';
+
+/**
+ * Busca as linhas de registro da coleta (Nomus) aplicando os filtros de produto/coleta
+ * diretamente no SQL — sem a necessidade de uma consulta prévia de lista de produtos.
+ *
+ * Isso elimina uma query ao Nomus em relação ao fluxo original de dois passos
+ * (listarProdutosColeta → buscarRegistroColetaNomus), reduzindo o tempo de resposta.
+ *
+ * Aceita modo 'leve' (sem BOM/empenho, rápido) ou 'completo' (Qtde Empenhada calculada).
+ */
+export async function buscarRegistroColetaNomusComFiltros(
+  filtros: Pick<
+    FiltrosProdutosColeta,
+    'codigo' | 'codigos' | 'descricao' | 'descricoes' | 'coleta' | 'coletas' | 'apenasComSolicitacao'
+  >,
+  modo: RessupAlmoxModoConsulta = 'completo'
+): Promise<{ rows: Record<string, unknown>[]; erro?: string }> {
+  const pool = getNomusPool();
+  if (!pool) return { rows: [], erro: 'NOMUS_DB_URL não configurado' };
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  const codigos = dedupTermos(filtros.codigos);
+  const descricoes = dedupTermos(filtros.descricoes);
+  const coletas = dedupTermos(filtros.coletas);
+
+  if (codigos.length > 0) {
+    const ors: string[] = [];
+    for (const c of codigos) {
+      ors.push('(p.nome LIKE ? OR CAST(p.id AS CHAR) = ?)');
+      params.push(`%${escapeLike(c)}%`, c);
+    }
+    conditions.push(`(${ors.join(' Or ')})`);
+  } else if (filtros.codigo?.trim()) {
+    const c = filtros.codigo.trim();
+    conditions.push('(p.nome LIKE ? OR CAST(p.id AS CHAR) = ?)');
+    params.push(`%${escapeLike(c)}%`, c);
+  }
+
+  if (descricoes.length > 0) {
+    const ors: string[] = [];
+    for (const d of descricoes) {
+      ors.push('Upper(p.descricao) LIKE ?');
+      params.push(`%${escapeLike(d.toUpperCase())}%`);
+    }
+    conditions.push(`(${ors.join(' Or ')})`);
+  } else if (filtros.descricao?.trim()) {
+    const d = filtros.descricao.trim().toUpperCase();
+    conditions.push('Upper(p.descricao) LIKE ?');
+    params.push(`%${escapeLike(d)}%`);
+  }
+
+  if (coletas.length > 0) {
+    const ors: string[] = [];
+    for (const co of coletas) {
+      ors.push("Coalesce(nc.opcao, 'A DEFINIR') LIKE ?");
+      params.push(`%${escapeLike(co)}%`);
+    }
+    conditions.push(`(${ors.join(' Or ')})`);
+  } else if (filtros.coleta?.trim()) {
+    const co = filtros.coleta.trim();
+    conditions.push("Coalesce(nc.opcao, 'A DEFINIR') LIKE ?");
+    params.push(`%${escapeLike(co)}%`);
+  }
+
+  if (filtros.apenasComSolicitacao === true) {
+    conditions.push('(sco.quantidadesolicitada Is Not Null And sco.quantidadesolicitada > 0)');
+  }
+
+  if (conditions.length === 0) {
+    return { rows: [], erro: 'Nenhum filtro fornecido.' };
+  }
+
+  const base = modo === 'leve' ? SQL_REGISTRO_COLETA_LEVE : SQL_REGISTRO_COLETA_BASE;
+  const sql = `${base} And ${conditions.join(' And ')}`;
+
+  try {
+    const [rows] = await pool.query<Record<string, unknown>[]>(sql, params);
+    return { rows: Array.isArray(rows) ? rows : [] };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[comprasRepository] buscarRegistroColetaNomusComFiltros:', msg);
     return { rows: [], erro: msg };
   }
 }

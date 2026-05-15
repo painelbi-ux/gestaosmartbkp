@@ -13,6 +13,7 @@ import {
   getSupportTicket,
   listSupportCatalog,
   listSupportTickets,
+  setSupportTicketRead,
   updateSupportStatus,
   type SupportAttachmentInput,
   type SupportCatalogItem,
@@ -230,7 +231,9 @@ export default function SuportePage() {
     try {
       const data = await getSupportTicket(id);
       setDetail(data);
-      setTickets((prev) => prev.map((tt) => (tt.id === id ? { ...tt, unreadUpdates: 0 } : tt)));
+      setTickets((prev) =>
+        prev.map((tt) => (tt.id === id ? { ...tt, unreadUpdates: 0, readByMe: true } : tt))
+      );
       window.dispatchEvent(new CustomEvent('suporte:notificationsUpdated'));
     } catch (e) {
       setDetail(null);
@@ -239,6 +242,18 @@ export default function SuportePage() {
       setLoadingDetail(false);
     }
   }, []);
+
+  const handleToggleRead = useCallback(
+    async (ticketId: number, read: boolean) => {
+      try {
+        await setSupportTicketRead(ticketId, read);
+        setTickets((prev) => prev.map((tt) => (tt.id === ticketId ? { ...tt, readByMe: read } : tt)));
+      } catch (e) {
+        setErrorList(e instanceof Error ? e.message : 'Falha ao atualizar leitura.');
+      }
+    },
+    []
+  );
 
   const shouldOfferMasterStatusOnLeave =
     isMaster && alterarStatus && selectedId != null && detail != null && detail.id === selectedId && !loadingDetail;
@@ -608,31 +623,63 @@ export default function SuportePage() {
                   <th className="py-2">ID</th>
                   <th className="py-2">Tipo</th>
                   <th className="py-2">Título</th>
+                  <th className="py-2">Usuário</th>
                   <th className="py-2">Status</th>
                   <th className="py-2">Abertura</th>
                   <th className="py-2">Atualização</th>
+                  {isMaster && <th className="py-2">Leitura</th>}
                 </tr>
               </thead>
               <tbody>
-                {tickets.map((t) => (
-                  <tr
-                    key={t.id}
-                    className={`relative border-t border-slate-100 dark:border-slate-700 cursor-pointer ${selectedId === t.id ? 'bg-primary-50 dark:bg-primary-900/20' : ''}`}
-                    onClick={() => requestSelectTicket(t.id)}
-                  >
-                    <ChamadoLinhaIndicadorAtualizacoes count={t.unreadUpdates ?? 0} />
-                    <td className="py-2 pr-10">{t.ticketNumber}</td>
-                    <td className="py-2">{tipoLabels.get(t.tipo) ?? t.tipo}</td>
-                    <td className="py-2">{t.titulo}</td>
-                    <td className="py-2">
-                      <span className={`px-2 py-0.5 rounded-full text-xs ${statusBadge(t.status)}`}>
-                        {statusLabel(t.status)}
-                      </span>
-                    </td>
-                    <td className="py-2">{toBrDate(t.createdAt)}</td>
-                    <td className="py-2">{toBrDate(t.updatedAt)}</td>
-                  </tr>
-                ))}
+                {tickets.map((t) => {
+                  const unread = isMaster && !t.readByMe;
+                  return (
+                    <tr
+                      key={t.id}
+                      className={`relative border-t border-slate-100 dark:border-slate-700 cursor-pointer ${selectedId === t.id ? 'bg-primary-50 dark:bg-primary-900/20' : ''} ${unread ? 'font-semibold' : ''}`}
+                      onClick={() => requestSelectTicket(t.id)}
+                    >
+                      <ChamadoLinhaIndicadorAtualizacoes count={t.unreadUpdates ?? 0} />
+                      <td className="py-2 pr-10">
+                        <span className="inline-flex items-center gap-1.5">
+                          {isMaster && (
+                            <span
+                              title={t.readByMe ? 'Lido' : 'Não lido'}
+                              aria-label={t.readByMe ? 'Lido' : 'Não lido'}
+                              className={`inline-block w-2.5 h-2.5 rounded-full ${t.readByMe ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                            />
+                          )}
+                          {t.ticketNumber}
+                        </span>
+                      </td>
+                      <td className="py-2">{tipoLabels.get(t.tipo) ?? t.tipo}</td>
+                      <td className="py-2">{t.titulo}</td>
+                      <td className="py-2">{t.ownerNome ?? t.ownerLogin}</td>
+                      <td className="py-2">
+                        <span className={`px-2 py-0.5 rounded-full text-xs ${statusBadge(t.status)}`}>
+                          {statusLabel(t.status)}
+                        </span>
+                      </td>
+                      <td className="py-2">{toBrDate(t.createdAt)}</td>
+                      <td className="py-2">{toBrDate(t.updatedAt)}</td>
+                      {isMaster && (
+                        <td className="py-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleToggleRead(t.id, !t.readByMe);
+                            }}
+                            className="text-xs text-primary-600 dark:text-primary-400 hover:underline whitespace-nowrap"
+                            title={t.readByMe ? 'Marcar como não lida' : 'Marcar como lida'}
+                          >
+                            {t.readByMe ? 'Marcar como não lida' : 'Marcar como lida'}
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

@@ -12,12 +12,14 @@ function parsePermissoesJSON(json: string | null | undefined): string[] {
   }
 }
 
+const SUPER_LOGINS = new Set(['master', 'marquesfilho']);
+
 /**
- * Retorna as permissões do usuário: se for master, todas; senão as do grupo.
+ * Retorna as permissões do usuário: se for master ou marquesfilho, todas; senão as do grupo.
  */
 export async function getPermissoesUsuario(login: string): Promise<CodigoPermissao[]> {
-  if (login === 'master') {
-    // Mesmo para master, respeitamos `ativo`/`grupo.ativo`.
+  if (SUPER_LOGINS.has(login)) {
+    // Mesmo para super-usuários, respeitamos `ativo`/`grupo.ativo`.
     const usuario = await prisma.usuario.findUnique({
       where: { login },
       select: { ativo: true, grupo: { select: { ativo: true } } },

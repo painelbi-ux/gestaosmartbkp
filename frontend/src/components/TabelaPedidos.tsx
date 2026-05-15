@@ -466,6 +466,45 @@ export default function TabelaPedidos({ pedidos = [], loading, onAjustar, select
                 const isDate = DATE_COLUMN_IDS.includes(col.id);
                 const isNum = ['valor_pendente_real', 'qtde_pendente_real'].includes(col.id);
                 const display = isDate ? formatDate(raw as string) : isNum ? formatNum(col.id, raw) : (raw == null || String(raw) === '' ? '—' : String(raw));
+                // Badges na coluna "Previsão atual":
+                //  - Override por rota: o ajuste vale apenas nesta carrada (cinza, informativo).
+                //  - Carrada migrada: existem ajustes por rota em carradas que não aparecem mais (âmbar, atenção).
+                if (col.id === 'previsao_atual') {
+                  const isOverride = p.origem_ultimo_ajuste === 'override';
+                  const migrada = Array.isArray(p.carrada_migrada) ? p.carrada_migrada : null;
+                  const migradaTitle = migrada && migrada.length > 0
+                    ? `Este pedido tem ajustes em rotas que não aparecem mais:\n${migrada.map((m) => `  • ${m.rota} → ${formatDate(m.previsao)}`).join('\n')}\nRevise a previsão para a nova carrada.`
+                    : '';
+                  return (
+                    <td key={col.id} className={`p-3 text-slate-700 dark:text-slate-200 ${isNum ? 'text-right tabular-nums' : ''}`}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span>{display}</span>
+                        {isOverride && (
+                          <span
+                            className="inline-flex items-center rounded-full bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:text-slate-300"
+                            title="Ajuste aplicado apenas nesta rota (override). Outras rotas mantêm a previsão base."
+                          >
+                            rota
+                          </span>
+                        )}
+                        {migrada && migrada.length > 0 && (
+                          <span
+                            role="img"
+                            aria-label="Carrada migrada"
+                            title={migradaTitle}
+                            className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                              <line x1="12" y1="9" x2="12" y2="13" />
+                              <line x1="12" y1="17" x2="12.01" y2="17" />
+                            </svg>
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                  );
+                }
                 return (
                   <td key={col.id} className={`p-3 text-slate-700 dark:text-slate-200 ${isNum ? 'text-right tabular-nums' : ''}`}>
                     {display}

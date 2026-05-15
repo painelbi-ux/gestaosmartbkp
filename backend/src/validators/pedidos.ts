@@ -9,6 +9,12 @@ export const ajustarPrevisaoSchema = z.object({
   observacao: z.string().max(1000).optional().nullable(),
   /** Se true, replica motivo/observação e nova previsão para todos os itens da mesma rota/carrada (ROTA …). */
   replicate_carrada: z.boolean().optional(),
+  /**
+   * Se informado, grava o ajuste como override apenas para esta rota (Observacoes do romaneio).
+   * Útil quando o mesmo (PD, item) está em 2+ rotas e o PCP quer datas distintas por rota.
+   * Quando omitido, grava como ajuste base (vale para todas as rotas em que o (PD, item) aparecer).
+   */
+  rota: z.string().max(500).optional().nullable(),
 });
 
 export type AjustarPrevisaoInput = z.infer<typeof ajustarPrevisaoSchema>;
@@ -20,7 +26,14 @@ const itemAjusteLoteSchema = z.object({
   /** Observação do ajuste (coluna Observação no export/import). Armazenada na tabela de previsão e exibida no histórico. */
   observacao: z.string().max(1000).optional().nullable(),
   previsao_atual: z.string().optional(),
+  /**
+   * Rota (Observacoes) da linha selecionada.
+   *   - Quando `apply_rota=true` (ou no fluxo do lote do Gerenciador): grava override por rota.
+   *   - Caso contrário: campo é só metadado de validação (verificar conflitos de carrada).
+   */
   rota: z.string().optional(),
+  /** Se true, grava o ajuste como override apenas para a `rota` informada. Se false/ausente, grava como ajuste base. */
+  apply_rota: z.boolean().optional(),
   /** Coluna Igual? do arquivo (true = Nova previsão = Previsão atual). Importação rejeitada se qualquer linha tiver igual: true. */
   igual: z.boolean().optional(),
 });

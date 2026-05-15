@@ -129,15 +129,20 @@ export interface RessupAlmoxAnaliseListItem {
   usuarioLogin: string;
   resumoFiltros: string | null;
   linhaCount: number;
+  status: 'em_processamento' | 'processado' | 'concluido';
+  processadoAt: string | null;
+  usuarioLoginProcessado: string | null;
+  concluidoAt: string | null;
+  usuarioLoginConcluido: string | null;
 }
 
 export async function gravarRessupAlmoxAnalise(params: {
   resumoFiltros?: string;
   payload: RessupAlmoxAnalisePayloadV1;
-}): Promise<{ ok: boolean; id?: number; error?: string }> {
+}): Promise<{ ok: boolean; id?: number; status?: string; createdAt?: string; usuarioLogin?: string; error?: string }> {
   const res = await apiFetch('/api/compras/ressup-almox/analises', { method: 'POST', body: params });
   const text = await res.text();
-  let body: { id?: number; ok?: boolean; error?: string } = {};
+  let body: { id?: number; ok?: boolean; status?: string; createdAt?: string; usuarioLogin?: string; error?: string } = {};
   if (text) {
     try {
       body = JSON.parse(text) as typeof body;
@@ -146,7 +151,55 @@ export async function gravarRessupAlmoxAnalise(params: {
     }
   }
   if (!res.ok) return { ok: false, error: body.error ?? res.statusText };
-  return { ok: true, id: body.id };
+  return { ok: true, id: body.id, status: body.status, createdAt: body.createdAt, usuarioLogin: body.usuarioLogin };
+}
+
+export async function atualizarRessupAlmoxAnalise(id: number, params: {
+  resumoFiltros?: string;
+  payload: RessupAlmoxAnalisePayloadV1;
+}): Promise<{ ok: boolean; error?: string }> {
+  const res = await apiFetch(`/api/compras/ressup-almox/analises/${id}`, { method: 'PUT', body: params });
+  const text = await res.text();
+  let body: { ok?: boolean; error?: string } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as typeof body;
+    } catch {
+      body = { error: text || res.statusText };
+    }
+  }
+  if (!res.ok) return { ok: false, error: body.error ?? res.statusText };
+  return { ok: true };
+}
+
+export async function processarRessupAlmoxAnalise(id: number): Promise<{ ok: boolean; error?: string }> {
+  const res = await apiFetch(`/api/compras/ressup-almox/analises/${id}/processar`, { method: 'PATCH' });
+  const text = await res.text();
+  let body: { ok?: boolean; error?: string } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as typeof body;
+    } catch {
+      body = { error: text || res.statusText };
+    }
+  }
+  if (!res.ok) return { ok: false, error: body.error ?? res.statusText };
+  return { ok: true };
+}
+
+export async function concluirRessupAlmoxAnalise(id: number): Promise<{ ok: boolean; error?: string }> {
+  const res = await apiFetch(`/api/compras/ressup-almox/analises/${id}/concluir`, { method: 'PATCH' });
+  const text = await res.text();
+  let body: { ok?: boolean; error?: string } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as typeof body;
+    } catch {
+      body = { error: text || res.statusText };
+    }
+  }
+  if (!res.ok) return { ok: false, error: body.error ?? res.statusText };
+  return { ok: true };
 }
 
 export async function listarRessupAlmoxAnalises(limit = 80): Promise<{
@@ -173,6 +226,11 @@ export async function obterRessupAlmoxAnalise(id: number): Promise<{
   usuarioLogin: string;
   resumoFiltros: string | null;
   linhaCount: number;
+  status: 'em_processamento' | 'processado' | 'concluido';
+  processadoAt: string | null;
+  usuarioLoginProcessado: string | null;
+  concluidoAt: string | null;
+  usuarioLoginConcluido: string | null;
   payload: RessupAlmoxAnalisePayloadV1 | null;
   error?: string;
 }> {
@@ -184,6 +242,11 @@ export async function obterRessupAlmoxAnalise(id: number): Promise<{
     usuarioLogin?: string;
     resumoFiltros?: string | null;
     linhaCount?: number;
+    status?: string;
+    processadoAt?: string | null;
+    usuarioLoginProcessado?: string | null;
+    concluidoAt?: string | null;
+    usuarioLoginConcluido?: string | null;
     payload?: RessupAlmoxAnalisePayloadV1 | null;
     error?: string;
   } = {};
@@ -201,16 +264,27 @@ export async function obterRessupAlmoxAnalise(id: number): Promise<{
       usuarioLogin: '',
       resumoFiltros: null,
       linhaCount: 0,
+      status: 'em_processamento',
+      processadoAt: null,
+      usuarioLoginProcessado: null,
+      concluidoAt: null,
+      usuarioLoginConcluido: null,
       payload: null,
       error: body.error ?? res.statusText,
     };
   }
+  const st = body.status;
   return {
     id: body.id ?? 0,
     createdAt: body.createdAt ?? '',
     usuarioLogin: body.usuarioLogin ?? '',
     resumoFiltros: body.resumoFiltros ?? null,
     linhaCount: body.linhaCount ?? 0,
+    status: (st === 'concluido' ? 'concluido' : st === 'processado' ? 'processado' : 'em_processamento') as 'em_processamento' | 'processado' | 'concluido',
+    processadoAt: body.processadoAt ?? null,
+    usuarioLoginProcessado: body.usuarioLoginProcessado ?? null,
+    concluidoAt: body.concluidoAt ?? null,
+    usuarioLoginConcluido: body.usuarioLoginConcluido ?? null,
     payload: body.payload ?? null,
   };
 }

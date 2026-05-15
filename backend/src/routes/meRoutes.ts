@@ -70,8 +70,9 @@ router.get('/', async (req: Request, res: Response) => {
     } catch (_) {
       // mantém permissoes vazio em caso de falha (ex.: coluna/tabela ausente)
     }
+    const SUPER_LOGINS_ME = new Set(['master', 'marquesfilho']);
     const telaInicialPath =
-      login === 'master'
+      SUPER_LOGINS_ME.has(login)
         ? null
         : resolveTelaInicialPathParaUsuario(usuario?.grupo?.telaPrincipalInicial ?? null, permissoes);
 

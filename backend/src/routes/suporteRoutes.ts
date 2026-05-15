@@ -8,6 +8,7 @@ import {
   listSupportCatalog,
   listSupportTickets,
   replaceSupportCatalog,
+  setSupportTicketRead,
   updateSupportTicketStatus,
 } from '../controllers/suporteController.js';
 
@@ -22,5 +23,6 @@ router.post('/tickets', createSupportTicket);
 router.get('/tickets/:id', getSupportTicketById);
 router.post('/tickets/:id/messages', createSupportTicketMessage);
 router.patch('/tickets/:id/status', updateSupportTicketStatus);
+router.put('/tickets/:id/read', setSupportTicketRead);
 
 export default router;

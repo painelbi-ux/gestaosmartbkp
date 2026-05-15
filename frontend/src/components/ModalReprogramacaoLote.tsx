@@ -1,24 +1,28 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { z } from 'zod';
 import { listarMotivosSugestao, type MotivoSugestao } from '../api/motivosSugestao';
 import { ajustarPrevisaoLote, type AjustePrevisaoLoteResultado } from '../api/pedidos';
 import ModalGerenciarMotivos from './ModalGerenciarMotivos';
 import { useAuth } from '../contexts/AuthContext';
+import { isCarradaRota, isExcludedSqlRotaCategory } from '../utils/rotaCarrada';
 
 const schema = z.object({
   previsao_nova: z.string().min(1, 'Informe a data'),
   motivo: z.string().min(1, 'Motivo é obrigatório').max(500),
 });
 
+/** Linha selecionada na grade: id_pedido + rota (Observacoes) para suporte a override por rota. */
+export type LinhaReprogramacaoLote = { id_pedido: string; rota?: string };
+
 interface ModalReprogramacaoLoteProps {
-  ids: string[];
+  linhas: LinhaReprogramacaoLote[];
   onClose: () => void;
   onSuccess: (resultado: AjustePrevisaoLoteResultado) => void;
   onError: (msg: string) => void;
 }
 
 export default function ModalReprogramacaoLote({
-  ids,
+  linhas,
   onClose,
   onSuccess,
   onError,
@@ -30,8 +34,17 @@ export default function ModalReprogramacaoLote({
   const [sugestoes, setSugestoes] = useState<MotivoSugestao[]>([]);
   const [loadingSugestoes, setLoadingSugestoes] = useState(false);
   const [abrirGerenciar, setAbrirGerenciar] = useState(false);
+  const [aplicarPorRota, setAplicarPorRota] = useState(false);
   const { login, grupo } = useAuth();
   const podeGerenciarMotivos = login === 'master' || login === 'admin' || login === 'marquesfilho' || grupo === 'admin' || grupo === 'Administrador';
+
+  // Quantidade de linhas com rota considerada "carrada elegível" — habilita o toggle de override por rota.
+  const totalLinhasComRotaCarrada = useMemo(() => {
+    return linhas.reduce((acc, l) => {
+      const r = (l.rota ?? '').trim();
+      return acc + (r && isCarradaRota(r) && !isExcludedSqlRotaCategory(r) ? 1 : 0);
+    }, 0);
+  }, [linhas]);
 
   const carregarSugestoes = () => {
     setLoadingSugestoes(true);
@@ -50,21 +63,32 @@ export default function ModalReprogramacaoLote({
     const parsed = schema.safeParse({ previsao_nova, motivo });
     if (!parsed.success) {
       const fieldErrors: Record<string, string> = {};
-      parsed.error.flatten().fieldErrors?.previsao_nova &&
-        (fieldErrors.previsao_nova = parsed.error.flatten().fieldErrors.previsao_nova[0]);
-      parsed.error.flatten().fieldErrors?.motivo &&
-        (fieldErrors.motivo = parsed.error.flatten().fieldErrors.motivo[0]);
+      const flat = parsed.error.flatten().fieldErrors;
+      if (flat?.previsao_nova?.[0]) fieldErrors.previsao_nova = flat.previsao_nova[0];
+      if (flat?.motivo?.[0]) fieldErrors.motivo = flat.motivo[0];
       setErrors(fieldErrors);
       return;
     }
     setErrors({});
     setLoading(true);
     try {
-      const ajustes = ids.map((id) => ({
-        id_pedido: String(id ?? '').trim(),
-        previsao_nova: parsed.data!.previsao_nova.trim().slice(0, 10),
-        motivo: parsed.data!.motivo.trim(),
-      })).filter((a) => a.id_pedido !== '');
+      const ajustes = linhas
+        .map((l) => {
+          const idNorm = String(l.id_pedido ?? '').trim();
+          const rotaNorm = (l.rota ?? '').trim();
+          return {
+            id_pedido: idNorm,
+            previsao_nova: parsed.data!.previsao_nova.trim().slice(0, 10),
+            motivo: parsed.data!.motivo.trim(),
+            rota: rotaNorm || undefined,
+            // Só grava override quando o toggle está ligado E a rota é elegível.
+            apply_rota:
+              aplicarPorRota && rotaNorm && isCarradaRota(rotaNorm) && !isExcludedSqlRotaCategory(rotaNorm)
+                ? true
+                : undefined,
+          };
+        })
+        .filter((a) => a.id_pedido !== '');
       const resultado = await ajustarPrevisaoLote(ajustes);
       onSuccess(resultado);
       onClose();
@@ -75,10 +99,10 @@ export default function ModalReprogramacaoLote({
     }
   };
 
-  if (ids.length === 0) return null;
+  if (linhas.length === 0) return null;
 
   const limiteLote = 1000;
-  const excedeLimite = ids.length > limiteLote;
+  const excedeLimite = linhas.length > limiteLote;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={onClose}>
@@ -88,11 +112,11 @@ export default function ModalReprogramacaoLote({
       >
         <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-2">Reprogramar em lote</h3>
         <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-          {ids.length} pedido(s) selecionado(s). Defina a mesma nova data e o mesmo motivo para todos.
+          {linhas.length} pedido(s) selecionado(s). Defina a mesma nova data e o mesmo motivo para todos.
         </p>
         {excedeLimite && (
           <p className="text-amber-600 dark:text-amber-400 text-sm mb-4">
-            Máximo {limiteLote} pedidos por vez. Desmarque alguns na tabela (atualmente {ids.length}).
+            Máximo {limiteLote} pedidos por vez. Desmarque alguns na tabela (atualmente {linhas.length}).
           </p>
         )}
         <form onSubmit={handleSubmit}>
@@ -144,6 +168,24 @@ export default function ModalReprogramacaoLote({
               <p className="text-slate-500 text-xs mt-1">Carregando motivos...</p>
             )}
           </div>
+
+          {totalLinhasComRotaCarrada > 0 && (
+            <label className="mb-4 flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-3 text-sm">
+              <input
+                type="checkbox"
+                checked={aplicarPorRota}
+                onChange={(e) => setAplicarPorRota(e.target.checked)}
+                className="mt-0.5 h-4 w-4 cursor-pointer rounded border-slate-400 text-primary-600 focus:ring-primary-500"
+              />
+              <span className="text-slate-700 dark:text-slate-200">
+                <span className="block font-medium">Aplicar somente nas rotas selecionadas</span>
+                <span className="block text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Quando um mesmo pedido aparecer em mais de uma carrada, a data muda apenas nas linhas selecionadas (override). Sem este filtro, a data vale para todas as rotas em que o pedido aparece.
+                </span>
+              </span>
+            </label>
+          )}
+
           <div className="flex gap-3 justify-end">
             <button
               type="button"
@@ -157,7 +199,7 @@ export default function ModalReprogramacaoLote({
               disabled={loading || excedeLimite}
               className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white text-sm font-medium"
             >
-              {loading ? 'Salvando...' : `Reprogramar ${ids.length} pedido(s)`}
+              {loading ? 'Salvando...' : `Reprogramar ${linhas.length} pedido(s)`}
             </button>
           </div>
         </form>

@@ -283,19 +283,36 @@ function sqlReceitasProjecaoAgregado(granularidade: DfcAgendamentoGranularidade,
       : "DATE_FORMAT(af.dataVencimento, '%Y-%m-%d')";
   const inClause = idEmpresas.map(() => '?').join(', ');
   return `
-SELECT
-  af.idContaFinanceiro AS idContaFinanceiro,
-  ${periodoExpr} AS periodo,
-  SUM(af.saldoBaixar) AS valor
-FROM agendamentofinanceiro af
-WHERE DATE(af.dataVencimento) BETWEEN ? AND ?
-  AND af.discriminador = 'R'
-  AND af.idEmpresa IN (${inClause})
-  AND af.dataBaixa IS NULL
-  AND af.saldoBaixar > 0
-  AND af.idContaFinanceiro IS NOT NULL
-GROUP BY af.idContaFinanceiro, ${periodoExpr}
-ORDER BY periodo, af.idContaFinanceiro
+SELECT u.idContaFinanceiro, u.periodo, SUM(u.valor) AS valor
+FROM (
+  SELECT
+    af.idContaFinanceiro AS idContaFinanceiro,
+    ${periodoExpr} AS periodo,
+    af.saldoBaixar AS valor
+  FROM agendamentofinanceiro af
+  LEFT JOIN parcelapagamento pp ON pp.id = af.idParcelaDocumentoSaida
+  WHERE DATE(af.dataVencimento) BETWEEN ? AND ?
+    AND af.discriminador = 'R'
+    AND af.saldoBaixar > 0
+    AND af.idEmpresa IN (${inClause})
+    AND af.idContaFinanceiro IS NOT NULL
+    AND (pp.geraAdiantamento = 1 OR pp.geraAdiantamento IS NULL)
+  UNION ALL
+  SELECT
+    af.idContaFinanceiro AS idContaFinanceiro,
+    ${periodoExpr} AS periodo,
+    af.saldoBaixar AS valor
+  FROM agendamentofinanceiro af
+  LEFT JOIN parcelapagamento pp ON pp.id = af.idParcelaDocumentoSaida
+  WHERE DATE(af.dataVencimento) BETWEEN ? AND ?
+    AND af.discriminador = 'R'
+    AND af.saldoBaixar > 0
+    AND af.idEmpresa IN (${inClause})
+    AND af.idContaFinanceiro IS NOT NULL
+    AND af.idDocumentoSaida IS NOT NULL
+) u
+GROUP BY u.idContaFinanceiro, u.periodo
+ORDER BY u.periodo, u.idContaFinanceiro
 `.trim();
 }
 
@@ -313,7 +330,10 @@ export async function queryDfcReceitasProjecao(params: {
 
   const { dataVencimentoInicio, dataVencimentoFim, granularidade, idEmpresas } = params;
   const sql = sqlReceitasProjecaoAgregado(granularidade, idEmpresas);
-  const args = [dataVencimentoInicio, dataVencimentoFim, ...idEmpresas];
+  const args = [
+    dataVencimentoInicio, dataVencimentoFim, ...idEmpresas,
+    dataVencimentoInicio, dataVencimentoFim, ...idEmpresas,
+  ];
 
   try {
     const [rows] = (await pool.query(sql, args)) as [Record<string, unknown>[], unknown];
@@ -353,7 +373,6 @@ export async function queryDfcReceitasProjecaoDetalhe(params: {
 
   const empInClause = idEmpresas.map(() => '?').join(', ');
   const placeholders = ids.map(() => '?').join(', ');
-  const args: unknown[] = [dataVencimentoInicio, dataVencimentoFim, ...idEmpresas, ...ids];
 
   let periodClause = '';
   if (periodoBucket) {
@@ -362,27 +381,52 @@ export async function queryDfcReceitasProjecaoDetalhe(params: {
     } else {
       periodClause = ' AND DATE(af.dataVencimento) = ?';
     }
-    args.push(periodoBucket);
   }
 
+  const argsBranch: unknown[] = [dataVencimentoInicio, dataVencimentoFim, ...idEmpresas, ...ids];
+  if (periodoBucket) argsBranch.push(periodoBucket);
+  const args: unknown[] = [...argsBranch, ...argsBranch];
+
   const sql = `
-SELECT
-  af.id AS id,
-  af.descricaoLancamento AS descricaoLancamento,
-  pe.nome AS nome,
-  DATE(af.dataVencimento) AS dataVencimento,
-  NULL AS dataBaixa,
-  af.saldoBaixar AS valorBaixado
-FROM agendamentofinanceiro af
-LEFT JOIN pessoa pe ON pe.id = af.idPessoa
-WHERE DATE(af.dataVencimento) BETWEEN ? AND ?
-  AND af.discriminador = 'R'
-  AND af.idEmpresa IN (${empInClause})
-  AND af.dataBaixa IS NULL
-  AND af.saldoBaixar > 0
-  AND af.idContaFinanceiro IN (${placeholders})
-  ${periodClause}
-ORDER BY valorBaixado DESC, af.id DESC
+SELECT u.id, u.descricaoLancamento, u.nome, u.dataVencimento, u.dataBaixa, u.valorBaixado
+FROM (
+  SELECT
+    af.id AS id,
+    af.descricaoLancamento AS descricaoLancamento,
+    pe.nome AS nome,
+    DATE(af.dataVencimento) AS dataVencimento,
+    NULL AS dataBaixa,
+    af.saldoBaixar AS valorBaixado
+  FROM agendamentofinanceiro af
+  LEFT JOIN parcelapagamento pp ON pp.id = af.idParcelaDocumentoSaida
+  LEFT JOIN pessoa pe ON pe.id = af.idPessoa
+  WHERE DATE(af.dataVencimento) BETWEEN ? AND ?
+    AND af.discriminador = 'R'
+    AND af.idEmpresa IN (${empInClause})
+    AND af.saldoBaixar > 0
+    AND af.idContaFinanceiro IN (${placeholders})
+    AND (pp.geraAdiantamento = 1 OR pp.geraAdiantamento IS NULL)
+    ${periodClause}
+  UNION ALL
+  SELECT
+    af.id AS id,
+    af.descricaoLancamento AS descricaoLancamento,
+    pe.nome AS nome,
+    DATE(af.dataVencimento) AS dataVencimento,
+    NULL AS dataBaixa,
+    af.saldoBaixar AS valorBaixado
+  FROM agendamentofinanceiro af
+  LEFT JOIN parcelapagamento pp ON pp.id = af.idParcelaDocumentoSaida
+  LEFT JOIN pessoa pe ON pe.id = af.idPessoa
+  WHERE DATE(af.dataVencimento) BETWEEN ? AND ?
+    AND af.discriminador = 'R'
+    AND af.idEmpresa IN (${empInClause})
+    AND af.saldoBaixar > 0
+    AND af.idContaFinanceiro IN (${placeholders})
+    AND af.idDocumentoSaida IS NOT NULL
+    ${periodClause}
+) u
+ORDER BY u.valorBaixado DESC, u.id DESC
 LIMIT 2000
 `.trim();
 

@@ -337,6 +337,7 @@ export default function DfcPage() {
             <div className="flex flex-col text-[11px] text-slate-400 dark:text-slate-500 -mt-1 leading-snug">
               <span>Pagar: {fmtBrl(kpis.vencidosPagar)}</span>
               <span>Receber: {fmtBrl(kpis.vencidosReceber)}</span>
+              <span className="text-slate-400 dark:text-slate-500">no período selecionado</span>
             </div>
           )}
         </div>
@@ -362,6 +363,7 @@ export default function DfcPage() {
             <div className="flex flex-col text-[11px] text-slate-400 dark:text-slate-500 -mt-1 leading-snug">
               <span>Pagar: {fmtBrl(kpis.aVencerPagar)}</span>
               <span>Receber: {fmtBrl(kpis.aVencerReceber)}</span>
+              <span className="text-slate-400 dark:text-slate-500">no período selecionado</span>
             </div>
           )}
         </div>
@@ -387,7 +389,7 @@ export default function DfcPage() {
               {fmtBrl(kpis.saldoBancario)}
             </span>
           )}
-          <span className="text-[11px] text-slate-400 dark:text-slate-500 -mt-1">acumulado até hoje</span>
+          <span className="text-[11px] text-slate-400 dark:text-slate-500 -mt-1">acumulado até o fim do período</span>
         </div>
 
       </div>

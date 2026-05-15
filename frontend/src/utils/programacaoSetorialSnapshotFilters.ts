@@ -92,8 +92,6 @@ export function filterSnapshotLinhasByRules(
       result = result.filter((item) => !desc(item).includes('estante'));
     } else if (sectorNorm === 'nao considerar na meta') {
       result = result.filter((item) => !desc(item).includes('coluna para estante') && !desc(item).includes('compensado'));
-    } else if (sectorNorm.includes('porta-palete') || sectorNorm.includes('porta palete')) {
-      result = result.filter((item) => !desc(item).toUpperCase().startsWith('PORTA PALETE'));
     }
   }
 

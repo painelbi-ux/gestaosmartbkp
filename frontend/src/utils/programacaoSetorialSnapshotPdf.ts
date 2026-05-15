@@ -21,6 +21,21 @@ function slugFile(s: string): string {
     .slice(0, 48) || 'doc';
 }
 
+/** Converte YYYY-MM-DD em DD/MM/YYYY sem cair em armadilha de timezone (não usa Date). */
+function ymdToBr(ymd: string): string {
+  const s = String(ymd ?? '').trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return s;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+/** Rótulo de período no padrão brasileiro: "DD/MM/YYYY a DD/MM/YYYY" ou "Período completo" se vazio. */
+export function formatPeriodoLabelBr(start: string, end: string): string {
+  const a = ymdToBr(start);
+  const b = ymdToBr(end);
+  return a && b ? `${a} a ${b}` : 'Período completo';
+}
+
 export type DownloadProgramacaoSnapshotPdfOpts = {
   /** Omitido ou 0: texto “Modo gerador” no cabeçalho. */
   registroId?: number | null;
@@ -89,8 +104,8 @@ export function downloadProgramacaoSnapshotPdf(opts: DownloadProgramacaoSnapshot
   const headers = [['Observações', 'Previsão', 'Cód', 'Descrição do Produto', 'Qtde Real', 'Obs. Produção']];
   if (showPD) headers[0].splice(2, 0, 'PD');
 
-  const body = items.map((item) => {
-    const row = [
+  const body: any[][] = items.map((item) => {
+    const row: any[] = [
       String(item.observacoes || ''),
       String(item.previsao || ''),
       String(item.cod || ''),
@@ -107,6 +122,25 @@ export function downloadProgramacaoSnapshotPdf(opts: DownloadProgramacaoSnapshot
   const pdColIdx = showPD ? 2 : -1;
   const qtyColIdx = showPD ? 5 : 4;
   const obsProdColIdx = showPD ? 6 : 5;
+
+  // Linha de TOTAL GERAL no fim do detalhamento (espelha a consolidação).
+  const detalhadoTotal = items.reduce((acc, it) => acc + (Number(it.qtyToProduce ?? 0) || 0), 0);
+  const totalColSpan = qtyColIdx; // todas as colunas anteriores à de "Qtde Real" são mescladas no rótulo.
+  body.push([
+    {
+      content: 'TOTAL GERAL',
+      colSpan: totalColSpan,
+      styles: { halign: 'right', fontStyle: 'bold', fillColor: [240, 240, 240] },
+    },
+    {
+      content: String(detalhadoTotal),
+      styles: { halign: 'center', fontStyle: 'bold', fillColor: [240, 240, 240] },
+    },
+    {
+      content: '',
+      styles: { fillColor: [240, 240, 240] },
+    },
+  ]);
 
   autoTable(doc as any, {
     startY: 30,

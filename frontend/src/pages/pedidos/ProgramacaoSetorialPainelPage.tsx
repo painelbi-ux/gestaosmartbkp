@@ -8,7 +8,7 @@ import {
 } from '../../api/programacaoSetorial';
 import { imageUrlToDataUrl } from '../../utils/imageDataUrl';
 import { filterSnapshotLinhasByRules } from '../../utils/programacaoSetorialSnapshotFilters';
-import { downloadProgramacaoSnapshotPdf, type SnapshotLinhaPdf } from '../../utils/programacaoSetorialSnapshotPdf';
+import { downloadProgramacaoSnapshotPdf, formatPeriodoLabelBr, type SnapshotLinhaPdf } from '../../utils/programacaoSetorialSnapshotPdf';
 
 /** Formato gravado em `dadosProgramacao` ao salvar no gerador. */
 type SnapshotLinha = {
@@ -184,7 +184,6 @@ export default function ProgramacaoSetorialPainelPage() {
       setPdfAcaoMsg('Não há linhas para o período e setor selecionados.');
       return;
     }
-    const periodo = (a: string, b: string) => (a && b ? `${a} a ${b}` : 'Período completo');
     const safeSuffix =
       printSector === 'Geral'
         ? 'Geral'
@@ -193,8 +192,8 @@ export default function ProgramacaoSetorialPainelPage() {
       downloadProgramacaoSnapshotPdf({
         registroId: ds.registro.id,
         tituloSuffix: safeSuffix,
-        periodoLabel: periodo(printStart, printEnd),
-        periodoConsolidadoLabel: periodo(printConsolidatedStart, printConsolidatedEnd),
+        periodoLabel: formatPeriodoLabelBr(printStart, printEnd),
+        periodoConsolidadoLabel: formatPeriodoLabelBr(printConsolidatedStart, printConsolidatedEnd),
         showPD: printShowPD,
         linhas: mainFiltered.map(snapshotLinhaToPdf),
         linhasConsolidacao: consFiltered.map(snapshotLinhaToPdf),

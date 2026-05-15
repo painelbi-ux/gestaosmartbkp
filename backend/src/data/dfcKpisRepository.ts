@@ -97,11 +97,13 @@ FROM (
 ) u
 `.trim();
 
-  // ── Vencidos a pagar (P) — passado da data de vencimento, não baixados ──────
+  // ── Vencidos a pagar (P) — vencimento DENTRO do período, já vencido (< hoje
+  //    ou < dataFim se dataFim é passado), e ainda não baixado ───────────────
   const sqlVencidosPagar = `
 SELECT COALESCE(SUM(af.saldoBaixar), 0) AS total
 FROM agendamentofinanceiro af
-WHERE DATE(af.dataVencimento) < CURDATE()
+WHERE DATE(af.dataVencimento) BETWEEN ? AND ?
+  AND DATE(af.dataVencimento) < LEAST(?, CURDATE())
   AND af.dataBaixa IS NULL
   AND af.saldoBaixar > 0
   AND af.idEmpresa IN (${empIn})
@@ -109,22 +111,25 @@ WHERE DATE(af.dataVencimento) < CURDATE()
   AND af.discriminador = 'P'
 `.trim();
 
-  // ── Vencidos a receber (R) — passado da data de vencimento, não baixados ────
+  // ── Vencidos a receber (R) — vencimento DENTRO do período, já vencido,
+  //    ainda não baixado ─────────────────────────────────────────────────────
   const sqlVencidosReceber = `
 SELECT COALESCE(SUM(af.saldoBaixar), 0) AS total
 FROM agendamentofinanceiro af
-WHERE DATE(af.dataVencimento) < CURDATE()
+WHERE DATE(af.dataVencimento) BETWEEN ? AND ?
+  AND DATE(af.dataVencimento) < LEAST(?, CURDATE())
   AND af.dataBaixa IS NULL
   AND af.saldoBaixar > 0
   AND af.idEmpresa IN (${empIn})
   AND af.discriminador = 'R'
 `.trim();
 
-  // ── A Vencer a pagar (P) — próximos 30 dias, não baixados ──────────────────
+  // ── A Vencer a pagar (P) — vencimento DENTRO do período, ainda não vencido
+  //    (>= hoje), não baixado ───────────────────────────────────────────────
   const sqlAVencerPagar = `
 SELECT COALESCE(SUM(af.saldoBaixar), 0) AS total
 FROM agendamentofinanceiro af
-WHERE DATE(af.dataVencimento) BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+WHERE DATE(af.dataVencimento) BETWEEN GREATEST(?, CURDATE()) AND ?
   AND af.dataBaixa IS NULL
   AND af.saldoBaixar > 0
   AND af.idEmpresa IN (${empIn})
@@ -132,24 +137,25 @@ WHERE DATE(af.dataVencimento) BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL
   AND af.discriminador = 'P'
 `.trim();
 
-  // ── A Vencer a receber (R) — próximos 30 dias, não baixados ────────────────
+  // ── A Vencer a receber (R) — vencimento DENTRO do período, ainda não vencido,
+  //    não baixado ──────────────────────────────────────────────────────────
   const sqlAVencerReceber = `
 SELECT COALESCE(SUM(af.saldoBaixar), 0) AS total
 FROM agendamentofinanceiro af
-WHERE DATE(af.dataVencimento) BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+WHERE DATE(af.dataVencimento) BETWEEN GREATEST(?, CURDATE()) AND ?
   AND af.dataBaixa IS NULL
   AND af.saldoBaixar > 0
   AND af.idEmpresa IN (${empIn})
   AND af.discriminador = 'R'
 `.trim();
 
-  // ── Saldo Bancário: acumulado de LR (crédito) - LP (débito) até hoje ────────
+  // ── Saldo Bancário: acumulado de LR (crédito) - LP (débito) até dataFim ────
   const sqlSaldo = `
 SELECT
   COALESCE(SUM(CASE WHEN lf.discriminador = 'LR' THEN lf.valor ELSE 0 END), 0) -
   COALESCE(SUM(CASE WHEN lf.discriminador = 'LP' THEN lf.valor ELSE 0 END), 0) AS saldo
 FROM lancamentofinanceiro lf
-WHERE DATE(lf.dataLancamento) <= CURDATE()
+WHERE DATE(lf.dataLancamento) <= ?
   AND lf.idEmpresa IN (${empIn})
   AND lf.discriminador IN ('LR', 'LP')
 `.trim();
@@ -166,11 +172,11 @@ WHERE DATE(lf.dataLancamento) <= CURDATE()
     ] = await Promise.all([
       pool.query(sqlRecebimentos, [dataInicio, dataFim, ...empArgs, dataInicio, dataFim, ...empArgs]),
       pool.query(sqlPagamentos, [dataInicio, dataFim, ...empArgs, dataInicio, dataFim, ...empArgs]),
-      pool.query(sqlVencidosPagar, empArgs),
-      pool.query(sqlVencidosReceber, empArgs),
-      pool.query(sqlAVencerPagar, empArgs),
-      pool.query(sqlAVencerReceber, empArgs),
-      pool.query(sqlSaldo, empArgs),
+      pool.query(sqlVencidosPagar, [dataInicio, dataFim, dataFim, ...empArgs]),
+      pool.query(sqlVencidosReceber, [dataInicio, dataFim, dataFim, ...empArgs]),
+      pool.query(sqlAVencerPagar, [dataInicio, dataFim, ...empArgs]),
+      pool.query(sqlAVencerReceber, [dataInicio, dataFim, ...empArgs]),
+      pool.query(sqlSaldo, [dataFim, ...empArgs]),
     ]) as [[Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown]];
 
     const kpis: DfcKpis = {

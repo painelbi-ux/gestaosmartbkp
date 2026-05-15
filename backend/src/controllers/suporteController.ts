@@ -43,8 +43,10 @@ type IncomingAttachment = {
   sizeBytes?: number;
 };
 
+const SUPER_LOGINS = new Set(['master', 'marquesfilho']);
+
 function isMaster(login?: string | null): boolean {
-  return String(login ?? '').trim().toLowerCase() === 'master';
+  return SUPER_LOGINS.has(String(login ?? '').trim().toLowerCase());
 }
 
 function normalizeString(v: unknown): string {
@@ -294,8 +296,10 @@ function mapTicketListRow(
     createdAt: Date;
     updatedAt: Date;
     ownerLogin: string;
+    ownerNome: string | null;
   },
-  unreadUpdates = 0
+  unreadUpdates = 0,
+  readByMe = false
 ): Record<string, unknown> {
   return {
     id: row.id,
@@ -307,7 +311,9 @@ function mapTicketListRow(
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ownerLogin: row.ownerLogin,
+    ownerNome: row.ownerNome,
     unreadUpdates,
+    readByMe,
   };
 }
 
@@ -596,11 +602,13 @@ export async function listSupportTickets(req: Request, res: Response): Promise<v
       createdAt: true,
       updatedAt: true,
       ownerLogin: true,
+      ownerNome: true,
     },
   });
 
   const ids = data.map((t) => t.id);
   const unreadByTicket = new Map<number, number>();
+  const readByMeSet = new Set<number>();
   if (ids.length > 0) {
     const grouped = await prisma.supportTicketNotification.groupBy({
       by: ['ticketId'],
@@ -610,10 +618,21 @@ export async function listSupportTickets(req: Request, res: Response): Promise<v
     for (const g of grouped) {
       unreadByTicket.set(g.ticketId, g._count.id);
     }
+    const reads = await prisma.supportTicketRead.findMany({
+      where: {
+        userLogin: login,
+        ticketId: { in: ids },
+        readAt: { not: null },
+      },
+      select: { ticketId: true },
+    });
+    for (const r of reads) readByMeSet.add(r.ticketId);
   }
 
   res.json({
-    data: data.map((row) => mapTicketListRow(row, unreadByTicket.get(row.id) ?? 0)),
+    data: data.map((row) =>
+      mapTicketListRow(row, unreadByTicket.get(row.id) ?? 0, readByMeSet.has(row.id))
+    ),
   });
 }
 
@@ -670,6 +689,12 @@ export async function getSupportTicketById(req: Request, res: Response): Promise
   await prisma.supportTicketNotification.updateMany({
     where: { ticketId: id, userLogin: login, isRead: false },
     data: { isRead: true },
+  });
+
+  await prisma.supportTicketRead.upsert({
+    where: { ticketId_userLogin: { ticketId: id, userLogin: login } },
+    create: { ticketId: id, userLogin: login, readAt: new Date() },
+    update: { readAt: new Date() },
   });
 
   const customFields = parseJsonObject(ticket.customFieldsJson);
@@ -801,6 +826,43 @@ export async function createSupportTicketMessage(req: Request, res: Response): P
   ]);
 
   res.status(201).json({ ok: true, messageId: created.id });
+}
+
+/**
+ * PUT /api/suporte/tickets/:id/read — marca chamado como lido (true) ou não lido (false) para o usuário atual.
+ * Restrito a usuários master (master / marquesfilho), mantendo o estado individual por login.
+ */
+export async function setSupportTicketRead(req: Request, res: Response): Promise<void> {
+  const login = normalizeString(req.user?.login);
+  if (!login) {
+    res.status(401).json({ error: 'Não autorizado.' });
+    return;
+  }
+  if (!isMaster(login)) {
+    res.status(403).json({ error: 'Apenas usuários master podem alterar o estado de leitura.' });
+    return;
+  }
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    res.status(400).json({ error: 'ID inválido.' });
+    return;
+  }
+  const read = req.body?.read === true;
+  try {
+    const exists = await prisma.supportTicket.findUnique({ where: { id }, select: { id: true } });
+    if (!exists) {
+      res.status(404).json({ error: 'Chamado não encontrado.' });
+      return;
+    }
+    await prisma.supportTicketRead.upsert({
+      where: { ticketId_userLogin: { ticketId: id, userLogin: login } },
+      create: { ticketId: id, userLogin: login, readAt: read ? new Date() : null },
+      update: { readAt: read ? new Date() : null },
+    });
+    res.json({ success: true, read });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'Erro ao atualizar estado de leitura.' });
+  }
 }
 
 export async function updateSupportTicketStatus(req: Request, res: Response): Promise<void> {
