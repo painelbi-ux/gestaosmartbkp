@@ -609,3 +609,48 @@ model SupportTicketCatalogItem {
   @@index([kind, active, sortOrder])
   @@map("support_ticket_catalog_item")
 }
+
+// =====================================================================
+// DFC — Prioridade de pagamento (Plano de Contas e Lançamento)
+// =====================================================================
+// Classificação interna feita no app (Nomus é somente leitura). Por empresa.
+// prioridade: 1=Prioritário, 2=Reprogramar +30d, 3=Reprogramar indefinido, 4=Não pagar.
+// Regra ao filtrar DFC: override de lançamento vence o do plano de contas.
+
+/// Prioridade aplicada ao plano de contas (Nomus contafinanceiro.id) por empresa.
+model DfcPrioridadeConta {
+  id                Int      @id @default(autoincrement())
+  idEmpresa         Int
+  idContaFinanceiro Int
+  prioridade        Int
+  observacao        String?
+  usuario           String
+  atualizadoEm      DateTime @updatedAt
+  criadoEm          DateTime @default(now())
+
+  @@unique([idEmpresa, idContaFinanceiro])
+  @@index([prioridade])
+  @@index([idEmpresa])
+  @@map("dfc_prioridade_conta")
+}
+
+/// Prioridade aplicada a lançamento (override). tipoRef: 'A' = agendamentofinanceiro.id, 'L' = lancamentofinanceiro.id.
+/// idContaFinanceiro espelha o Nomus (cache local) — permite filtrar pelos planos sem ida à origem.
+model DfcPrioridadeLancamento {
+  id                Int      @id @default(autoincrement())
+  idEmpresa         Int
+  tipoRef           String
+  idRef             Int
+  idContaFinanceiro Int?
+  prioridade        Int
+  observacao        String?
+  usuario           String
+  atualizadoEm      DateTime @updatedAt
+  criadoEm          DateTime @default(now())
+
+  @@unique([idEmpresa, tipoRef, idRef])
+  @@index([prioridade])
+  @@index([idEmpresa, tipoRef])
+  @@index([idContaFinanceiro])
+  @@map("dfc_prioridade_lancamento")
+}

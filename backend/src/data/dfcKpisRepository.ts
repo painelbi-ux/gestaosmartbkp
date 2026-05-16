@@ -4,6 +4,10 @@
  */
 
 import { getNomusPool } from '../config/nomusDb.js';
+import {
+  montarFragmentoFiltroPrioridade,
+  type DfcPrioridadeFilterResolvido,
+} from './dfcPrioridadeFilter.js';
 
 export interface DfcKpis {
   recebimentos: number;
@@ -30,6 +34,7 @@ export async function queryDfcKpis(params: {
   dataInicio: string;
   dataFim: string;
   idEmpresas: number[];
+  filtroPrioridade?: DfcPrioridadeFilterResolvido;
 }): Promise<{ kpis: DfcKpis; erro?: string }> {
   const pool = getNomusPool();
   if (!pool) {
@@ -39,8 +44,17 @@ export async function queryDfcKpis(params: {
     };
   }
 
-  const { dataInicio, dataFim, idEmpresas } = params;
+  const { dataInicio, dataFim, idEmpresas, filtroPrioridade } = params;
   const { clause: empIn, args: empArgs } = empresaIn(idEmpresas);
+  const fragAf = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'af')
+    : { sql: '', args: [] };
+  const fragLf = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'lf')
+    : { sql: '', args: [] };
+  const fragAfLf = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'af_lf')
+    : { sql: '', args: [] };
 
   // ── Recebimentos: R agendamentos recebidos + standalone LR no período ───────
   const sqlRecebimentos = `
@@ -53,6 +67,7 @@ FROM (
   WHERE DATE(lf.dataLancamento) BETWEEN ? AND ?
     AND af.idEmpresa IN (${empIn})
     AND af.discriminador = 'R'
+    ${fragAfLf.sql}
   UNION ALL
   SELECT lf.valor
   FROM lancamentofinanceiro lf
@@ -62,6 +77,7 @@ FROM (
     AND lf.idEmpresa IN (${empIn})
     AND lf.discriminador = 'LR'
     AND af.id IS NULL
+    ${fragLf.sql}
 ) u
 `.trim();
 
@@ -87,6 +103,7 @@ FROM (
     AND af.idEmpresa IN (${empIn})
     AND af.idPedidoCompra IS NULL
     AND af.dataBaixa IS NOT NULL
+    ${fragAf.sql}
   UNION ALL
   SELECT lf.valor
   FROM lancamentofinanceiro lf
@@ -94,6 +111,7 @@ FROM (
     AND lf.idEmpresa IN (${empIn})
     AND lf.discriminador = 'LP'
     AND lf.idAgendamentoPagamento IS NULL
+    ${fragLf.sql}
 ) u
 `.trim();
 
@@ -109,6 +127,7 @@ WHERE DATE(af.dataVencimento) BETWEEN ? AND ?
   AND af.idEmpresa IN (${empIn})
   AND af.idPedidoCompra IS NULL
   AND af.discriminador = 'P'
+  ${fragAf.sql}
 `.trim();
 
   // ── Vencidos a receber (R) — vencimento DENTRO do período, já vencido,
@@ -122,6 +141,7 @@ WHERE DATE(af.dataVencimento) BETWEEN ? AND ?
   AND af.saldoBaixar > 0
   AND af.idEmpresa IN (${empIn})
   AND af.discriminador = 'R'
+  ${fragAf.sql}
 `.trim();
 
   // ── A Vencer a pagar (P) — vencimento DENTRO do período, ainda não vencido
@@ -135,6 +155,7 @@ WHERE DATE(af.dataVencimento) BETWEEN GREATEST(?, CURDATE()) AND ?
   AND af.idEmpresa IN (${empIn})
   AND af.idPedidoCompra IS NULL
   AND af.discriminador = 'P'
+  ${fragAf.sql}
 `.trim();
 
   // ── A Vencer a receber (R) — vencimento DENTRO do período, ainda não vencido,
@@ -147,9 +168,11 @@ WHERE DATE(af.dataVencimento) BETWEEN GREATEST(?, CURDATE()) AND ?
   AND af.saldoBaixar > 0
   AND af.idEmpresa IN (${empIn})
   AND af.discriminador = 'R'
+  ${fragAf.sql}
 `.trim();
 
   // ── Saldo Bancário: acumulado de LR (crédito) - LP (débito) até dataFim ────
+  //    Saldo não é restrito por prioridade (representa o caixa real do banco).
   const sqlSaldo = `
 SELECT
   COALESCE(SUM(CASE WHEN lf.discriminador = 'LR' THEN lf.valor ELSE 0 END), 0) -
@@ -170,12 +193,18 @@ WHERE DATE(lf.dataLancamento) <= ?
       [rowsAVR],
       [rowsSaldo],
     ] = await Promise.all([
-      pool.query(sqlRecebimentos, [dataInicio, dataFim, ...empArgs, dataInicio, dataFim, ...empArgs]),
-      pool.query(sqlPagamentos, [dataInicio, dataFim, ...empArgs, dataInicio, dataFim, ...empArgs]),
-      pool.query(sqlVencidosPagar, [dataInicio, dataFim, dataFim, ...empArgs]),
-      pool.query(sqlVencidosReceber, [dataInicio, dataFim, dataFim, ...empArgs]),
-      pool.query(sqlAVencerPagar, [dataInicio, dataFim, ...empArgs]),
-      pool.query(sqlAVencerReceber, [dataInicio, dataFim, ...empArgs]),
+      pool.query(sqlRecebimentos, [
+        dataInicio, dataFim, ...empArgs, ...fragAfLf.args,
+        dataInicio, dataFim, ...empArgs, ...fragLf.args,
+      ]),
+      pool.query(sqlPagamentos, [
+        dataInicio, dataFim, ...empArgs, ...fragAf.args,
+        dataInicio, dataFim, ...empArgs, ...fragLf.args,
+      ]),
+      pool.query(sqlVencidosPagar, [dataInicio, dataFim, dataFim, ...empArgs, ...fragAf.args]),
+      pool.query(sqlVencidosReceber, [dataInicio, dataFim, dataFim, ...empArgs, ...fragAf.args]),
+      pool.query(sqlAVencerPagar, [dataInicio, dataFim, ...empArgs, ...fragAf.args]),
+      pool.query(sqlAVencerReceber, [dataInicio, dataFim, ...empArgs, ...fragAf.args]),
       pool.query(sqlSaldo, [dataFim, ...empArgs]),
     ]) as [[Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown], [Record<string, unknown>[], unknown]];
 

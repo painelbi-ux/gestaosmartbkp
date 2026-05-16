@@ -1,8 +1,9 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { MapContainer, TileLayer, Circle, Tooltip, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Circle, Tooltip, Popup, useMap, Polyline, CircleMarker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { obterMapaMunicipios, type MapaMunicipioItem, type TooltipDetalheRow, type CorBolhaMapa, type MapaMunicipiosResponse, type FiltrosPedidos } from '../api/pedidos';
+import { PONTO_RETORNO_TERESINA } from '../utils/heatmapRoteirizador';
 
 const CENTRO_BRASIL: [number, number] = [-14.235, -51.9253];
 const ZOOM = 4;
@@ -213,9 +214,20 @@ function AjustarBounds({ items }: { items: MapaMunicipioItem[] }) {
   return null;
 }
 
+export function mapaMunicipioChave(item: MapaMunicipioItem, i: number): string {
+  return item.chave || `${item.municipio}-${item.uf}-${i}`;
+}
+
 interface MapaMunicipiosProps {
   filtros?: FiltrosPedidos;
   layoutToken?: string;
+  /** Itens atuais do mapa (para o pai sincronizar seleção do roteirizador). */
+  onItensCarregados?: (itens: MapaMunicipioItem[]) => void;
+  roteirizadorAtivo?: boolean;
+  roteirizadorChaves?: ReadonlySet<string>;
+  onRoteirizadorToggleChave?: (chave: string) => void;
+  /** Linha [lat, lng] na ordem da rota (inclui retorno à base). */
+  rotaPolyline?: [number, number][];
 }
 
 function RecalcularMapa({ token }: { token?: string }) {
@@ -242,7 +254,15 @@ function FecharPopupComEsc() {
   return null;
 }
 
-export default function MapaMunicipios({ filtros = {}, layoutToken }: MapaMunicipiosProps) {
+export default function MapaMunicipios({
+  filtros = {},
+  layoutToken,
+  onItensCarregados,
+  roteirizadorAtivo = false,
+  roteirizadorChaves,
+  onRoteirizadorToggleChave,
+  rotaPolyline,
+}: MapaMunicipiosProps) {
   const [resposta, setResposta] = useState<MapaMunicipiosResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
@@ -257,6 +277,10 @@ export default function MapaMunicipios({ filtros = {}, layoutToken }: MapaMunici
   }, [filtros]);
 
   const dados = resposta?.itens ?? [];
+
+  useEffect(() => {
+    onItensCarregados?.(dados);
+  }, [dados, onItensCarregados]);
   const semCoordenadas = resposta?.semCoordenadas ?? [];
 
   const { raioPorItem } = useMemo(() => {
@@ -305,7 +329,9 @@ export default function MapaMunicipios({ filtros = {}, layoutToken }: MapaMunici
           Heatmap
       </h3>
       <p className="text-xs text-slate-500 dark:text-slate-400 px-4 pb-1 shrink-0">
-        Tamanho da bolha = valor pendente. Clique na bolha para abrir detalhes (pode rolar e usar o mapa com o painel aberto).
+        {roteirizadorAtivo
+          ? 'Modo roteirizador: clique nas bolhas para selecionar ou remover cidades. Duplo clique ou botão no painel para detalhes do município ainda podem ser usados fora do círculo.'
+          : 'Tamanho da bolha = valor pendente. Clique na bolha para abrir detalhes (pode rolar e usar o mapa com o painel aberto).'}
       </p>
       <div className="flex flex-wrap gap-x-4 gap-y-1 px-4 pb-2 shrink-0 text-xs">
         <span className="flex items-center gap-1.5">
@@ -357,39 +383,80 @@ export default function MapaMunicipios({ filtros = {}, layoutToken }: MapaMunici
           <RecalcularMapa token={layoutToken} />
           <AjustarBounds items={dados} />
           {dados.map((item, i) => {
-            const key = item.chave || `${item.municipio}-${item.uf}-${i}`;
+            const key = mapaMunicipioChave(item, i);
             const raioKm = raioPorItem.get(key) ?? RAIO_MIN_KM;
             const cores = CORES_BOLHA[item.cor ?? 'verde'];
+            const sel = roteirizadorAtivo && roteirizadorChaves?.has(key);
             return (
             <Circle
               key={key}
               center={[item.lat, item.lng]}
               radius={raioKm * 1000}
               pathOptions={{
-                fillColor: cores.fillColor,
-                color: cores.color,
-                fillOpacity: 0.55,
-                weight: 1.5,
+                fillColor: sel ? '#f97316' : cores.fillColor,
+                color: sel ? '#c2410c' : cores.color,
+                fillOpacity: sel ? 0.72 : 0.55,
+                weight: sel ? 3 : 1.5,
               }}
               eventHandlers={{
+                click: (e) => {
+                  if (roteirizadorAtivo && onRoteirizadorToggleChave) {
+                    L.DomEvent.stopPropagation(e as L.LeafletMouseEvent);
+                    onRoteirizadorToggleChave(key);
+                  }
+                },
                 mouseover: (e) => {
-                  e.target.setStyle({ fillOpacity: 0.85, weight: 2 });
+                  const isSel = !!(roteirizadorAtivo && roteirizadorChaves?.has(key));
+                  e.target.setStyle({ fillOpacity: 0.88, weight: isSel ? 3 : 2 });
                   e.target.bringToFront();
                 },
                 mouseout: (e) => {
-                  e.target.setStyle({ fillOpacity: 0.55, weight: 1.5 });
+                  const isSel = !!(roteirizadorAtivo && roteirizadorChaves?.has(key));
+                  e.target.setStyle({
+                    fillOpacity: isSel ? 0.72 : 0.55,
+                    weight: isSel ? 3 : 1.5,
+                  });
                 },
               }}
             >
               <Tooltip permanent={false} direction="top" offset={[0, -8]}>
-                Clique para ver detalhes
+                {roteirizadorAtivo ? 'Clique para incluir ou remover da rota' : 'Clique para ver detalhes'}
               </Tooltip>
-              <Popup className="leaflet-popup-detalhes" minWidth={380} maxWidth={640}>
-                <PopupConteudo item={item} formatarValor={formatarValor} />
-              </Popup>
+              {!roteirizadorAtivo && (
+                <Popup className="leaflet-popup-detalhes" minWidth={380} maxWidth={640}>
+                  <PopupConteudo item={item} formatarValor={formatarValor} />
+                </Popup>
+              )}
             </Circle>
             );
           })}
+          {rotaPolyline && rotaPolyline.length >= 2 && (
+            <Polyline
+              positions={rotaPolyline}
+              pathOptions={{
+                color: '#2563eb',
+                weight: 3,
+                opacity: 0.88,
+                dashArray: '10 6',
+              }}
+            />
+          )}
+          {roteirizadorAtivo && (
+            <CircleMarker
+              center={[PONTO_RETORNO_TERESINA.lat, PONTO_RETORNO_TERESINA.lng]}
+              radius={9}
+              pathOptions={{
+                color: '#0f172a',
+                weight: 2,
+                fillColor: '#38bdf8',
+                fillOpacity: 0.95,
+              }}
+            >
+              <Tooltip direction="top" offset={[0, -6]}>
+                Base / retorno: Teresina, PI
+              </Tooltip>
+            </CircleMarker>
+          )}
         </MapContainer>
       </div>
     </div>

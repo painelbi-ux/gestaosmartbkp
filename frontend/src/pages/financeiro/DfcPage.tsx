@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLayoutFoco } from '../../contexts/LayoutFocoContext';
 import ArvoreContasDfc from './dfc/ArvoreContasDfc';
+import DfcPrioridadeModal from './dfc/DfcPrioridadeModal';
 import { fetchDfcAgendamentosEfetivos, fetchDfcKpis, type DfcAgendamentoLinha, type DfcKpis } from '../../api/financeiro';
+import {
+  DFC_PRIORIDADES,
+  DFC_PRIORIDADE_CHIP,
+  DFC_PRIORIDADE_LABEL,
+  listarPrioridadesConta,
+  listarPrioridadesLancamento,
+  type DfcPrioridade,
+  type DfcPrioridadeContaLinha,
+  type DfcPrioridadeLancamentoLinha,
+} from '../../api/dfcPrioridade';
 import { listarPeriodosDfc } from './dfc/dfcPeriodos';
 
 function hojeLocalYmd(): string {
@@ -69,9 +80,72 @@ export default function DfcPage() {
   const [idEmpresas, setIdEmpresas] = useState<number[]>([1, 2]);
   const [kpis, setKpis] = useState<DfcKpis>(KPIS_ZERO);
   const [loadingKpis, setLoadingKpis] = useState(false);
+  const [prioridadesSelecionadas, setPrioridadesSelecionadas] = useState<DfcPrioridade[]>([]);
+  const [modalPrioridadeAberto, setModalPrioridadeAberto] = useState(false);
+  const [prioridadesContasMap, setPrioridadesContasMap] = useState<Record<string, DfcPrioridade>>({});
+  const [prioridadesLancsMap, setPrioridadesLancsMap] = useState<Record<string, DfcPrioridade>>({});
+  /**
+   * Flag que indica que classificações de prioridade mudaram desde o último carregamento.
+   * Quando o usuário fecha o modal (ou o detalhe), recarregamos a DFC apenas se houver filtro
+   * de prioridade ativo — assim os cliques unitários não disparam reflows.
+   */
+  const houveMudancaPrioridadeRef = useRef(false);
+
+  const aplicarPrioridadeContaNoMapa = useCallback(
+    (idEmpresa: number, idContaFinanceiro: number, prioridade: DfcPrioridade | null) => {
+      const k = `${idEmpresa}#${idContaFinanceiro}`;
+      setPrioridadesContasMap((prev) => {
+        if (prioridade == null) {
+          if (!(k in prev)) return prev;
+          const next = { ...prev };
+          delete next[k];
+          return next;
+        }
+        if (prev[k] === prioridade) return prev;
+        return { ...prev, [k]: prioridade };
+      });
+      houveMudancaPrioridadeRef.current = true;
+    },
+    [],
+  );
+
+  const aplicarPrioridadeLancNoMapa = useCallback(
+    (idEmpresa: number, tipoRef: 'A' | 'L', idRef: number, prioridade: DfcPrioridade | null) => {
+      const k = `${idEmpresa}#${tipoRef}#${idRef}`;
+      setPrioridadesLancsMap((prev) => {
+        if (prioridade == null) {
+          if (!(k in prev)) return prev;
+          const next = { ...prev };
+          delete next[k];
+          return next;
+        }
+        if (prev[k] === prioridade) return prev;
+        return { ...prev, [k]: prioridade };
+      });
+      houveMudancaPrioridadeRef.current = true;
+    },
+    [],
+  );
 
   const diasNoIntervalo = useMemo(() => diffDaysInclusiveYmd(dataInicio, dataFim), [dataInicio, dataFim]);
   const bloqueioDiario = granularidade === 'dia' && diasNoIntervalo != null && diasNoIntervalo > 120;
+
+  const recarregarMapasPrioridade = useCallback(async () => {
+    const [contasResp, lancsResp] = await Promise.all([
+      listarPrioridadesConta({ idEmpresas }),
+      listarPrioridadesLancamento({ idEmpresas }),
+    ]);
+    const mc: Record<string, DfcPrioridade> = {};
+    for (const c of contasResp.linhas as DfcPrioridadeContaLinha[]) {
+      mc[`${c.idEmpresa}#${c.idContaFinanceiro}`] = c.prioridade;
+    }
+    setPrioridadesContasMap(mc);
+    const ml: Record<string, DfcPrioridade> = {};
+    for (const l of lancsResp.linhas as DfcPrioridadeLancamentoLinha[]) {
+      ml[`${l.idEmpresa}#${l.tipoRef}#${l.idRef}`] = l.prioridade;
+    }
+    setPrioridadesLancsMap(ml);
+  }, [idEmpresas]);
 
   const carregar = useCallback(async () => {
     if (bloqueioDiario) {
@@ -84,7 +158,10 @@ export default function DfcPage() {
     const per = listarPeriodosDfc(dataInicio, dataFim, granularidade);
     setPeriodos(per);
 
-    void fetchDfcKpis({ dataInicio, dataFim, idEmpresas }).then((k) => {
+    // Atualiza mapas de prioridade (para selos na árvore/detalhe) — independente do filtro
+    void recarregarMapasPrioridade();
+
+    void fetchDfcKpis({ dataInicio, dataFim, idEmpresas, prioridades: prioridadesSelecionadas }).then((k) => {
       setKpis(k);
     }).catch(() => { /* silencioso */ }).finally(() => setLoadingKpis(false));
 
@@ -94,6 +171,7 @@ export default function DfcPage() {
         dataFim,
         granularidade,
         idEmpresas,
+        prioridades: prioridadesSelecionadas,
       });
       if (res.erro) {
         setValoresPorConta({});
@@ -110,7 +188,7 @@ export default function DfcPage() {
     } finally {
       setLoading(false);
     }
-  }, [dataInicio, dataFim, granularidade, bloqueioDiario, idEmpresas]);
+  }, [dataInicio, dataFim, granularidade, bloqueioDiario, idEmpresas, prioridadesSelecionadas, recarregarMapasPrioridade]);
 
   // Carga inicial (ano corrente → hoje); demais alterações: botão Aplicar.
   useEffect(() => {
@@ -245,6 +323,62 @@ export default function DfcPage() {
             />
           </label>
 
+          {/* Prioridade DFC (multi-seleção) */}
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide">Prioridade</span>
+            <div className="inline-flex items-stretch rounded-lg border border-slate-200 dark:border-slate-600 overflow-hidden bg-slate-50 dark:bg-slate-700">
+              {DFC_PRIORIDADES.map((p, i) => {
+                const ativo = prioridadesSelecionadas.includes(p);
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => {
+                      setPrioridadesSelecionadas((prev) =>
+                        prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p].sort((a, b) => a - b)
+                      );
+                    }}
+                    title={DFC_PRIORIDADE_LABEL[p]}
+                    aria-pressed={ativo}
+                    className={`px-2.5 py-1.5 text-xs font-bold tabular-nums transition ${
+                      i > 0 ? 'border-l border-slate-200 dark:border-slate-600' : ''
+                    } ${
+                      ativo
+                        ? `${DFC_PRIORIDADE_CHIP[p]} ring-1 ring-inset ring-primary-400`
+                        : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-600'
+                    }`}
+                  >
+                    {p}
+                  </button>
+                );
+              })}
+              {prioridadesSelecionadas.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setPrioridadesSelecionadas([])}
+                  title="Limpar filtro de prioridade"
+                  className="border-l border-slate-200 dark:border-slate-600 px-2 text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-600"
+                  aria-label="Limpar filtro de prioridade"
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Botão Classificar (abre o modal de classificação) */}
+          <button
+            type="button"
+            onClick={() => setModalPrioridadeAberto(true)}
+            title="Classificar plano de contas / lançamentos"
+            className="self-end inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-700 hover:bg-slate-50 dark:hover:bg-slate-600 transition shadow-sm"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 4.5h18M6 12h12M10 19.5h4" />
+            </svg>
+            Classificar
+          </button>
+
           {/* Botão Aplicar */}
           <button
             type="button"
@@ -272,6 +406,26 @@ export default function DfcPage() {
           </p>
         ) : null}
       </div>
+
+      <DfcPrioridadeModal
+        aberto={modalPrioridadeAberto}
+        dataInicio={dataInicio}
+        dataFim={dataFim}
+        onClose={() => {
+          setModalPrioridadeAberto(false);
+          // Recarrega a DFC só se houve mudança e o filtro de prioridade está ativo,
+          // porque nesse caso a árvore depende do que está classificado.
+          if (houveMudancaPrioridadeRef.current && prioridadesSelecionadas.length > 0) {
+            houveMudancaPrioridadeRef.current = false;
+            void carregar();
+          } else {
+            houveMudancaPrioridadeRef.current = false;
+          }
+        }}
+        idEmpresas={idEmpresas}
+        onPrioridadeContaAtualizada={aplicarPrioridadeContaNoMapa}
+        onPrioridadeLancAtualizada={aplicarPrioridadeLancNoMapa}
+      />
 
       {/* ── Cards KPI ─────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 shrink-0">
@@ -406,6 +560,18 @@ export default function DfcPage() {
           error={error}
           telaCheia={modoFoco}
           filtroPlanoContas={filtroPlanoContas}
+          prioridadesSelecionadas={prioridadesSelecionadas}
+          prioridadesContasMap={prioridadesContasMap}
+          prioridadesLancsMap={prioridadesLancsMap}
+          onPrioridadeLancAtualizada={aplicarPrioridadeLancNoMapa}
+          onDetalheFechado={() => {
+            if (houveMudancaPrioridadeRef.current && prioridadesSelecionadas.length > 0) {
+              houveMudancaPrioridadeRef.current = false;
+              void carregar();
+            } else {
+              houveMudancaPrioridadeRef.current = false;
+            }
+          }}
         />
       </div>
     </div>

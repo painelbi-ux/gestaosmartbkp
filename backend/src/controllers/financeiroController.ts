@@ -4,6 +4,8 @@ import {
   queryDfcAgendamentosDetalhe,
   queryDfcAgendamentosProjecao,
   queryDfcAgendamentosProjecaoDetalhe,
+  queryDfcDespesasPagamentoEmAberto,
+  queryDfcDespesasPagamentoFornecedorOpcoes,
   type DfcAgendamentoGranularidade,
   type DfcAgendamentoDetalheRow,
 } from '../data/dfcAgendamentoRepository.js';
@@ -30,6 +32,12 @@ import {
   savePoliticaComercialPainel,
 } from '../data/politicaComercialPainelRepository.js';
 import { DEFAULT_POLITICA_COMERCIAL } from '../services/painelComercialConformidade.js';
+import { resolverFiltroPrioridade } from '../data/dfcPrioridadeFilter.js';
+import {
+  DFC_PRIORIDADES_VALIDAS,
+  ehDfcPrioridadeValida,
+  type DfcPrioridade,
+} from '../data/dfcPrioridadeConstantes.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH_RE = /^\d{4}-\d{2}$/;
@@ -83,6 +91,38 @@ function parseIdEmpresas(query: Request['query']): number[] {
   return ids.length > 0 ? [...new Set(ids)] : [1, 2];
 }
 
+/** Parseia "prioridades=1,2,4" da query → array com prioridades válidas. */
+function parsePrioridades(query: Request['query']): DfcPrioridade[] {
+  const raw = String(query.prioridades ?? query.prioridade ?? '').trim();
+  if (!raw) return [];
+  const ns = raw
+    .split(/[,;\s]+/)
+    .map((s) => Math.trunc(Number(s)))
+    .filter((n) => Number.isFinite(n)) as number[];
+  const filtered: DfcPrioridade[] = [];
+  for (const n of ns) {
+    if (ehDfcPrioridadeValida(n) && !filtered.includes(n)) filtered.push(n);
+  }
+  return filtered;
+}
+
+function parseIdsContaFinanceiroQuery(query: Request['query']): number[] {
+  const multi = String(query.idsContaFinanceiro ?? '').trim();
+  const single = String(query.idContaFinanceiro ?? '').trim();
+  const parts = [...(multi ? multi.split(/[,;\s]+/) : []), ...(single ? [single] : [])];
+  const ids = parts.map((s) => Math.trunc(Number(s))).filter((n) => Number.isFinite(n) && n > 0);
+  return [...new Set(ids)];
+}
+
+/** Lista de nomes (favorecido): repetir query `fornecedor` para múltiplos. */
+function parseFornecedoresNomeQuery(query: Request['query']): string[] {
+  const raw = query.fornecedor;
+  const arr = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+  return [...new Set(arr.map((x) => String(x).trim()).filter(Boolean))];
+}
+
+void DFC_PRIORIDADES_VALIDAS; // mantido para futura validação adicional
+
 /**
  * GET /api/financeiro/dfc/agendamentos-efetivos
  * Query: dataInicio, dataFim (YYYY-MM-DD), granularidade=dia|mes, idEmpresas=1,2 (default 1,2)
@@ -94,6 +134,7 @@ export async function getDfcAgendamentosEfetivos(req: Request, res: Response): P
   const granularidade: DfcAgendamentoGranularidade =
     granularidadeRaw === 'dia' ? 'dia' : 'mes';
   const idEmpresas = parseIdEmpresas(req.query);
+  const prioridades = parsePrioridades(req.query);
 
   if (!DATE_RE.test(dataInicio) || !DATE_RE.test(dataFim)) {
     res.status(400).json({ error: 'Informe dataInicio e dataFim no formato YYYY-MM-DD.' });
@@ -106,6 +147,8 @@ export async function getDfcAgendamentosEfetivos(req: Request, res: Response): P
     res.status(400).json({ error: 'Período inválido: dataFim deve ser >= dataInicio.' });
     return;
   }
+
+  const filtroPrioridade = await resolverFiltroPrioridade({ prioridades, idEmpresas });
 
   if (granularidade === 'dia' && diffDaysInclusive(dIni, dFim) > 120) {
     res.status(400).json({
@@ -132,6 +175,7 @@ export async function getDfcAgendamentosEfetivos(req: Request, res: Response): P
     dataLancamentoFim: dataFim,
     granularidade,
     idEmpresas,
+    filtroPrioridade,
   });
   if (erroLp) console.error('[getDfcAgendamentosEfetivos] LP:', erroLp);
 
@@ -144,6 +188,7 @@ export async function getDfcAgendamentosEfetivos(req: Request, res: Response): P
       dataBaixaFim: retroFim,
       granularidade,
       idEmpresas,
+      filtroPrioridade,
     });
     if (erro) {
       res.status(503).json({ linhas: [], erro });
@@ -156,6 +201,7 @@ export async function getDfcAgendamentosEfetivos(req: Request, res: Response): P
       dataBaixaFim: retroFim,
       granularidade,
       idEmpresas,
+      filtroPrioridade,
     });
     if (erroRec) console.error('[getDfcAgendamentosEfetivos] receitas retrospectivas:', erroRec);
     else linhasRecEfetivas = linhasRec;
@@ -170,6 +216,7 @@ export async function getDfcAgendamentosEfetivos(req: Request, res: Response): P
       dataVencimentoFim: dataFim,
       granularidade,
       idEmpresas,
+      filtroPrioridade,
     });
     if (ePg) console.error('[getDfcAgendamentosEfetivos] projeção pagamentos:', ePg);
     else linhasProjPg = lPg;
@@ -179,6 +226,7 @@ export async function getDfcAgendamentosEfetivos(req: Request, res: Response): P
       dataVencimentoFim: dataFim,
       granularidade,
       idEmpresas,
+      filtroPrioridade,
     });
     if (eRec) console.error('[getDfcAgendamentosEfetivos] projeção receitas:', eRec);
     else linhasProjRec = lRec;
@@ -207,6 +255,7 @@ export async function getDfcAgendamentosDetalhe(req: Request, res: Response): Pr
   const granularidade: DfcAgendamentoGranularidade =
     granularidadeRaw === 'dia' ? 'dia' : 'mes';
   const idEmpresas = parseIdEmpresas(req.query);
+  const prioridades = parsePrioridades(req.query);
   const idsRaw = String(req.query.ids ?? '').trim();
   const periodoOpt = String(req.query.periodo ?? '').trim() || null;
 
@@ -266,6 +315,8 @@ export async function getDfcAgendamentosDetalhe(req: Request, res: Response): Pr
   const projInicio = maxDate(dataInicio, amanha);
   const temProj = projInicio <= dataFim && !bucketEhPassado;
 
+  const filtroPrioridade = await resolverFiltroPrioridade({ prioridades, idEmpresas });
+
   // LP cobre o intervalo completo (sem divisão)
   const { detalhes: detalhesLp, erro: erroLp } = await queryDfcLancamentosLpDetalhe({
     dataLancamentoInicio: dataInicio,
@@ -274,6 +325,7 @@ export async function getDfcAgendamentosDetalhe(req: Request, res: Response): Pr
     idEmpresas,
     idsContaFinanceiro: idsUniq,
     periodoBucket: periodoOpt,
+    filtroPrioridade,
   });
   if (erroLp) console.error('[getDfcAgendamentosDetalhe] LP:', erroLp);
 
@@ -290,6 +342,7 @@ export async function getDfcAgendamentosDetalhe(req: Request, res: Response): Pr
       idEmpresas,
       idsContaFinanceiro: idsUniq,
       periodoBucket: periodoOpt,
+      filtroPrioridade,
     });
     if (eAg) {
       res.status(503).json({ detalhes: [], erro: eAg });
@@ -304,6 +357,7 @@ export async function getDfcAgendamentosDetalhe(req: Request, res: Response): Pr
       idEmpresas,
       idsContaFinanceiro: idsUniq,
       periodoBucket: periodoOpt,
+      filtroPrioridade,
     });
     if (eRec) console.error('[getDfcAgendamentosDetalhe] receitas retrospectivas:', eRec);
     else detalhesRec = dRec;
@@ -317,6 +371,7 @@ export async function getDfcAgendamentosDetalhe(req: Request, res: Response): Pr
       idEmpresas,
       idsContaFinanceiro: idsUniq,
       periodoBucket: periodoOpt,
+      filtroPrioridade,
     });
     if (ePg) console.error('[getDfcAgendamentosDetalhe] projeção pagamentos:', ePg);
     else detalhesProjPg = dPg;
@@ -328,6 +383,7 @@ export async function getDfcAgendamentosDetalhe(req: Request, res: Response): Pr
       idEmpresas,
       idsContaFinanceiro: idsUniq,
       periodoBucket: periodoOpt,
+      filtroPrioridade,
     });
     if (eRec) console.error('[getDfcAgendamentosDetalhe] projeção receitas:', eRec);
     else detalhesProjRec = dRec;
@@ -360,17 +416,92 @@ export async function getDfcKpis(req: Request, res: Response): Promise<void> {
   const dataInicio = String(req.query.dataInicio ?? '').trim();
   const dataFim = String(req.query.dataFim ?? '').trim();
   const idEmpresas = parseIdEmpresas(req.query);
+  const prioridades = parsePrioridades(req.query);
 
   if (!DATE_RE.test(dataInicio) || !DATE_RE.test(dataFim)) {
     res.status(400).json({ error: 'Informe dataInicio e dataFim no formato YYYY-MM-DD.' });
     return;
   }
 
-  const { kpis, erro } = await queryDfcKpis({ dataInicio, dataFim, idEmpresas });
+  const filtroPrioridade = await resolverFiltroPrioridade({ prioridades, idEmpresas });
+  const { kpis, erro } = await queryDfcKpis({ dataInicio, dataFim, idEmpresas, filtroPrioridade });
   if (erro) {
     console.error('[getDfcKpis]', erro);
   }
   res.json({ ...kpis, idEmpresas });
+}
+
+/**
+ * GET /api/financeiro/dfc/despesas-pagamento-em-aberto
+ * Query: dataInicio, dataFim (YYYY-MM-DD), idEmpresas=1,2,
+ * idsContaFinanceiro=1,2 ou idContaFinanceiro=? (opcional),
+ * repetir ?fornecedor=nome para filtrar favorecidos.
+ * Retorna agendamentos P em aberto (vencidos + a vencer), critério alinhado aos KPIs da DFC.
+ */
+export async function getDfcDespesasPagamentoEmAberto(req: Request, res: Response): Promise<void> {
+  const dataInicio = String(req.query.dataInicio ?? '').trim();
+  const dataFim = String(req.query.dataFim ?? '').trim();
+  const idEmpresas = parseIdEmpresas(req.query);
+  const idsContaFinanceiro = parseIdsContaFinanceiroQuery(req.query);
+  const nomesFornecedor = parseFornecedoresNomeQuery(req.query);
+
+  if (!DATE_RE.test(dataInicio) || !DATE_RE.test(dataFim)) {
+    res.status(400).json({ error: 'Informe dataInicio e dataFim no formato YYYY-MM-DD.' });
+    return;
+  }
+
+  const dIni = parseDate(dataInicio);
+  const dFim = parseDate(dataFim);
+  if (!dIni || !dFim || dFim < dIni) {
+    res.status(400).json({ error: 'Intervalo de datas inválido.' });
+    return;
+  }
+
+  const { linhas, erro } = await queryDfcDespesasPagamentoEmAberto({
+    dataInicio,
+    dataFim,
+    idEmpresas,
+    idsContaFinanceiro: idsContaFinanceiro.length > 0 ? idsContaFinanceiro : undefined,
+    nomesFornecedor: nomesFornecedor.length > 0 ? nomesFornecedor : undefined,
+  });
+  if (erro) {
+    res.status(503).json({ error: erro });
+    return;
+  }
+  res.json({ linhas, dataInicio, dataFim, idEmpresas });
+}
+
+/**
+ * GET /api/financeiro/dfc/despesas-em-aberto-fornecedor-opcoes
+ * Lista distinta de favorecidos (pessoa) no mesmo critério de despesas P em aberto da DFC.
+ */
+export async function getDfcDespesasPagamentoFornecedorOpcoes(req: Request, res: Response): Promise<void> {
+  const dataInicio = String(req.query.dataInicio ?? '').trim();
+  const dataFim = String(req.query.dataFim ?? '').trim();
+  const idEmpresas = parseIdEmpresas(req.query);
+
+  if (!DATE_RE.test(dataInicio) || !DATE_RE.test(dataFim)) {
+    res.status(400).json({ error: 'Informe dataInicio e dataFim no formato YYYY-MM-DD.' });
+    return;
+  }
+
+  const dIni = parseDate(dataInicio);
+  const dFim = parseDate(dataFim);
+  if (!dIni || !dFim || dFim < dIni) {
+    res.status(400).json({ error: 'Intervalo de datas inválido.' });
+    return;
+  }
+
+  const { nomes, erro } = await queryDfcDespesasPagamentoFornecedorOpcoes({
+    dataInicio,
+    dataFim,
+    idEmpresas,
+  });
+  if (erro) {
+    res.status(503).json({ error: erro });
+    return;
+  }
+  res.json({ nomes });
 }
 
 /**

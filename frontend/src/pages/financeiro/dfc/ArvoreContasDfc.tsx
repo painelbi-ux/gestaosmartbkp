@@ -2,6 +2,11 @@ import { useCallback, useMemo, useState } from 'react';
 import estruturaJson from './estruturaDfcArvore.json';
 import { rotuloPeriodoCabecalho } from './dfcPeriodos';
 import DfcDetalheLancamentosModal from './DfcDetalheLancamentosModal';
+import {
+  DFC_PRIORIDADE_CHIP,
+  DFC_PRIORIDADE_LABEL_CURTO,
+  type DfcPrioridade,
+} from '../../../api/dfcPrioridade';
 
 export type DfcEstruturaNo = {
   pathKey: string;
@@ -26,6 +31,24 @@ export type ArvoreContasDfcProps = {
   telaCheia?: boolean;
   /** Filtra linhas por nome/código/id (substring, em tempo real). Vazio = sem filtro. */
   filtroPlanoContas?: string;
+  /** Prioridades ativas como filtro da DFC (passadas adiante ao modal de detalhe). */
+  prioridadesSelecionadas?: DfcPrioridade[];
+  /** Mapa "idEmpresa#idContaFinanceiro" → prioridade (para selos visuais). */
+  prioridadesContasMap?: Record<string, DfcPrioridade>;
+  /** Mapa "idEmpresa#tipoRef#idRef" → prioridade (para selos no modal de detalhe). */
+  prioridadesLancsMap?: Record<string, DfcPrioridade>;
+  /**
+   * Atualização cirúrgica do mapa de prioridade de lançamento (sem recarregar a DFC).
+   * Passe `prioridade = null` para indicar remoção.
+   */
+  onPrioridadeLancAtualizada?: (
+    idEmpresa: number,
+    tipoRef: 'A' | 'L',
+    idRef: number,
+    prioridade: DfcPrioridade | null,
+  ) => void;
+  /** Disparado ao fechar o modal de detalhe (para recarregar a DFC se necessário). */
+  onDetalheFechado?: () => void;
 };
 
 /** Larguras e `left` cumulativo das colunas fixas (px). Cód. integrado na coluna Conta. */
@@ -61,6 +84,34 @@ function chipMacro(macro: string): string {
 /** Raízes M0, M1, … (Fluxo Operacional / Financeiro / Investimentos / Outras) — fundo neutro, não azul de grupo. */
 function isLinhaRaizFluxoDfc(node: DfcEstruturaNo): boolean {
   return /^M\d+$/.test(node.pathKey);
+}
+
+const EMPRESA_LABELS: Record<number, string> = { 1: 'Só Aço', 2: 'Só Móveis' };
+
+function renderSelosPrioridadeConta(
+  idContaFinanceiro: number,
+  idEmpresas: number[],
+  mapa: Record<string, DfcPrioridade>
+): JSX.Element | null {
+  const selos: Array<{ idEmpresa: number; prioridade: DfcPrioridade }> = [];
+  for (const idEmpresa of idEmpresas) {
+    const p = mapa[`${idEmpresa}#${idContaFinanceiro}`];
+    if (p != null) selos.push({ idEmpresa, prioridade: p });
+  }
+  if (selos.length === 0) return null;
+  return (
+    <span className="ml-1 inline-flex items-center gap-0.5 align-middle">
+      {selos.map((s) => (
+        <span
+          key={`${s.idEmpresa}-${s.prioridade}`}
+          title={`${EMPRESA_LABELS[s.idEmpresa] ?? `Empresa ${s.idEmpresa}`}: ${DFC_PRIORIDADE_LABEL_CURTO[s.prioridade]}`}
+          className={`inline-flex h-4 min-w-[1rem] items-center justify-center rounded border px-1 text-[10px] font-bold ${DFC_PRIORIDADE_CHIP[s.prioridade]}`}
+        >
+          {s.prioridade}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function fundoListraNeutra(rowIdx: number): string {
@@ -279,6 +330,11 @@ export default function ArvoreContasDfc({
   error = null,
   telaCheia = false,
   filtroPlanoContas = '',
+  prioridadesSelecionadas = [],
+  prioridadesContasMap = {},
+  prioridadesLancsMap = {},
+  onPrioridadeLancAtualizada,
+  onDetalheFechado,
 }: ArvoreContasDfcProps) {
   const rootsRaw = useMemo(
     () => (estruturaJson as unknown as { roots: DfcEstruturaNo[] }).roots,
@@ -296,7 +352,10 @@ export default function ArvoreContasDfc({
     setDetalheAberto({ ids: uniq, periodo, titulo });
   }, []);
 
-  const fecharDetalhe = useCallback(() => setDetalheAberto(null), []);
+  const fecharDetalhe = useCallback(() => {
+    setDetalheAberto(null);
+    onDetalheFechado?.();
+  }, [onDetalheFechado]);
 
   const todasChavesComFilhos = useMemo(() => coletarChavesComFilhos(roots), [roots]);
   const idsPorPathKey = useMemo(() => montarMapaIdsPorPathKey(roots), [roots]);
@@ -436,6 +495,10 @@ export default function ArvoreContasDfc({
           dataFim={dataFim}
           granularidade={granularidade}
           idEmpresas={idEmpresas}
+          prioridadesSelecionadas={prioridadesSelecionadas}
+          prioridadesContasMap={prioridadesContasMap}
+          prioridadesLancsMap={prioridadesLancsMap}
+          onPrioridadeLancAtualizada={onPrioridadeLancAtualizada}
         />
       ) : null}
 
@@ -578,6 +641,9 @@ export default function ArvoreContasDfc({
                         </span>
                       )}
                       {node.nome}
+                      {node.tipo === 'A' && node.id != null
+                        ? renderSelosPrioridadeConta(node.id, idEmpresas, prioridadesContasMap)
+                        : null}
                     </span>
                   </td>
                   <td

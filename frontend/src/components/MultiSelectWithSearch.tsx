@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 
+const SEP = '|';
+
 function parseValue(value: string): string[] {
   if (!value?.trim()) return [];
-  return value.split(',').map((s) => s.trim()).filter(Boolean);
+  return value.split(SEP).filter(Boolean);
 }
 
 export interface MultiSelectWithSearchProps {
@@ -16,6 +18,8 @@ export interface MultiSelectWithSearchProps {
   minWidth?: string;
   /** Ex.: "Rotas" para "N rotas selecionadas" */
   optionLabel?: string;
+  /** Display por valor interno (`value`), ex.: código — nome onde `value` é só o id numérico. */
+  labelByValue?: Record<string, string>;
 }
 
 export default function MultiSelectWithSearch({
@@ -28,6 +32,7 @@ export default function MultiSelectWithSearch({
   inputClass,
   minWidth = '160px',
   optionLabel = 'itens',
+  labelByValue,
 }: MultiSelectWithSearchProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -35,19 +40,28 @@ export default function MultiSelectWithSearch({
   const inputSearchRef = useRef<HTMLInputElement>(null);
   const selected = parseValue(value);
 
+  const displayFor = useMemo(() => {
+    return (opt: string) => labelByValue?.[opt] ?? opt;
+  }, [labelByValue]);
+
   const filteredOptions = useMemo(() => {
     if (!search.trim()) return options;
     const q = search.trim().toLowerCase();
-    return options.filter((o) => o.toLowerCase().includes(q));
-  }, [options, search]);
+    return options.filter((o) => {
+      const d = labelByValue?.[o] ?? o;
+      return d.toLowerCase().includes(q) || o.toLowerCase().includes(q);
+    });
+  }, [options, search, labelByValue]);
 
   useEffect(() => {
+    if (!open) return;
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    document.addEventListener('click', handler);
-    return () => document.removeEventListener('click', handler);
-  }, []);
+    /** Captura para fechar dentro de modais que usam stopPropagation no conteúdo (o bubble não chega ao document). */
+    document.addEventListener('click', handler, true);
+    return () => document.removeEventListener('click', handler, true);
+  }, [open]);
 
   useEffect(() => {
     if (open) {
@@ -60,16 +74,16 @@ export default function MultiSelectWithSearch({
     const set = new Set(selected);
     if (set.has(opt)) set.delete(opt);
     else set.add(opt);
-    onChange(Array.from(set).join(', '));
+    onChange(Array.from(set).join(SEP));
   };
 
   const selectAll = () => {
     if (selected.length === filteredOptions.length) {
       const rest = selected.filter((s) => !filteredOptions.includes(s));
-      onChange(rest.join(', '));
+      onChange(rest.join(SEP));
     } else {
       const merged = new Set([...selected, ...filteredOptions]);
-      onChange(Array.from(merged).join(', '));
+      onChange(Array.from(merged).join(SEP));
     }
   };
 
@@ -77,7 +91,7 @@ export default function MultiSelectWithSearch({
     selected.length === 0
       ? placeholder
       : selected.length === 1
-        ? selected[0]
+        ? displayFor(selected[0])
         : `${selected.length} ${optionLabel}`;
 
   return (
@@ -92,7 +106,7 @@ export default function MultiSelectWithSearch({
         <span className="text-slate-400 shrink-0">{open ? '▲' : '▼'}</span>
       </button>
       {open && (
-        <div className="absolute z-50 mt-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 shadow-lg min-w-full max-h-[280px] flex flex-col">
+        <div className="absolute z-[100] mt-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 shadow-lg min-w-full max-h-[280px] flex flex-col">
           <div className="p-2 border-b border-slate-200 dark:border-slate-600 shrink-0">
             <input
               ref={inputSearchRef}
@@ -129,7 +143,7 @@ export default function MultiSelectWithSearch({
                     onChange={() => toggle(opt)}
                     className="rounded border-slate-400 text-primary-600 focus:ring-primary-500"
                   />
-                  <span className="truncate">{opt}</span>
+                  <span className="truncate">{displayFor(opt)}</span>
                 </label>
               ))
             )}

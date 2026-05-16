@@ -21,7 +21,8 @@
     "coleta-teste-72h": "tsx scripts/coleta-teste-72h.ts",
     "coleta-desfazer-teste-72h": "tsx scripts/coleta-desfazer-teste-72h.ts",
     "import:psa-ncm-icms": "tsx scripts/import-psa-ncm-icms.ts",
-    "alinhar:sycro-previsao-gerenciador": "tsx scripts/alinhar-previsao-sycroorder-gerenciador.ts"
+    "alinhar:sycro-previsao-gerenciador": "tsx scripts/alinhar-previsao-sycroorder-gerenciador.ts",
+    "backfill:sycro-aguarda-labels": "tsx scripts/backfill-sycroorder-aguarda-resposta-label.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -426,10 +426,18 @@ export async function registrarCienciaColeta(coletaId: number, justificativa: st
   return { ok: true };
 }
 
+export interface OpcoesFiltroItem {
+  codigo: string;
+  descricao: string;
+  coleta: string;
+}
+
 export interface OpcoesFiltroColetas {
   codigos: string[];
   descricoes: string[];
   coletas: string[];
+  /** Mapeamento cruzado para filtros em cascata. */
+  items: OpcoesFiltroItem[];
 }
 
 /**
@@ -438,21 +446,22 @@ export interface OpcoesFiltroColetas {
 export async function obterOpcoesFiltroColetas(): Promise<OpcoesFiltroColetas & { error?: string }> {
   const res = await apiFetch('/api/compras/coletas/opcoes-filtro');
   const text = await res.text();
-  let body: { codigos?: string[]; descricoes?: string[]; coletas?: string[]; error?: string } = {};
+  let body: { codigos?: string[]; descricoes?: string[]; coletas?: string[]; items?: OpcoesFiltroItem[]; error?: string } = {};
   if (text) {
     try {
-      body = JSON.parse(text) as { codigos?: string[]; descricoes?: string[]; coletas?: string[]; error?: string };
+      body = JSON.parse(text) as typeof body;
     } catch {
       body = { error: text || res.statusText };
     }
   }
   if (!res.ok) {
-    return { codigos: [], descricoes: [], coletas: [], error: body.error ?? res.statusText };
+    return { codigos: [], descricoes: [], coletas: [], items: [], error: body.error ?? res.statusText };
   }
   return {
     codigos: Array.isArray(body.codigos) ? body.codigos : [],
     descricoes: Array.isArray(body.descricoes) ? body.descricoes : [],
     coletas: Array.isArray(body.coletas) ? body.coletas : [],
+    items: Array.isArray(body.items) ? body.items : [],
     error: body.error,
   };
 }

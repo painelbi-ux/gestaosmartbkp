@@ -21,6 +21,7 @@ import { loadEnv } from './config/env.js';
 import { prisma } from './config/prisma.js';
 import app, { BUILD_ID } from './app.js';
 import { iniciarCronFaturamentoDiario } from './scheduler/faturamentoDiarioCron.js';
+import { backfillAguardaRespostaLabelsForPendingOrders } from './services/sycroOrderAguardaRespostaLabel.js';
 
 const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -78,8 +79,18 @@ function main(): void {
     console.log(`Build: ${BUILD_ID} - confira em http://localhost:${port}/health`);
     // Migrations/seed em segundo plano para não bloquear o callback de listen
     ensureDbReady()
-      .then(() => {
+      .then(async () => {
         console.log('[startup] Banco verificado.');
+        try {
+          const r = await backfillAguardaRespostaLabelsForPendingOrders();
+          if (r.updated > 0) {
+            console.log(
+              `[startup] SycroOrder: rótulos "aguarda resposta" recalculados em ${r.updated} de ${r.scanned} card(s) com pendência.`
+            );
+          }
+        } catch (e) {
+          console.warn('[startup] Backfill aguarda resposta SycroOrder:', (e as Error)?.message ?? e);
+        }
         iniciarCronFaturamentoDiario();
       })
       .catch((e) => {

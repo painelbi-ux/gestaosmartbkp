@@ -5,10 +5,14 @@ import { getNomusPool, isNomusEnabled } from '../config/nomusDb.js';
 import { listarPedidos, listarHistoricoAjustes, registrarAjustePrevisao } from '../data/pedidosRepository.js';
 import { getPermissoesUsuario } from '../middleware/requirePermission.js';
 import { PERMISSOES } from '../config/permissoes.js';
+import {
+  isUserCommercialTeamByPermsJson,
+  resolveAguardaRespostaDeLabel,
+  resolveSycroOrderResponsibleRecipientUserIds,
+} from '../services/sycroOrderAguardaRespostaLabel.js';
 
 /** Número que recebe notificação de novo pedido SycroOrder (DDD + número, sem 55) */
 const SYCROORDER_WHATSAPP_NUMERO = '5586998660873';
-const COMMERCIAL_TEAM_FLAG = '__time_comercial__';
 
 type OrderStatus = 'PENDING' | 'FINISHED' | 'ESCALATED';
 
@@ -46,16 +50,6 @@ async function getUsuarioAtual(login: string) {
     select: { id: true, nome: true, login: true, grupo: { select: { nome: true } } },
   });
   return u;
-}
-
-/** True se a forma de entrega indica responsável josenildo (apenas ele pode responder junto com o criador). */
-function isResponsavelJosenildo(deliveryMethod: string): boolean {
-  const fm = String(deliveryMethod ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
-  return (
-    (fm.includes('entrega') && fm.includes('grande')) ||
-    (fm.includes('retirada') && fm.includes('moveis')) ||
-    fm.includes('so aco')
-  );
 }
 
 function normalizeLogin(login?: string | null): string {
@@ -166,15 +160,6 @@ function rotaTextFromGerenciadorRow(row: Record<string, unknown>): string {
   return String(row['Observacoes'] ?? row['Observações'] ?? row['Rota'] ?? row['rota'] ?? '').trim();
 }
 
-function parsePermissoesJson(value: string | null | undefined): string[] {
-  const arr = parseJsonArray(value);
-  return arr ?? [];
-}
-
-function isUserCommercialTeamByPermsJson(permissoesJson: string | null | undefined): boolean {
-  return parsePermissoesJson(permissoesJson).includes(COMMERCIAL_TEAM_FLAG);
-}
-
 function sortedUnique(arr: string[]): string[] {
   return [...new Set(arr.map((s) => String(s ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
@@ -198,53 +183,6 @@ const EXCLUDED_SQL_ROTA_CATEGORIES = new Set([
 
 function isExcludedSqlRotaCategory(dm: string): boolean {
   return EXCLUDED_SQL_ROTA_CATEGORIES.has(normalizeRotaName(dm));
-}
-
-async function resolveSycroOrderResponsibleRecipientUserIds(args: {
-  delivery_method: string;
-  responsible_user_id: number | null | undefined;
-}): Promise<number[]> {
-  const primaryLogin = isResponsavelJosenildo(args.delivery_method) ? 'josenildo' : 'pcp';
-  const recipientIds = new Set<number>();
-
-  const primaryUser = await prisma.usuario.findFirst({
-    where: { login: { equals: primaryLogin } },
-    select: { id: true },
-  });
-  if (primaryUser?.id) recipientIds.add(primaryUser.id);
-
-  if (args.responsible_user_id != null && Number.isFinite(args.responsible_user_id)) {
-    recipientIds.add(args.responsible_user_id);
-  }
-
-  return [...recipientIds];
-}
-
-/** Participantes do card que devem responder, exceto o autor do comentário — texto para a capa do card. */
-async function resolveAguardaRespostaDeLabel(args: {
-  delivery_method: string;
-  created_by: number | null;
-  responsible_user_id: number | null;
-  authorUserId: number | null;
-}): Promise<string> {
-  const recipientIds = await resolveSycroOrderResponsibleRecipientUserIds({
-    delivery_method: args.delivery_method,
-    responsible_user_id: args.responsible_user_id,
-  });
-  const pool = new Set<number>(recipientIds);
-  if (args.created_by != null && Number.isFinite(args.created_by)) pool.add(args.created_by);
-  if (args.authorUserId != null && Number.isFinite(args.authorUserId)) pool.delete(args.authorUserId);
-  const ids = [...pool];
-  if (ids.length > 0) {
-    const users = await prisma.usuario.findMany({
-      where: { id: { in: ids }, ativo: true },
-      select: { login: true, nome: true },
-      orderBy: { login: 'asc' },
-    });
-    const labels = users.map((u) => (u.nome?.trim() ? u.nome.trim() : u.login));
-    if (labels.length > 0) return labels.join(', ');
-  }
-  return isResponsavelJosenildo(args.delivery_method) ? 'josenildo' : 'PCP';
 }
 
 function isGrupoAdministrador(grupoNome?: string | null): boolean {

@@ -1,7 +1,7 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import CardsResumoFinanceiro from '../components/CardsResumoFinanceiro';
 import GaugeIndicador from '../components/GaugeIndicador';
-import MapaMunicipios from '../components/MapaMunicipios';
+import MapaMunicipios, { mapaMunicipioChave } from '../components/MapaMunicipios';
 import FiltroPedidos, { defaultFiltros, type FiltrosPedidosState } from '../components/FiltroPedidos';
 import {
   obterResumoFinanceiro,
@@ -9,11 +9,46 @@ import {
   type ResumoFinanceiro,
   type ResumoStatusPorTipoF,
   type FiltrosPedidos,
+  type MapaMunicipioItem,
 } from '../api/pedidos';
 import { loadFiltrosHeatmap, saveFiltrosHeatmap } from '../utils/persistFiltros';
+import HeatmapRoteirizadorPanel from '../components/HeatmapRoteirizadorPanel';
+import {
+  obterMatrizDistanciasKm,
+  PONTO_RETORNO_TERESINA,
+  resolverRoteiroDeposito,
+  type RoteiroCoord,
+  type RoteiroResultado,
+} from '../utils/heatmapRoteirizador';
+
+const HEATMAP_MAP_HEIGHT_STORAGE_KEY = 'heatmap_map_pane_height_px';
+const HEATMAP_MAP_HEIGHT_MIN = 220;
+const HEATMAP_MAP_HEIGHT_MAX_CAP = 2400;
+
+function readStoredMapPaneHeight(): number | null {
+  try {
+    const raw = localStorage.getItem(HEATMAP_MAP_HEIGHT_STORAGE_KEY);
+    if (raw == null || raw === '') return null;
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n)) return null;
+    return Math.min(HEATMAP_MAP_HEIGHT_MAX_CAP, Math.max(HEATMAP_MAP_HEIGHT_MIN, n));
+  } catch {
+    return null;
+  }
+}
+
+function clampMapPaneHeight(px: number): number {
+  const max = Math.min(
+    HEATMAP_MAP_HEIGHT_MAX_CAP,
+    typeof window !== 'undefined' ? Math.floor(window.innerHeight * 0.94) : HEATMAP_MAP_HEIGHT_MAX_CAP
+  );
+  return Math.min(max, Math.max(HEATMAP_MAP_HEIGHT_MIN, Math.round(px)));
+}
 
 export default function HeatmapPage() {
   const rootRef = useRef<HTMLDivElement>(null);
+  const mapColumnRef = useRef<HTMLDivElement>(null);
+  const mapResizeDragRef = useRef<{ startY: number; baseH: number } | null>(null);
   const [filtros, setFiltros] = useState<FiltrosPedidosState>(() =>
     loadFiltrosHeatmap(defaultFiltros) as FiltrosPedidosState
   );
@@ -24,6 +59,13 @@ export default function HeatmapPage() {
   const [mostrarFiltros, setMostrarFiltros] = useState(true);
   const [mostrarCards, setMostrarCards] = useState(true);
   const [telaCheia, setTelaCheia] = useState(false);
+  /** Altura explícita (px) do bloco do mapa; `null` = preencher o espaço disponível (flex). */
+  const [mapPaneHeightPx, setMapPaneHeightPx] = useState<number | null>(readStoredMapPaneHeight);
+  const [modoRoteirizador, setModoRoteirizador] = useState(false);
+  const [roteirizadorChaves, setRoteirizadorChaves] = useState<Set<string>>(() => new Set());
+  const [mapaItens, setMapaItens] = useState<MapaMunicipioItem[]>([]);
+  const [roteiroResultado, setRoteiroResultado] = useState<RoteiroResultado | null>(null);
+  const [roteiroLoading, setRoteiroLoading] = useState(false);
 
   const carregar = useCallback(async () => {
     setLoading(true);
@@ -71,6 +113,21 @@ export default function HeatmapPage() {
     saveFiltrosHeatmap(defaultFiltros);
   }, []);
 
+  const onMapaItensCarregados = useCallback((itens: MapaMunicipioItem[]) => {
+    setMapaItens(itens);
+  }, []);
+
+  const alternarModoRoteirizador = useCallback(() => {
+    setModoRoteirizador((ativo) => {
+      if (ativo) {
+        setRoteirizadorChaves(new Set());
+        setRoteiroResultado(null);
+        return false;
+      }
+      return true;
+    });
+  }, []);
+
   const alternarTelaCheia = useCallback(async () => {
     const el = rootRef.current;
     if (!el) return;
@@ -93,22 +150,114 @@ export default function HeatmapPage() {
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
 
-  const layoutToken = `${mostrarFiltros}-${mostrarCards}-${telaCheia}`;
+  const MAX_CIDADES_ROTEIRO = 22;
+
+  useEffect(() => {
+    if (!modoRoteirizador) return;
+    setRoteirizadorChaves((prev) => {
+      const valid = new Set(mapaItens.map((it, i) => mapaMunicipioChave(it, i)));
+      let changed = false;
+      const next = new Set<string>();
+      for (const k of prev) {
+        if (valid.has(k)) next.add(k);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [mapaItens, modoRoteirizador]);
+
+  const selecionadosOrdenados = useMemo(() => {
+    const list = mapaItens.filter((it, i) => roteirizadorChaves.has(mapaMunicipioChave(it, i)));
+    return [...list].sort((a, b) => a.chave.localeCompare(b.chave, 'pt-BR'));
+  }, [mapaItens, roteirizadorChaves]);
+
+  const coordsRoteiro = useMemo((): RoteiroCoord[] | null => {
+    if (selecionadosOrdenados.length === 0) return null;
+    return [
+      {
+        lat: PONTO_RETORNO_TERESINA.lat,
+        lng: PONTO_RETORNO_TERESINA.lng,
+        label: PONTO_RETORNO_TERESINA.label,
+      },
+      ...selecionadosOrdenados.map((c) => ({
+        lat: c.lat,
+        lng: c.lng,
+        label: `${c.municipio}${c.uf ? `, ${c.uf}` : ''}`,
+      })),
+    ];
+  }, [selecionadosOrdenados]);
+
+  useEffect(() => {
+    if (!coordsRoteiro || coordsRoteiro.length < 2) {
+      setRoteiroResultado(null);
+      setRoteiroLoading(false);
+      return;
+    }
+    const ac = new AbortController();
+    const tid = window.setTimeout(() => {
+      void (async () => {
+        setRoteiroLoading(true);
+        try {
+          const { matrixKm, usouOsrm } = await obterMatrizDistanciasKm(coordsRoteiro, ac.signal);
+          if (ac.signal.aborted) return;
+          const r = resolverRoteiroDeposito(coordsRoteiro, matrixKm, usouOsrm);
+          setRoteiroResultado(r);
+        } catch {
+          if (!ac.signal.aborted) setRoteiroResultado(null);
+        } finally {
+          if (!ac.signal.aborted) setRoteiroLoading(false);
+        }
+      })();
+    }, 400);
+    return () => {
+      ac.abort();
+      window.clearTimeout(tid);
+    };
+  }, [coordsRoteiro]);
+
+  const rotaPolyline = useMemo((): [number, number][] | undefined => {
+    if (!roteiroResultado || !coordsRoteiro || coordsRoteiro.length < 2) return undefined;
+    const idxs = [0, ...roteiroResultado.ordemIndices, 0];
+    return idxs.map((i) => [coordsRoteiro[i]!.lat, coordsRoteiro[i]!.lng] as [number, number]);
+  }, [roteiroResultado, coordsRoteiro]);
+
+  const toggleRoteirizadorChave = useCallback((chave: string) => {
+    setRoteirizadorChaves((prev) => {
+      const next = new Set(prev);
+      if (next.has(chave)) next.delete(chave);
+      else if (next.size >= MAX_CIDADES_ROTEIRO) return prev;
+      else next.add(chave);
+      return next;
+    });
+  }, []);
+
+  const limparRoteiro = useCallback(() => {
+    setRoteirizadorChaves(new Set());
+    setRoteiroResultado(null);
+  }, []);
+
+  const layoutToken = `${mostrarFiltros}-${mostrarCards}-${telaCheia}|mapH:${mapPaneHeightPx ?? 'auto'}|rot:${modoRoteirizador ? roteirizadorChaves.size : 0}:${roteiroResultado?.totalKm ?? 0}`;
   const rootClass = telaCheia
     ? 'h-screen box-border overflow-hidden bg-slate-50 dark:bg-slate-900 p-4 flex flex-col gap-4'
-    : 'min-h-0 flex flex-col gap-6';
+    : 'flex min-h-0 w-full flex-1 flex-col gap-6';
+  /** Piso de altura para mapa + medidores: com filtros e KPIs no topo, o flex-1 sozinho deixava o mapa espremido. */
+  const areaPrincipalMinH = telaCheia
+    ? ''
+    : mostrarFiltros && mostrarCards
+      ? 'min-h-[min(720px,58svh)]'
+      : mostrarFiltros || mostrarCards
+        ? 'min-h-[min(640px,52svh)]'
+        : 'min-h-[min(560px,48svh)]';
   const areaPrincipalClass = telaCheia
     ? `flex-1 min-h-0 flex flex-col items-stretch gap-6 ${mostrarCards ? 'xl:flex-row' : ''}`
-    : `items-stretch gap-6 ${mostrarCards ? 'flex flex-col lg:flex-row lg:min-h-[520px]' : 'flex flex-col flex-1 min-h-0'}`;
+    : `flex min-h-0 flex-1 basis-0 flex-col gap-6 ${mostrarCards ? 'lg:flex-row' : ''} ${areaPrincipalMinH}`.trim();
   const mapaWrapperClass = mostrarCards
     ? telaCheia
       ? 'min-h-0 h-full'
-      : 'min-h-[400px] lg:min-h-0'
+      : 'flex min-h-0 flex-1 flex-col'
     : telaCheia
       ? 'h-full min-h-0'
-      : mostrarFiltros
-        ? 'h-[calc(100vh-320px)] min-h-[520px]'
-        : 'h-[calc(100vh-210px)] min-h-[620px]';
+      : 'flex min-h-0 flex-1 flex-col';
 
   return (
     <div
@@ -180,6 +329,22 @@ export default function HeatmapPage() {
             </svg>
           )}
         </button>
+        <button
+          type="button"
+          onClick={alternarModoRoteirizador}
+          className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition ${
+            modoRoteirizador
+              ? 'border-primary-600 bg-primary-600 text-white hover:bg-primary-700'
+              : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600'
+          }`}
+          title={modoRoteirizador ? 'Desligar roteirizador' : 'Planejar rota: selecionar cidades no mapa'}
+          aria-pressed={modoRoteirizador}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM13 13h2v2h-2zM17 13h2v2h-2zM13 17h2v2h-2zM17 17h2v2h-2z" />
+          </svg>
+          Roteirizador
+        </button>
       </div>
       {mostrarFiltros && (
         <div className="shrink-0">
@@ -216,8 +381,109 @@ export default function HeatmapPage() {
             />
           </div>
         )}
-        <div className={`flex-1 flex flex-col rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 ${mapaWrapperClass}`}>
-          <MapaMunicipios filtros={filtros as FiltrosPedidos} layoutToken={layoutToken} />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+          {modoRoteirizador && (
+            <HeatmapRoteirizadorPanel
+              loading={roteiroLoading}
+              resultado={roteiroResultado}
+              selecionados={selecionadosOrdenados}
+              onRemover={toggleRoteirizadorChave}
+              onLimpar={limparRoteiro}
+            />
+          )}
+        <div
+          ref={mapColumnRef}
+          className={`flex flex-col rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 ${mapaWrapperClass} ${
+            mapPaneHeightPx != null && mostrarCards ? (telaCheia ? 'xl:self-start' : 'lg:self-start') : ''
+          }`}
+        >
+          <div
+            className={`min-h-0 flex flex-col overflow-hidden ${mapPaneHeightPx != null ? 'shrink-0' : 'flex-1'}`}
+            style={
+              mapPaneHeightPx != null
+                ? { height: mapPaneHeightPx, minHeight: HEATMAP_MAP_HEIGHT_MIN }
+                : undefined
+            }
+          >
+            <MapaMunicipios
+              filtros={filtros as FiltrosPedidos}
+              layoutToken={layoutToken}
+              onItensCarregados={onMapaItensCarregados}
+              roteirizadorAtivo={modoRoteirizador}
+              roteirizadorChaves={roteirizadorChaves}
+              onRoteirizadorToggleChave={toggleRoteirizadorChave}
+              rotaPolyline={modoRoteirizador ? rotaPolyline : undefined}
+            />
+          </div>
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Redimensionar área do mapa"
+            title="Arraste para ajustar a altura do mapa. Duplo clique para voltar ao tamanho automático."
+            className="group flex h-3 shrink-0 cursor-ns-resize touch-none select-none items-center justify-center border-t border-slate-200 bg-slate-100 hover:bg-slate-200/90 dark:border-slate-600 dark:bg-slate-800/90 dark:hover:bg-slate-700/90"
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              const col = mapColumnRef.current;
+              if (!col) return;
+              const inner = col.firstElementChild as HTMLElement | null;
+              const measured = inner
+                ? Math.round(inner.getBoundingClientRect().height)
+                : Math.round(col.getBoundingClientRect().height - 12);
+              const baseH = clampMapPaneHeight(mapPaneHeightPx ?? measured);
+              setMapPaneHeightPx(baseH);
+              mapResizeDragRef.current = { startY: e.clientY, baseH };
+              (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              const d = mapResizeDragRef.current;
+              if (!d) return;
+              const next = clampMapPaneHeight(d.baseH + (e.clientY - d.startY));
+              setMapPaneHeightPx(next);
+            }}
+            onPointerUp={(e) => {
+              mapResizeDragRef.current = null;
+              try {
+                (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+              } catch {
+                /* já liberado */
+              }
+              setMapPaneHeightPx((h) => {
+                if (h != null) {
+                  try {
+                    localStorage.setItem(HEATMAP_MAP_HEIGHT_STORAGE_KEY, String(h));
+                  } catch {
+                    /* quota / modo privado */
+                  }
+                }
+                return h;
+              });
+            }}
+            onPointerCancel={(e) => {
+              mapResizeDragRef.current = null;
+              try {
+                (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+              } catch {
+                /* */
+              }
+            }}
+            onDoubleClick={(e) => {
+              e.preventDefault();
+              mapResizeDragRef.current = null;
+              setMapPaneHeightPx(null);
+              try {
+                localStorage.removeItem(HEATMAP_MAP_HEIGHT_STORAGE_KEY);
+              } catch {
+                /* */
+              }
+            }}
+          >
+            <span
+              className="pointer-events-none h-1 w-14 rounded-full bg-slate-400/90 group-hover:bg-primary-500 dark:bg-slate-500 group-hover:dark:bg-primary-400"
+              aria-hidden
+            />
+          </div>
+        </div>
         </div>
       </div>
     </div>

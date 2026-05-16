@@ -5,6 +5,10 @@
 
 import { getNomusPool } from '../config/nomusDb.js';
 import type { DfcAgendamentoDetalheRow, DfcAgendamentoLinha, DfcAgendamentoGranularidade } from './dfcAgendamentoRepository.js';
+import {
+  montarFragmentoFiltroPrioridade,
+  type DfcPrioridadeFilterResolvido,
+} from './dfcPrioridadeFilter.js';
 
 function toNum(v: unknown): number {
   if (v == null) return 0;
@@ -47,7 +51,12 @@ LEFT JOIN (
 ) td ON td.idAgRec = af.id
 `.trim();
 
-function sqlAgregadoUnion(granularidade: DfcAgendamentoGranularidade, idEmpresas: number[]): string {
+function sqlAgregadoUnion(
+  granularidade: DfcAgendamentoGranularidade,
+  idEmpresas: number[],
+  filtroSqlAfLf: string,
+  filtroSqlLf: string
+): string {
   const periodoExpr =
     granularidade === 'mes'
       ? "DATE_FORMAT(lf.dataLancamento, '%Y-%m')"
@@ -69,6 +78,7 @@ FROM (
     AND af.discriminador = 'R'
     AND af.idContaFinanceiro IS NOT NULL
     AND (COALESCE(td.comentarios, af.comentarios, '') NOT LIKE '%DESCONTADO ANTECI%')
+    ${filtroSqlAfLf}
   UNION ALL
   SELECT
     lf.idContaFinanceiro AS idContaFinanceiro,
@@ -82,6 +92,7 @@ FROM (
     AND lf.discriminador = 'LR'
     AND af.id IS NULL
     AND lf.idContaFinanceiro IS NOT NULL
+    ${filtroSqlLf}
 ) u
 GROUP BY u.idContaFinanceiro, u.periodo
 ORDER BY u.periodo, u.idContaFinanceiro
@@ -96,13 +107,23 @@ export async function queryDfcReceitasAgrupado(params: {
   dataBaixaFim: string;
   granularidade: DfcAgendamentoGranularidade;
   idEmpresas: number[];
+  filtroPrioridade?: DfcPrioridadeFilterResolvido;
 }): Promise<{ linhas: DfcAgendamentoLinha[]; erro?: string }> {
   const pool = getNomusPool();
   if (!pool) return { linhas: [], erro: 'NOMUS_DB_URL não configurado' };
 
-  const { dataBaixaInicio, dataBaixaFim, granularidade, idEmpresas } = params;
-  const sql = sqlAgregadoUnion(granularidade, idEmpresas);
-  const args = [dataBaixaInicio, dataBaixaFim, ...idEmpresas, dataBaixaInicio, dataBaixaFim, ...idEmpresas];
+  const { dataBaixaInicio, dataBaixaFim, granularidade, idEmpresas, filtroPrioridade } = params;
+  const fragAfLf = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'af_lf')
+    : { sql: '', args: [] };
+  const fragLf = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'lf')
+    : { sql: '', args: [] };
+  const sql = sqlAgregadoUnion(granularidade, idEmpresas, fragAfLf.sql, fragLf.sql);
+  const args = [
+    dataBaixaInicio, dataBaixaFim, ...idEmpresas, ...fragAfLf.args,
+    dataBaixaInicio, dataBaixaFim, ...idEmpresas, ...fragLf.args,
+  ];
 
   try {
     const [rows] = (await pool.query(sql, args)) as [Record<string, unknown>[], unknown];
@@ -153,11 +174,12 @@ async function queryDfcReceitasDetalheR(params: {
   idEmpresas: number[];
   idsContaFinanceiro: number[];
   periodoBucket?: string | null;
+  filtroPrioridade?: DfcPrioridadeFilterResolvido;
 }): Promise<{ detalhes: DfcAgendamentoDetalheRow[]; erro?: string }> {
   const pool = getNomusPool();
   if (!pool) return { detalhes: [], erro: 'NOMUS_DB_URL não configurado' };
 
-  const { dataBaixaInicio, dataBaixaFim, granularidade, idEmpresas, idsContaFinanceiro, periodoBucket } = params;
+  const { dataBaixaInicio, dataBaixaFim, granularidade, idEmpresas, idsContaFinanceiro, periodoBucket, filtroPrioridade } = params;
   const ids = [...new Set(idsContaFinanceiro.filter((n) => Number.isFinite(n) && n > 0))];
   if (ids.length === 0) return { detalhes: [] };
 
@@ -168,9 +190,16 @@ async function queryDfcReceitasDetalheR(params: {
   args.push(...ids);
   if (extraArg != null) args.push(extraArg);
 
+  const filtroFrag = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'af_lf')
+    : { sql: '', args: [] };
+  args.push(...filtroFrag.args);
+
   const sql = `
 SELECT
   lf.id AS id,
+  af.idEmpresa AS idEmpresa,
+  af.idContaFinanceiro AS idContaFinanceiro,
   af.descricaoLancamento AS descricaoLancamento,
   pe.nome AS nome,
   DATE(COALESCE(af.dataVencimento, lf.dataLancamento)) AS dataVencimento,
@@ -187,6 +216,7 @@ WHERE DATE(lf.dataLancamento) BETWEEN ? AND ?
   AND af.idContaFinanceiro IN (${placeholders})
   AND (COALESCE(td.comentarios, af.comentarios, '') NOT LIKE '%DESCONTADO ANTECI%')
   ${pClause}
+  ${filtroFrag.sql}
 ORDER BY valorBaixado DESC, lf.id DESC
 `.trim();
 
@@ -200,6 +230,9 @@ ORDER BY valorBaixado DESC, lf.id DESC
       dataVencimento: formatYmdFromSqlDate(r.dataVencimento ?? r['dataVencimento']),
       dataBaixa: formatYmdFromSqlDate(r.dataBaixa ?? r['dataBaixa']),
       valorBaixado: toNum(r.valorBaixado ?? r['valorBaixado']),
+      tipoRef: 'L',
+      idEmpresa: toInt(r.idEmpresa ?? r['idEmpresa']),
+      idContaFinanceiro: r.idContaFinanceiro != null ? toInt(r.idContaFinanceiro) : null,
     }));
     return { detalhes };
   } catch (err) {
@@ -217,11 +250,12 @@ async function queryDfcReceitasDetalheLr(params: {
   idEmpresas: number[];
   idsContaFinanceiro: number[];
   periodoBucket?: string | null;
+  filtroPrioridade?: DfcPrioridadeFilterResolvido;
 }): Promise<{ detalhes: DfcAgendamentoDetalheRow[]; erro?: string }> {
   const pool = getNomusPool();
   if (!pool) return { detalhes: [], erro: 'NOMUS_DB_URL não configurado' };
 
-  const { dataBaixaInicio, dataBaixaFim, granularidade, idEmpresas, idsContaFinanceiro, periodoBucket } = params;
+  const { dataBaixaInicio, dataBaixaFim, granularidade, idEmpresas, idsContaFinanceiro, periodoBucket, filtroPrioridade } = params;
   const ids = [...new Set(idsContaFinanceiro.filter((n) => Number.isFinite(n) && n > 0))];
   if (ids.length === 0) return { detalhes: [] };
 
@@ -232,9 +266,16 @@ async function queryDfcReceitasDetalheLr(params: {
   args.push(...ids);
   if (extraArg != null) args.push(extraArg);
 
+  const filtroFrag = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'lf')
+    : { sql: '', args: [] };
+  args.push(...filtroFrag.args);
+
   const sql = `
 SELECT
   lf.id AS id,
+  lf.idEmpresa AS idEmpresa,
+  lf.idContaFinanceiro AS idContaFinanceiro,
   lf.descricao AS descricaoLancamento,
   pe.nome AS nome,
   DATE(lf.dataCompetencia) AS dataVencimento,
@@ -250,6 +291,7 @@ WHERE DATE(lf.dataLancamento) BETWEEN ? AND ?
   AND af.id IS NULL
   AND lf.idContaFinanceiro IN (${placeholders})
   ${pClause}
+  ${filtroFrag.sql}
 ORDER BY valorBaixado DESC, lf.id DESC
 `.trim();
 
@@ -263,6 +305,9 @@ ORDER BY valorBaixado DESC, lf.id DESC
       dataVencimento: formatYmdFromSqlDate(r.dataVencimento ?? r['dataVencimento']),
       dataBaixa: formatYmdFromSqlDate(r.dataBaixa ?? r['dataBaixa']),
       valorBaixado: toNum(r.valorBaixado ?? r['valorBaixado']),
+      tipoRef: 'L',
+      idEmpresa: toInt(r.idEmpresa ?? r['idEmpresa']),
+      idContaFinanceiro: r.idContaFinanceiro != null ? toInt(r.idContaFinanceiro) : null,
     }));
     return { detalhes };
   } catch (err) {
@@ -276,7 +321,11 @@ ORDER BY valorBaixado DESC, lf.id DESC
 // PROJEÇÃO FUTURA — Receitas (R) não baixadas, bucket por dataVencimento
 // ─────────────────────────────────────────────────────────────────────────────
 
-function sqlReceitasProjecaoAgregado(granularidade: DfcAgendamentoGranularidade, idEmpresas: number[]): string {
+function sqlReceitasProjecaoAgregado(
+  granularidade: DfcAgendamentoGranularidade,
+  idEmpresas: number[],
+  filtroSqlPrioridade: string
+): string {
   const periodoExpr =
     granularidade === 'mes'
       ? "DATE_FORMAT(af.dataVencimento, '%Y-%m')"
@@ -297,6 +346,7 @@ FROM (
     AND af.idEmpresa IN (${inClause})
     AND af.idContaFinanceiro IS NOT NULL
     AND (pp.geraAdiantamento = 1 OR pp.geraAdiantamento IS NULL)
+    ${filtroSqlPrioridade}
   UNION ALL
   SELECT
     af.idContaFinanceiro AS idContaFinanceiro,
@@ -310,6 +360,7 @@ FROM (
     AND af.idEmpresa IN (${inClause})
     AND af.idContaFinanceiro IS NOT NULL
     AND af.idDocumentoSaida IS NOT NULL
+    ${filtroSqlPrioridade}
 ) u
 GROUP BY u.idContaFinanceiro, u.periodo
 ORDER BY u.periodo, u.idContaFinanceiro
@@ -324,15 +375,19 @@ export async function queryDfcReceitasProjecao(params: {
   dataVencimentoFim: string;
   granularidade: DfcAgendamentoGranularidade;
   idEmpresas: number[];
+  filtroPrioridade?: DfcPrioridadeFilterResolvido;
 }): Promise<{ linhas: DfcAgendamentoLinha[]; erro?: string }> {
   const pool = getNomusPool();
   if (!pool) return { linhas: [], erro: 'NOMUS_DB_URL não configurado' };
 
-  const { dataVencimentoInicio, dataVencimentoFim, granularidade, idEmpresas } = params;
-  const sql = sqlReceitasProjecaoAgregado(granularidade, idEmpresas);
+  const { dataVencimentoInicio, dataVencimentoFim, granularidade, idEmpresas, filtroPrioridade } = params;
+  const filtroFrag = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'af')
+    : { sql: '', args: [] };
+  const sql = sqlReceitasProjecaoAgregado(granularidade, idEmpresas, filtroFrag.sql);
   const args = [
-    dataVencimentoInicio, dataVencimentoFim, ...idEmpresas,
-    dataVencimentoInicio, dataVencimentoFim, ...idEmpresas,
+    dataVencimentoInicio, dataVencimentoFim, ...idEmpresas, ...filtroFrag.args,
+    dataVencimentoInicio, dataVencimentoFim, ...idEmpresas, ...filtroFrag.args,
   ];
 
   try {
@@ -363,11 +418,12 @@ export async function queryDfcReceitasProjecaoDetalhe(params: {
   idEmpresas: number[];
   idsContaFinanceiro: number[];
   periodoBucket?: string | null;
+  filtroPrioridade?: DfcPrioridadeFilterResolvido;
 }): Promise<{ detalhes: DfcAgendamentoDetalheRow[]; erro?: string }> {
   const pool = getNomusPool();
   if (!pool) return { detalhes: [], erro: 'NOMUS_DB_URL não configurado' };
 
-  const { dataVencimentoInicio, dataVencimentoFim, granularidade, idEmpresas, idsContaFinanceiro, periodoBucket } = params;
+  const { dataVencimentoInicio, dataVencimentoFim, granularidade, idEmpresas, idsContaFinanceiro, periodoBucket, filtroPrioridade } = params;
   const ids = [...new Set(idsContaFinanceiro.filter((n) => Number.isFinite(n) && n > 0))];
   if (ids.length === 0) return { detalhes: [] };
 
@@ -383,15 +439,22 @@ export async function queryDfcReceitasProjecaoDetalhe(params: {
     }
   }
 
+  const filtroFrag = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'af')
+    : { sql: '', args: [] };
+
   const argsBranch: unknown[] = [dataVencimentoInicio, dataVencimentoFim, ...idEmpresas, ...ids];
   if (periodoBucket) argsBranch.push(periodoBucket);
+  argsBranch.push(...filtroFrag.args);
   const args: unknown[] = [...argsBranch, ...argsBranch];
 
   const sql = `
-SELECT u.id, u.descricaoLancamento, u.nome, u.dataVencimento, u.dataBaixa, u.valorBaixado
+SELECT u.id, u.idEmpresa, u.idContaFinanceiro, u.descricaoLancamento, u.nome, u.dataVencimento, u.dataBaixa, u.valorBaixado
 FROM (
   SELECT
     af.id AS id,
+    af.idEmpresa AS idEmpresa,
+    af.idContaFinanceiro AS idContaFinanceiro,
     af.descricaoLancamento AS descricaoLancamento,
     pe.nome AS nome,
     DATE(af.dataVencimento) AS dataVencimento,
@@ -407,9 +470,12 @@ FROM (
     AND af.idContaFinanceiro IN (${placeholders})
     AND (pp.geraAdiantamento = 1 OR pp.geraAdiantamento IS NULL)
     ${periodClause}
+    ${filtroFrag.sql}
   UNION ALL
   SELECT
     af.id AS id,
+    af.idEmpresa AS idEmpresa,
+    af.idContaFinanceiro AS idContaFinanceiro,
     af.descricaoLancamento AS descricaoLancamento,
     pe.nome AS nome,
     DATE(af.dataVencimento) AS dataVencimento,
@@ -425,6 +491,7 @@ FROM (
     AND af.idContaFinanceiro IN (${placeholders})
     AND af.idDocumentoSaida IS NOT NULL
     ${periodClause}
+    ${filtroFrag.sql}
 ) u
 ORDER BY u.valorBaixado DESC, u.id DESC
 LIMIT 2000
@@ -440,6 +507,9 @@ LIMIT 2000
       dataVencimento: formatYmdFromSqlDate(r.dataVencimento ?? r['dataVencimento']),
       dataBaixa: null,
       valorBaixado: toNum(r.valorBaixado ?? r['valorBaixado']),
+      tipoRef: 'A',
+      idEmpresa: toInt(r.idEmpresa ?? r['idEmpresa']),
+      idContaFinanceiro: r.idContaFinanceiro != null ? toInt(r.idContaFinanceiro) : null,
     }));
     return { detalhes };
   } catch (err) {
@@ -456,6 +526,7 @@ export async function queryDfcReceitasDetalhe(params: {
   idEmpresas: number[];
   idsContaFinanceiro: number[];
   periodoBucket?: string | null;
+  filtroPrioridade?: DfcPrioridadeFilterResolvido;
 }): Promise<{ detalhes: DfcAgendamentoDetalheRow[]; erro?: string }> {
   const r1 = await queryDfcReceitasDetalheR(params);
   const r2 = await queryDfcReceitasDetalheLr(params);

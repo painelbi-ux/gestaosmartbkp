@@ -241,10 +241,16 @@ const inputClass =
 
 export default function RessupAlmoxAnalisePage() {
   const { login: authLogin } = useAuth();
-  const [opcoesFiltro, setOpcoesFiltro] = useState<{ codigos: string[]; descricoes: string[]; coletas: string[] }>({
+  const [opcoesFiltro, setOpcoesFiltro] = useState<{
+    codigos: string[];
+    descricoes: string[];
+    coletas: string[];
+    items: { codigo: string; descricao: string; coleta: string }[];
+  }>({
     codigos: [],
     descricoes: [],
     coletas: [],
+    items: [],
   });
   const [filterCodigo, setFilterCodigo] = useState('');
   const [filterDescricao, setFilterDescricao] = useState('');
@@ -276,6 +282,7 @@ export default function RessupAlmoxAnalisePage() {
   const [salvandoAlteracoes, setSalvandoAlteracoes] = useState(false);
   const [processandoAnalise, setProcessandoAnalise] = useState(false);
   const [concluindoAnalise, setConcluindoAnalise] = useState(false);
+  const [acaoEmAndamento, setAcaoEmAndamento] = useState<number | null>(null);
   const [feedbackGravacao, setFeedbackGravacao] = useState<{ ok: boolean; msg: string } | null>(null);
   /** Valores digitados nas colunas editáveis (Qtde Sug, Data Necess Sug, Qtd Aprov, Data Necess Aprov), por __rowKey. */
   const [userInputs, setUserInputs] = useState<Record<string, RowUserInputs>>({});
@@ -314,9 +321,10 @@ export default function RessupAlmoxAnalisePage() {
         codigos: r.codigos ?? [],
         descricoes: r.descricoes ?? [],
         coletas: r.coletas ?? [],
+        items: r.items ?? [],
       });
     } catch {
-      setOpcoesFiltro({ codigos: [], descricoes: [], coletas: [] });
+      setOpcoesFiltro({ codigos: [], descricoes: [], coletas: [], items: [] });
     } finally {
       setOpcoesCarregando(false);
     }
@@ -589,6 +597,62 @@ export default function RessupAlmoxAnalisePage() {
     setFiltroAbertoRect(null);
   };
 
+  /**
+   * Opções em cascata: cada filtro exibe apenas os valores que existem nos registros
+   * que satisfazem os OUTROS dois filtros selecionados (faceted search).
+   */
+  const opcoesCascata = useMemo(() => {
+    const { items, codigos, descricoes, coletas } = opcoesFiltro;
+    if (items.length === 0) return { codigos, descricoes, coletas };
+
+    const coletasSel = filterColeta.split('|').filter(Boolean);
+    const codigosSel = filterCodigo.split('|').filter(Boolean);
+    const descricoesSel = filterDescricao.split('|').filter(Boolean);
+
+    const loc = (a: string, b: string) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' });
+
+    // Codigos disponíveis: items que passam nos filtros de coleta E descrição
+    const codDisp = [
+      ...new Set(
+        items
+          .filter(
+            (i) =>
+              (coletasSel.length === 0 || coletasSel.includes(i.coleta)) &&
+              (descricoesSel.length === 0 || descricoesSel.includes(i.descricao))
+          )
+          .map((i) => i.codigo)
+      ),
+    ].sort(loc);
+
+    // Descrições disponíveis: items que passam nos filtros de coleta E código
+    const descDisp = [
+      ...new Set(
+        items
+          .filter(
+            (i) =>
+              (coletasSel.length === 0 || coletasSel.includes(i.coleta)) &&
+              (codigosSel.length === 0 || codigosSel.includes(i.codigo))
+          )
+          .map((i) => i.descricao)
+      ),
+    ].sort(loc);
+
+    // Coletas disponíveis: items que passam nos filtros de código E descrição
+    const colDisp = [
+      ...new Set(
+        items
+          .filter(
+            (i) =>
+              (codigosSel.length === 0 || codigosSel.includes(i.codigo)) &&
+              (descricoesSel.length === 0 || descricoesSel.includes(i.descricao))
+          )
+          .map((i) => i.coleta)
+      ),
+    ].sort(loc);
+
+    return { codigos: codDisp, descricoes: descDisp, coletas: colDisp };
+  }, [opcoesFiltro, filterColeta, filterCodigo, filterDescricao]);
+
   const handleFiltrar = async () => {
     const temCodigo = filterCodigo.trim() !== '';
     const temDescricao = filterDescricao.trim() !== '';
@@ -608,21 +672,19 @@ export default function RessupAlmoxAnalisePage() {
     setMsgLista(null);
     setLinhas([]);
     setUserInputs({});
-    const coletaApi = filterColeta
-      .split(',')
-      .map((x) => x.trim())
-      .filter(Boolean)
-      .join(', ');
+    const codigoValues = filterCodigo.split('|').filter(Boolean);
+    const descricaoValues = filterDescricao.split('|').filter(Boolean);
+    const coletaValues = filterColeta.split('|').filter(Boolean);
     const aplicadoLocal = {
-      codigo: filterCodigo.trim(),
-      descricao: filterDescricao.trim(),
-      coleta: coletaApi,
+      codigo: codigoValues.join(', '),
+      descricao: descricaoValues.join(', '),
+      coleta: coletaValues.join(', '),
     };
     try {
       const r = await listarRessupAlmoxRegistroPreview({
-        codigo: aplicadoLocal.codigo || undefined,
-        descricao: aplicadoLocal.descricao || undefined,
-        coleta: aplicadoLocal.coleta || undefined,
+        codigo: codigoValues.join('|') || undefined,
+        descricao: descricaoValues.join('|') || undefined,
+        coleta: coletaValues.join('|') || undefined,
       });
       setAplicado(aplicadoLocal);
       if (r.error) {
@@ -795,66 +857,82 @@ export default function RessupAlmoxAnalisePage() {
   ]);
 
   /** Muda o status de uma análise em_processamento para processado. */
-  const processarAnalise = useCallback(async () => {
-    if (!historicoVisualizado || historicoVisualizado.status !== 'em_processamento') return;
+  const processarAnalise = useCallback(async (id: number) => {
     setProcessandoAnalise(true);
+    setAcaoEmAndamento(id);
     setFeedbackGravacao(null);
     try {
-      const r = await processarRessupAlmoxAnalise(historicoVisualizado.id);
+      const r = await processarRessupAlmoxAnalise(id);
       if (!r.ok) {
         setFeedbackGravacao({ ok: false, msg: r.error ?? 'Não foi possível processar a análise.' });
       } else {
         const agora = new Date().toISOString();
         setHistoricoVisualizado((prev) =>
-          prev
-            ? {
-                ...prev,
-                status: 'processado',
-                processadoAt: agora,
-                usuarioLoginProcessado: authLogin ?? '',
-              }
+          prev?.id === id
+            ? { ...prev, status: 'processado', processadoAt: agora, usuarioLoginProcessado: authLogin ?? '' }
             : prev
         );
+        setHistoricoLista((prev) =>
+          prev.map((h) =>
+            h.id === id
+              ? {
+                  ...h,
+                  status: 'processado' as const,
+                  usuarioLoginProcessado: authLogin ?? '',
+                  processadoAt: agora,
+                }
+              : h
+          )
+        );
         setHistoricoVersao((v) => v + 1);
-        setFeedbackGravacao({ ok: true, msg: 'Análise marcada como processada. A grade agora está somente leitura.' });
+        setFeedbackGravacao({ ok: true, msg: 'Análise marcada como processada.' });
       }
     } catch (e) {
       setFeedbackGravacao({ ok: false, msg: e instanceof Error ? e.message : String(e) });
     } finally {
       setProcessandoAnalise(false);
+      setAcaoEmAndamento(null);
     }
-  }, [historicoVisualizado, authLogin]);
+  }, [authLogin]);
 
   /** Muda o status de uma análise processado para concluido. */
-  const concluirAnalise = useCallback(async () => {
-    if (!historicoVisualizado || historicoVisualizado.status !== 'processado') return;
+  const concluirAnalise = useCallback(async (id: number) => {
     setConcluindoAnalise(true);
+    setAcaoEmAndamento(id);
     setFeedbackGravacao(null);
     try {
-      const r = await concluirRessupAlmoxAnalise(historicoVisualizado.id);
+      const r = await concluirRessupAlmoxAnalise(id);
       if (!r.ok) {
         setFeedbackGravacao({ ok: false, msg: r.error ?? 'Não foi possível concluir a análise.' });
       } else {
         const agora = new Date().toISOString();
         setHistoricoVisualizado((prev) =>
-          prev
-            ? {
-                ...prev,
-                status: 'concluido',
-                concluidoAt: agora,
-                usuarioLoginConcluido: authLogin ?? '',
-              }
+          prev?.id === id
+            ? { ...prev, status: 'concluido', concluidoAt: agora, usuarioLoginConcluido: authLogin ?? '' }
             : prev
         );
+        setHistoricoLista((prev) =>
+          prev.map((h) =>
+            h.id === id
+              ? {
+                  ...h,
+                  status: 'concluido' as const,
+                  usuarioLoginConcluido: authLogin ?? '',
+                  concluidoAt: agora,
+                }
+              : h
+          )
+        );
         setHistoricoVersao((v) => v + 1);
-        setFeedbackGravacao({ ok: true, msg: 'Análise concluída. A grade está totalmente bloqueada para edição.' });
+        setFeedbackGravacao({ ok: true, msg: 'Análise concluída.' });
       }
     } catch (e) {
       setFeedbackGravacao({ ok: false, msg: e instanceof Error ? e.message : String(e) });
     } finally {
       setConcluindoAnalise(false);
+      setAcaoEmAndamento(null);
     }
-  }, [historicoVisualizado, authLogin]);
+  }, [authLogin]);
 
   /**
    * Exporta as linhas filtradas/ordenadas para XLSX usando TODAS as colunas (mesmo as ocultas na grade),
@@ -1062,6 +1140,17 @@ export default function RessupAlmoxAnalisePage() {
                 ← Voltar ao histórico
               </button>
             )}
+            {mostrarGradeAnalise && (historicoVisualizado?.status === 'em_processamento' || historicoVisualizado?.status === 'processado') && (
+              <button
+                type="button"
+                onClick={() => void salvarAlteracoesAnalise()}
+                disabled={salvandoAlteracoes || linhasOrdenadas.length === 0}
+                className={BTN_SECONDARY}
+                title="Salva as alterações dos campos editáveis"
+              >
+                Salvar alterações
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setFiltrosPopoverAberto((o) => !o)}
@@ -1114,9 +1203,9 @@ export default function RessupAlmoxAnalisePage() {
                 <MultiSelectWithSearch
                   label="Código do Produto"
                   placeholder="Todos"
-                  options={opcoesFiltro.codigos}
+                  options={opcoesCascata.codigos}
                   value={filterCodigo}
-                  onChange={(v) => setFilterCodigo(v.split(',').map((s) => s.trim()).filter(Boolean).join(', '))}
+                  onChange={setFilterCodigo}
                   labelClass={labelClass}
                   inputClass={inputClass}
                   minWidth="180px"
@@ -1125,9 +1214,9 @@ export default function RessupAlmoxAnalisePage() {
                 <MultiSelectWithSearch
                   label="Descrição do Produto"
                   placeholder="Todas"
-                  options={opcoesFiltro.descricoes}
+                  options={opcoesCascata.descricoes}
                   value={filterDescricao}
-                  onChange={(v) => setFilterDescricao(v.split(',').map((s) => s.trim()).filter(Boolean).join(', '))}
+                  onChange={setFilterDescricao}
                   labelClass={labelClass}
                   inputClass={inputClass}
                   minWidth="200px"
@@ -1136,9 +1225,9 @@ export default function RessupAlmoxAnalisePage() {
                 <MultiSelectWithSearch
                   label="Nome da coleta"
                   placeholder="Todas"
-                  options={opcoesFiltro.coletas}
+                  options={opcoesCascata.coletas}
                   value={filterColeta}
-                  onChange={(v) => setFilterColeta(v.split(',').map((s) => s.trim()).filter(Boolean).join(', '))}
+                  onChange={setFilterColeta}
                   labelClass={labelClass}
                   inputClass={inputClass}
                   minWidth="200px"
@@ -1199,12 +1288,13 @@ export default function RessupAlmoxAnalisePage() {
                 <table className="w-full text-left text-sm border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-600 dark:bg-slate-900/50">
-                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Data</th>
-                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Status</th>
+                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Data de criação</th>
                       <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Criado por</th>
-                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200 text-center">Linhas</th>
                       <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Processado por</th>
                       <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Concluído por</th>
+                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200 text-center">Linhas</th>
+                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Status</th>
+                      <th className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">Ações</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1232,6 +1322,48 @@ export default function RessupAlmoxAnalisePage() {
                           <td className="py-2 px-2 whitespace-nowrap text-slate-800 dark:text-slate-200">
                             {fmtIsoDataHora(h.createdAt)}
                           </td>
+                          <td className="py-2 px-2 text-slate-800 dark:text-slate-200">{h.usuarioLogin}</td>
+                          <td className="py-2 px-2 text-slate-500 dark:text-slate-400">
+                            {h.usuarioLoginProcessado ? (
+                              <span
+                                className={
+                                  h.processadoAt
+                                    ? 'cursor-help border-b border-dotted border-slate-400 dark:border-slate-500'
+                                    : undefined
+                                }
+                                title={
+                                  h.processadoAt
+                                    ? `Processado em: ${fmtIsoDataHora(h.processadoAt)}`
+                                    : undefined
+                                }
+                              >
+                                {h.usuarioLoginProcessado}
+                              </span>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="py-2 px-2 text-slate-500 dark:text-slate-400">
+                            {h.usuarioLoginConcluido ? (
+                              <span
+                                className={
+                                  h.concluidoAt
+                                    ? 'cursor-help border-b border-dotted border-slate-400 dark:border-slate-500'
+                                    : undefined
+                                }
+                                title={
+                                  h.concluidoAt
+                                    ? `Concluído em: ${fmtIsoDataHora(h.concluidoAt)}`
+                                    : undefined
+                                }
+                              >
+                                {h.usuarioLoginConcluido}
+                              </span>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="py-2 px-2 text-center text-slate-800 dark:text-slate-200">{h.linhaCount}</td>
                           <td className="py-2 px-2 whitespace-nowrap">
                             {h.status === 'concluido' ? (
                               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
@@ -1247,13 +1379,29 @@ export default function RessupAlmoxAnalisePage() {
                               </span>
                             )}
                           </td>
-                          <td className="py-2 px-2 text-slate-800 dark:text-slate-200">{h.usuarioLogin}</td>
-                          <td className="py-2 px-2 text-center text-slate-800 dark:text-slate-200">{h.linhaCount}</td>
-                          <td className="py-2 px-2 text-slate-500 dark:text-slate-400">
-                            {h.usuarioLoginProcessado ?? '—'}
-                          </td>
-                          <td className="py-2 px-2 text-slate-500 dark:text-slate-400">
-                            {h.usuarioLoginConcluido ?? '—'}
+                          <td className="py-2 px-2 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                            {h.status === 'em_processamento' && (
+                              <button
+                                type="button"
+                                disabled={acaoEmAndamento !== null}
+                                onClick={(e) => { e.stopPropagation(); void processarAnalise(h.id); }}
+                                className="px-2 py-1 rounded-lg border border-blue-400 bg-blue-600 text-white font-medium text-xs hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-700 dark:hover:bg-blue-600"
+                                title="Marcar esta análise como Processada"
+                              >
+                                {acaoEmAndamento === h.id ? '…' : 'Processar'}
+                              </button>
+                            )}
+                            {h.status === 'processado' && (
+                              <button
+                                type="button"
+                                disabled={acaoEmAndamento !== null}
+                                onClick={(e) => { e.stopPropagation(); void concluirAnalise(h.id); }}
+                                className="px-2 py-1 rounded-lg border border-emerald-400 bg-emerald-600 text-white font-medium text-xs hover:bg-emerald-700 disabled:opacity-50 dark:bg-emerald-700 dark:hover:bg-emerald-600"
+                                title="Concluir esta análise"
+                              >
+                                {acaoEmAndamento === h.id ? '…' : 'Concluir'}
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -1294,42 +1442,6 @@ export default function RessupAlmoxAnalisePage() {
                 title="Grava no banco local um snapshot (status: em processamento) das linhas exibidas"
               >
                 Gravar análise
-              </button>
-            )}
-            {/* Em processamento ou processado → botão "Salvar alterações" atualiza payload existente */}
-            {(historicoVisualizado?.status === 'em_processamento' || historicoVisualizado?.status === 'processado') && (
-              <button
-                type="button"
-                onClick={() => void salvarAlteracoesAnalise()}
-                disabled={salvandoAlteracoes || linhasOrdenadas.length === 0}
-                className={BTN_SECONDARY}
-                title="Salva as alterações dos campos editáveis"
-              >
-                Salvar alterações
-              </button>
-            )}
-            {/* Em processamento → botão "Marcar como Processado" */}
-            {historicoVisualizado?.status === 'em_processamento' && (
-              <button
-                type="button"
-                onClick={() => void processarAnalise()}
-                disabled={processandoAnalise}
-                className="px-3 py-1.5 rounded-lg border border-blue-400 bg-blue-600 text-white font-medium text-sm hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-700 dark:hover:bg-blue-600"
-                title="Marca como Processado — apenas Qtd Aprov e Data Necess Aprov ficam editáveis"
-              >
-                Marcar como Processado
-              </button>
-            )}
-            {/* Processado → botão "Concluir análise" */}
-            {historicoVisualizado?.status === 'processado' && (
-              <button
-                type="button"
-                onClick={() => void concluirAnalise()}
-                disabled={concluindoAnalise}
-                className="px-3 py-1.5 rounded-lg border border-emerald-400 bg-emerald-600 text-white font-medium text-sm hover:bg-emerald-700 disabled:opacity-50 dark:bg-emerald-700 dark:hover:bg-emerald-600"
-                title="Conclui a análise — todos os campos ficam somente leitura"
-              >
-                Concluir análise
               </button>
             )}
             <button

@@ -98,7 +98,7 @@ export async function getProdutosColeta(req: Request, res: Response): Promise<vo
 
 function parseCommaParts(s?: string): string[] {
   return (s ?? '')
-    .split(',')
+    .split('|')
     .map((x) => x.trim())
     .filter(Boolean);
 }
@@ -491,7 +491,8 @@ function extrairNomeColeta(dadosStr: string): string {
 
 /**
  * GET /api/compras/coletas/opcoes-filtro
- * Retorna listas distintas de códigos, descrições e nomes de coleta para os filtros (multi-select).
+ * Retorna listas distintas de códigos, descrições e nomes de coleta para os filtros (multi-select),
+ * além de `items` com o mapeamento cruzado { codigo, descricao, coleta } para filtros em cascata.
  */
 export async function getOpcoesFiltroColetas(_req: Request, res: Response): Promise<void> {
   try {
@@ -501,22 +502,28 @@ export async function getOpcoesFiltroColetas(_req: Request, res: Response): Prom
     const codigosSet = new Set<string>();
     const descricoesSet = new Set<string>();
     const coletasSet = new Set<string>();
+    const itemsMap = new Map<string, { codigo: string; descricao: string; coleta: string }>();
     for (const r of registros) {
       const dadosStr = typeof r.dados === 'string' ? r.dados : '';
       const { codigo, descricao } = extrairCodigoDescricao(dadosStr);
+      const coleta = extrairNomeColeta(dadosStr);
       if (codigo) codigosSet.add(codigo);
       if (descricao) descricoesSet.add(descricao);
-      const nomeColeta = extrairNomeColeta(dadosStr);
-      if (nomeColeta) coletasSet.add(nomeColeta);
+      if (coleta) coletasSet.add(coleta);
+      if (codigo && descricao && coleta) {
+        const key = `${coleta}\x01${codigo}`;
+        if (!itemsMap.has(key)) itemsMap.set(key, { codigo, descricao, coleta });
+      }
     }
     const codigos = Array.from(codigosSet).sort((a, b) => a.localeCompare(b, 'pt-BR'));
     const descricoes = Array.from(descricoesSet).sort((a, b) => a.localeCompare(b, 'pt-BR'));
     const coletas = Array.from(coletasSet).sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    res.json({ codigos, descricoes, coletas });
+    const items = Array.from(itemsMap.values());
+    res.json({ codigos, descricoes, coletas, items });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[comprasController] getOpcoesFiltroColetas:', msg);
-    res.status(503).json({ error: msg, codigos: [], descricoes: [], coletas: [] });
+    res.status(503).json({ error: msg, codigos: [], descricoes: [], coletas: [], items: [] });
   }
 }
 

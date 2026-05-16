@@ -417,8 +417,10 @@ function LayoutInner() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 dark:bg-slate-900">
-      <header className={`border-b border-slate-200 bg-white/80 dark:border-slate-700/50 dark:bg-slate-800/50 sticky top-0 z-40 transition-all duration-200 ${modoFoco ? 'hidden' : ''}`}>
+    <div className="h-svh min-h-0 flex flex-col overflow-hidden bg-slate-100 dark:bg-slate-900">
+      <header
+        className={`shrink-0 border-b border-slate-200 bg-white/95 dark:border-slate-700/50 dark:bg-slate-800/95 backdrop-blur z-40 transition-all duration-200 ${modoFoco ? 'hidden' : ''}`}
+      >
         <div className="max-w-screen-2xl mx-auto px-4 py-3 flex items-center justify-between">
           <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100 mr-6">Gestão Smart 2.0</h1>
           <nav className="flex items-center gap-1">
@@ -914,7 +916,7 @@ function LayoutInner() {
         </div>
       </header>
 
-      <main className={`w-full px-4 flex flex-col min-h-0 ${modoFoco ? 'py-2' : 'py-6'}`}>
+      <main className={`w-full px-4 flex flex-col flex-1 min-h-0 ${modoFoco ? 'py-2' : 'py-6'}`}>
         {abas.length > 0 && !modoFoco && (
           <div className="flex items-center gap-1 border-b border-slate-200 dark:border-slate-700 overflow-x-auto mb-4 shrink-0">
             {abas.map((aba, index) => {
@@ -996,9 +998,11 @@ function LayoutInner() {
             })}
           </div>
         )}
-        <PermissionGuard>
-          <Outlet />
-        </PermissionGuard>
+        <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
+          <PermissionGuard>
+            <Outlet />
+          </PermissionGuard>
+        </div>
       </main>
 
       {mustChangePassword && (

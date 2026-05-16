@@ -5,6 +5,10 @@
 
 import { getNomusPool } from '../config/nomusDb.js';
 import type { DfcAgendamentoDetalheRow, DfcAgendamentoLinha, DfcAgendamentoGranularidade } from './dfcAgendamentoRepository.js';
+import {
+  montarFragmentoFiltroPrioridade,
+  type DfcPrioridadeFilterResolvido,
+} from './dfcPrioridadeFilter.js';
 
 function toNum(v: unknown): number {
   if (v == null) return 0;
@@ -50,7 +54,11 @@ WHERE DATE(lf.dataLancamento) BETWEEN ? AND ?
 `.trim();
 }
 
-function buildSqlAgregLp(granularidade: DfcAgendamentoGranularidade, idEmpresas: number[]): string {
+function buildSqlAgregLp(
+  granularidade: DfcAgendamentoGranularidade,
+  idEmpresas: number[],
+  filtroSqlPrioridade: string
+): string {
   const fmt = granularidade === 'mes' ? "'%Y-%m'" : "'%Y-%m-%d'";
   return `
 SELECT
@@ -58,6 +66,7 @@ SELECT
   DATE_FORMAT(lf.dataLancamento, ${fmt}) AS periodo,
   SUM(lf.valor) AS valor
 ${buildSqlWhereLp(idEmpresas)}
+  ${filtroSqlPrioridade}
 GROUP BY lf.idContaFinanceiro, DATE_FORMAT(lf.dataLancamento, ${fmt})
 ORDER BY periodo, idContaFinanceiro
 `.trim();
@@ -71,12 +80,16 @@ export async function queryDfcLancamentosLpAgrupado(params: {
   dataLancamentoFim: string;
   granularidade: DfcAgendamentoGranularidade;
   idEmpresas: number[];
+  filtroPrioridade?: DfcPrioridadeFilterResolvido;
 }): Promise<{ linhas: DfcAgendamentoLinha[]; erro?: string }> {
   const pool = getNomusPool();
   if (!pool) return { linhas: [], erro: 'NOMUS_DB_URL não configurado' };
-  const { dataLancamentoInicio, dataLancamentoFim, granularidade, idEmpresas } = params;
-  const sql = buildSqlAgregLp(granularidade, idEmpresas);
-  const args = [dataLancamentoInicio, dataLancamentoFim, ...idEmpresas];
+  const { dataLancamentoInicio, dataLancamentoFim, granularidade, idEmpresas, filtroPrioridade } = params;
+  const filtroFrag = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'lf')
+    : { sql: '', args: [] };
+  const sql = buildSqlAgregLp(granularidade, idEmpresas, filtroFrag.sql);
+  const args = [dataLancamentoInicio, dataLancamentoFim, ...idEmpresas, ...filtroFrag.args];
 
   try {
     const [rows] = (await pool.query(sql, args)) as [Record<string, unknown>[], unknown];
@@ -118,11 +131,12 @@ export async function queryDfcLancamentosLpDetalhe(params: {
   idEmpresas: number[];
   idsContaFinanceiro: number[];
   periodoBucket?: string | null;
+  filtroPrioridade?: DfcPrioridadeFilterResolvido;
 }): Promise<{ detalhes: DfcAgendamentoDetalheRow[]; erro?: string }> {
   const pool = getNomusPool();
   if (!pool) return { detalhes: [], erro: 'NOMUS_DB_URL não configurado' };
 
-  const { dataLancamentoInicio, dataLancamentoFim, granularidade, idEmpresas, idsContaFinanceiro, periodoBucket } = params;
+  const { dataLancamentoInicio, dataLancamentoFim, granularidade, idEmpresas, idsContaFinanceiro, periodoBucket, filtroPrioridade } = params;
   const ids = [...new Set(idsContaFinanceiro.filter((n) => Number.isFinite(n) && n > 0))];
   if (ids.length === 0) return { detalhes: [] };
 
@@ -139,9 +153,16 @@ export async function queryDfcLancamentosLpDetalhe(params: {
   args.push(...ids);
   if (periodoBucket) args.push(periodoBucket);
 
+  const filtroFrag = filtroPrioridade
+    ? montarFragmentoFiltroPrioridade(filtroPrioridade, 'lf')
+    : { sql: '', args: [] };
+  args.push(...filtroFrag.args);
+
   const sql = `
 SELECT
   lf.id AS id,
+  lf.idEmpresa AS idEmpresa,
+  lf.idContaFinanceiro AS idContaFinanceiro,
   lf.descricao AS descricaoLancamento,
   pe.nome AS nome,
   DATE(lf.dataCompetencia) AS dataVencimento,
@@ -150,6 +171,7 @@ SELECT
 ${buildSqlWhereLp(idEmpresas)}
   AND lf.idContaFinanceiro IN (${placeholders})
   ${periodClause}
+  ${filtroFrag.sql}
 ORDER BY valorBaixado DESC, lf.id DESC
 LIMIT 2000
 `.trim();
@@ -164,6 +186,9 @@ LIMIT 2000
       dataVencimento: formatYmdFromSqlDate(r.dataVencimento ?? r['dataVencimento']),
       dataBaixa: formatYmdFromSqlDate(r.dataBaixa ?? r['dataBaixa']),
       valorBaixado: toNum(r.valorBaixado ?? r['valorBaixado']),
+      tipoRef: 'L',
+      idEmpresa: toInt(r.idEmpresa ?? r['idEmpresa']),
+      idContaFinanceiro: r.idContaFinanceiro != null ? toInt(r.idContaFinanceiro) : null,
     }));
     return { detalhes };
   } catch (err) {

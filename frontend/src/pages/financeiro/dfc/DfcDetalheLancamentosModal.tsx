@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { fetchDfcAgendamentosDetalhe, type DfcAgendamentoDetalheLinha } from '../../../api/financeiro';
+import {
+  DFC_PRIORIDADES,
+  DFC_PRIORIDADE_CHIP,
+  DFC_PRIORIDADE_LABEL_CURTO,
+  removerPrioridadeLancamento,
+  salvarPrioridadeLancamento,
+  type DfcPrioridade,
+} from '../../../api/dfcPrioridade';
 
 const nf = new Intl.NumberFormat('pt-BR', {
   minimumFractionDigits: 2,
@@ -57,6 +65,22 @@ export type DfcDetalheLancamentosModalProps = {
   dataFim: string;
   granularidade: 'dia' | 'mes';
   idEmpresas: number[];
+  /** Prioridades ativas (passadas para o endpoint). */
+  prioridadesSelecionadas?: DfcPrioridade[];
+  /** Mapa "idEmpresa#idContaFinanceiro" → prioridade (para mostrar fallback do plano). */
+  prioridadesContasMap?: Record<string, DfcPrioridade>;
+  /** Mapa "idEmpresa#tipoRef#idRef" → prioridade override de lançamento. */
+  prioridadesLancsMap?: Record<string, DfcPrioridade>;
+  /**
+   * Atualização cirúrgica do mapa de prioridade de lançamento (sem recarregar a DFC).
+   * Passe `prioridade = null` para indicar remoção.
+   */
+  onPrioridadeLancAtualizada?: (
+    idEmpresa: number,
+    tipoRef: 'A' | 'L',
+    idRef: number,
+    prioridade: DfcPrioridade | null,
+  ) => void;
 };
 
 /**
@@ -71,6 +95,10 @@ export default function DfcDetalheLancamentosModal({
   dataFim,
   granularidade,
   idEmpresas,
+  prioridadesSelecionadas = [],
+  prioridadesContasMap = {},
+  prioridadesLancsMap = {},
+  onPrioridadeLancAtualizada,
 }: DfcDetalheLancamentosModalProps) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | undefined>();
@@ -80,6 +108,9 @@ export default function DfcDetalheLancamentosModal({
   const [filtroDescricao, setFiltroDescricao] = useState('');
   const [filtroFornecedor, setFiltroFornecedor] = useState('');
   const [filtroDatas, setFiltroDatas] = useState('');
+  /** Overrides locais aplicados desde o modal aberto (não fica esperando refetch da DFC para refletir aqui). */
+  const [overridesLocais, setOverridesLocais] = useState<Record<string, DfcPrioridade | null>>({});
+  const [salvandoChave, setSalvandoChave] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const loadId = useRef(0);
 
@@ -141,6 +172,7 @@ export default function DfcDetalheLancamentosModal({
       ids: idList,
       periodo,
       idEmpresas,
+      prioridades: prioridadesSelecionadas,
       signal: ac.signal,
     })
       .then((r) => {
@@ -149,6 +181,7 @@ export default function DfcDetalheLancamentosModal({
         setLinhas(r.detalhes);
         setTruncado(r.truncado ?? false);
         setErro(r.erro);
+        setOverridesLocais({});
       })
       .catch((e: unknown) => {
         if (myId !== loadId.current) return;
@@ -162,7 +195,7 @@ export default function DfcDetalheLancamentosModal({
       ac.abort();
       loadId.current += 1;
     };
-  }, [dataInicio, dataFim, granularidade, idEmpresas, periodo, idListKey, idList]);
+  }, [dataInicio, dataFim, granularidade, idEmpresas, periodo, idListKey, idList, prioridadesSelecionadas]);
 
   const linhasOrdenadas = useMemo(() => {
     if (!linhas.length) return [];
@@ -187,6 +220,57 @@ export default function DfcDetalheLancamentosModal({
     filtroDescricao.trim() ||
     filtroFornecedor.trim() ||
     filtroDatas.trim();
+
+  const prioridadeEfetiva = useCallback(
+    (row: DfcAgendamentoDetalheLinha): { efetiva: DfcPrioridade | null; origem: 'override' | 'conta' | null; override: DfcPrioridade | null } => {
+      const chaveLanc = `${row.idEmpresa}#${row.tipoRef}#${row.id}`;
+      const overrideLocal = overridesLocais[chaveLanc];
+      const override =
+        overrideLocal !== undefined
+          ? overrideLocal
+          : (prioridadesLancsMap[chaveLanc] ?? null);
+      if (override != null) return { efetiva: override, origem: 'override', override };
+      if (row.idContaFinanceiro != null) {
+        const pc = prioridadesContasMap[`${row.idEmpresa}#${row.idContaFinanceiro}`];
+        if (pc != null) return { efetiva: pc, origem: 'conta', override: null };
+      }
+      return { efetiva: null, origem: null, override: null };
+    },
+    [overridesLocais, prioridadesContasMap, prioridadesLancsMap]
+  );
+
+  const aplicarPrioridadeLinha = useCallback(
+    async (row: DfcAgendamentoDetalheLinha, novo: DfcPrioridade | null) => {
+      const chave = `${row.idEmpresa}#${row.tipoRef}#${row.id}`;
+      setSalvandoChave(chave);
+      try {
+        if (novo == null) {
+          const r = await removerPrioridadeLancamento(row.idEmpresa, row.tipoRef, row.id);
+          if (!r.ok) {
+            setErro(r.erro ?? 'Falha ao remover prioridade.');
+            return;
+          }
+        } else {
+          const r = await salvarPrioridadeLancamento({
+            idEmpresa: row.idEmpresa,
+            tipoRef: row.tipoRef,
+            idRef: row.id,
+            idContaFinanceiro: row.idContaFinanceiro,
+            prioridade: novo,
+          });
+          if (!r.ok) {
+            setErro(r.erro ?? 'Falha ao salvar prioridade.');
+            return;
+          }
+        }
+        setOverridesLocais((prev) => ({ ...prev, [chave]: novo }));
+        onPrioridadeLancAtualizada?.(row.idEmpresa, row.tipoRef, row.id, novo);
+      } finally {
+        setSalvandoChave(null);
+      }
+    },
+    [onPrioridadeLancAtualizada]
+  );
 
   if (typeof document === 'undefined') return null;
 
@@ -305,12 +389,13 @@ export default function DfcDetalheLancamentosModal({
           ) : (
             <table className="w-full table-fixed border-collapse text-left text-sm min-w-0">
               <colgroup>
-                <col style={{ width: '7%' }} />
-                <col style={{ width: '30%' }} />
-                <col style={{ width: '26%' }} />
+                <col style={{ width: '6%' }} />
+                <col style={{ width: '24%' }} />
+                <col style={{ width: '20%' }} />
+                <col style={{ width: '10%' }} />
+                <col style={{ width: '10%' }} />
                 <col style={{ width: '12%' }} />
-                <col style={{ width: '12%' }} />
-                <col style={{ width: '13%' }} />
+                <col style={{ width: '18%' }} />
               </colgroup>
               <thead className="sticky top-0 z-[1]">
                 <tr className="bg-primary-600 text-left text-white shadow-sm">
@@ -320,42 +405,86 @@ export default function DfcDetalheLancamentosModal({
                   <th className="px-2 py-2 font-semibold leading-tight">Data Vencimento</th>
                   <th className="px-2 py-2 font-semibold leading-tight">Data Baixa</th>
                   <th className="px-2 py-2 text-right font-semibold">Valor</th>
+                  <th className="px-2 py-2 font-semibold leading-tight">Prioridade</th>
                 </tr>
               </thead>
               <tbody>
                 {linhasFiltradas.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={6}
+                      colSpan={7}
                       className="border-t border-slate-100 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700/80 dark:text-slate-400"
                     >
                       Nenhum lançamento corresponde aos filtros.
                     </td>
                   </tr>
                 ) : (
-                  linhasFiltradas.map((row, idx) => (
-                    <tr
-                      key={`${row.id}-${row.dataBaixa ?? ''}-${idx}`}
-                      className="border-t border-slate-100 odd:bg-white even:bg-slate-50/90 dark:border-slate-700/80 dark:odd:bg-slate-800/30 dark:even:bg-slate-800/55"
-                    >
-                      <td className="px-2 py-1.5 align-top tabular-nums text-slate-700 dark:text-slate-300">{row.id}</td>
-                      <td className="hyphens-auto min-w-0 break-words px-2 py-1.5 align-top text-slate-800 dark:text-slate-200">
-                        {row.descricaoLancamento ?? '—'}
-                      </td>
-                      <td className="hyphens-auto min-w-0 break-words px-2 py-1.5 align-top text-slate-700 dark:text-slate-300">
-                        {row.nome ?? '—'}
-                      </td>
-                      <td className="whitespace-nowrap px-2 py-1.5 align-top tabular-nums text-slate-600 dark:text-slate-400">
-                        {fmtDataBr(row.dataVencimento)}
-                      </td>
-                      <td className="whitespace-nowrap px-2 py-1.5 align-top tabular-nums text-slate-600 dark:text-slate-400">
-                        {fmtDataBr(row.dataBaixa)}
-                      </td>
-                      <td className="whitespace-nowrap px-2 py-1.5 text-right align-top tabular-nums font-medium text-slate-900 dark:text-slate-100">
-                        {nf.format(row.valorBaixado)}
-                      </td>
-                    </tr>
-                  ))
+                  linhasFiltradas.map((row, idx) => {
+                    const { efetiva, origem, override } = prioridadeEfetiva(row);
+                    const chave = `${row.idEmpresa}#${row.tipoRef}#${row.id}`;
+                    const salvando = salvandoChave === chave;
+                    return (
+                      <tr
+                        key={`${row.id}-${row.dataBaixa ?? ''}-${idx}`}
+                        className="border-t border-slate-100 odd:bg-white even:bg-slate-50/90 dark:border-slate-700/80 dark:odd:bg-slate-800/30 dark:even:bg-slate-800/55"
+                      >
+                        <td className="px-2 py-1.5 align-top tabular-nums text-slate-700 dark:text-slate-300">{row.id}</td>
+                        <td className="hyphens-auto min-w-0 break-words px-2 py-1.5 align-top text-slate-800 dark:text-slate-200">
+                          {row.descricaoLancamento ?? '—'}
+                        </td>
+                        <td className="hyphens-auto min-w-0 break-words px-2 py-1.5 align-top text-slate-700 dark:text-slate-300">
+                          {row.nome ?? '—'}
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-1.5 align-top tabular-nums text-slate-600 dark:text-slate-400">
+                          {fmtDataBr(row.dataVencimento)}
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-1.5 align-top tabular-nums text-slate-600 dark:text-slate-400">
+                          {fmtDataBr(row.dataBaixa)}
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-right align-top tabular-nums font-medium text-slate-900 dark:text-slate-100">
+                          {nf.format(row.valorBaixado)}
+                        </td>
+                        <td className="px-2 py-1.5 align-top">
+                          <div className="flex flex-col gap-1">
+                            <select
+                              value={override ?? ''}
+                              disabled={salvando}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                void aplicarPrioridadeLinha(row, v === '' ? null : (Number(v) as DfcPrioridade));
+                              }}
+                              className={`w-full rounded-md border px-1.5 py-1 text-xs ${
+                                override != null
+                                  ? `${DFC_PRIORIDADE_CHIP[override]} font-semibold`
+                                  : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700'
+                              } ${salvando ? 'opacity-60' : ''}`}
+                              title={
+                                origem === 'conta' && efetiva != null
+                                  ? `Herdada do plano de contas: ${DFC_PRIORIDADE_LABEL_CURTO[efetiva]}. Selecione para criar override.`
+                                  : undefined
+                              }
+                            >
+                              <option value="">
+                                {origem === 'conta' && efetiva != null
+                                  ? `(herdar plano: ${efetiva})`
+                                  : '— Sem prioridade'}
+                              </option>
+                              {DFC_PRIORIDADES.map((p) => (
+                                <option key={p} value={p}>
+                                  {p} — {DFC_PRIORIDADE_LABEL_CURTO[p]}
+                                </option>
+                              ))}
+                            </select>
+                            {origem === 'conta' && efetiva != null && override == null ? (
+                              <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                                Plano: {DFC_PRIORIDADE_LABEL_CURTO[efetiva]}
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
