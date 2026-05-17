@@ -1,16 +1,25 @@
 import type { Request, Response, NextFunction } from 'express';
-
-const SUPER_LOGINS = new Set(['master', 'marquesfilho']);
+import { usuarioTemAcessoMaster } from '../config/grupoMaster.js';
 
 /**
- * Exige que o usuário autenticado seja master ou marquesfilho.
+ * Exige privilégios de master (login legado ou grupo Master).
  * Deve ser usado após requireAuth.
  */
-export function requireMaster(req: Request, res: Response, next: NextFunction): void {
+export async function requireMaster(req: Request, res: Response, next: NextFunction): Promise<void> {
   const login = req.user?.login;
-  if (!login || !SUPER_LOGINS.has(login)) {
-    res.status(403).json({ error: 'Apenas o usuário master pode realizar esta ação.' });
+  if (!login) {
+    res.status(403).json({ error: 'Apenas usuários master podem realizar esta ação.' });
     return;
   }
-  next();
+  try {
+    const ok = await usuarioTemAcessoMaster(login);
+    if (!ok) {
+      res.status(403).json({ error: 'Apenas usuários master podem realizar esta ação.' });
+      return;
+    }
+    next();
+  } catch (e) {
+    console.error('[requireMaster]', e);
+    res.status(503).json({ error: 'Serviço temporariamente indisponível.' });
+  }
 }

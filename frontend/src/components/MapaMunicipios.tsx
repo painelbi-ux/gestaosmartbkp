@@ -1,9 +1,11 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
-import { MapContainer, TileLayer, Circle, Tooltip, Popup, useMap, Polyline, CircleMarker } from 'react-leaflet';
+import { useEffect, useState, useMemo, useCallback, Fragment, type ReactNode } from 'react';
+import { MapContainer, TileLayer, Circle, Tooltip, Popup, useMap, Polyline, CircleMarker, Pane, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { obterMapaMunicipios, type MapaMunicipioItem, type TooltipDetalheRow, type CorBolhaMapa, type MapaMunicipiosResponse, type FiltrosPedidos } from '../api/pedidos';
 import { PONTO_RETORNO_TERESINA } from '../utils/heatmapRoteirizador';
+import { iconeParadaRota, iconeParadaSelecao } from '../utils/heatmapParadaMapaIcon';
+import { aplicarZoomRoteiroNoMapa, type PontoMapaRoteiro } from '../utils/heatmapMapaBoundsRoteiro';
 
 const CENTRO_BRASIL: [number, number] = [-14.235, -51.9253];
 const ZOOM = 4;
@@ -214,6 +216,31 @@ function AjustarBounds({ items }: { items: MapaMunicipioItem[] }) {
   return null;
 }
 
+/** Mesmo enquadramento usado no PDF: Teresina + paradas da rota. */
+function AjustarBoundsRota({
+  polyline,
+  paradas,
+  token,
+}: {
+  polyline?: [number, number][];
+  paradas?: PontoMapaRoteiro[];
+  token?: string;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    if (!paradas?.length) return;
+    const t = window.setTimeout(() => {
+      aplicarZoomRoteiroNoMapa(map, polyline ?? [], paradas, {
+        padding: [28, 28],
+        maxZoom: 16,
+        fatorEncolher: 0.48,
+      });
+    }, 100);
+    return () => window.clearTimeout(t);
+  }, [map, polyline, paradas, token]);
+  return null;
+}
+
 export function mapaMunicipioChave(item: MapaMunicipioItem, i: number): string {
   return item.chave || `${item.municipio}-${item.uf}-${i}`;
 }
@@ -223,11 +250,18 @@ interface MapaMunicipiosProps {
   layoutToken?: string;
   /** Itens atuais do mapa (para o pai sincronizar seleção do roteirizador). */
   onItensCarregados?: (itens: MapaMunicipioItem[]) => void;
-  roteirizadorAtivo?: boolean;
   roteirizadorChaves?: ReadonlySet<string>;
+  /** Chave de Teresina/PI: sempre exibida como selecionada (base da rota). */
+  roteirizadorChaveBaseFixa?: string;
   onRoteirizadorToggleChave?: (chave: string) => void;
   /** Linha [lat, lng] na ordem da rota (inclui retorno à base). */
   rotaPolyline?: [number, number][];
+  /** Após roteirizar: número da parada (1-based) por chave do município no mapa. */
+  paradaSequenciaPorChave?: ReadonlyMap<string, number>;
+  /** Coordenadas das paradas (para enquadrar o mapa na rota). */
+  paradasRoteiro?: PontoMapaRoteiro[];
+  /** Conteúdo flutuante no canto superior esquerdo do mapa (ex.: botão Roteirizar). */
+  mapaOverlaySuperiorEsquerdo?: ReactNode;
 }
 
 function RecalcularMapa({ token }: { token?: string }) {
@@ -254,14 +288,106 @@ function FecharPopupComEsc() {
   return null;
 }
 
+/** Bolha com detalhes ao clique normal; com Ctrl+clique inclui/remove da rota (sem abrir popup). */
+function BolhaMunicipioMapa({
+  item,
+  raioKm,
+  cores,
+  chave,
+  roteirizadorChaves,
+  roteirizadorChaveBaseFixa,
+  onRoteirizadorToggleChave,
+  sequenciaParada,
+}: {
+  item: MapaMunicipioItem;
+  raioKm: number;
+  cores: { fillColor: string; color: string };
+  chave: string;
+  roteirizadorChaves?: ReadonlySet<string>;
+  /** Chave de Teresina/PI: sempre exibida como selecionada (base da rota). */
+  roteirizadorChaveBaseFixa?: string;
+  onRoteirizadorToggleChave?: (chave: string) => void;
+  /** Número da parada na rota calculada (exibe selo no centro). */
+  sequenciaParada?: number;
+}) {
+  const map = useMap();
+  const ehBase = !!(roteirizadorChaveBaseFixa && chave === roteirizadorChaveBaseFixa);
+  const sel = ehBase || !!(roteirizadorChaves?.has(chave));
+  const seq = sequenciaParada;
+  const paradaNaRota = sel && !ehBase;
+  return (
+    <Fragment>
+    <Circle
+      center={[item.lat, item.lng]}
+      radius={raioKm * 1000}
+      pathOptions={{
+        fillColor: paradaNaRota ? cores.fillColor : sel ? '#f97316' : cores.fillColor,
+        color: paradaNaRota ? '#ea580c' : sel ? '#c2410c' : cores.color,
+        fillOpacity: paradaNaRota ? 0.38 : sel ? 0.72 : 0.55,
+        weight: paradaNaRota ? 2.5 : sel ? 3 : 1.5,
+        dashArray: paradaNaRota ? '6 4' : undefined,
+      }}
+      eventHandlers={{
+        click: (e) => {
+          const ev = e.originalEvent as MouseEvent | undefined;
+          if (ev?.ctrlKey && onRoteirizadorToggleChave && !ehBase) {
+            ev.preventDefault();
+            L.DomEvent.stopPropagation(e as L.LeafletMouseEvent);
+            onRoteirizadorToggleChave(chave);
+            window.setTimeout(() => map.closePopup(), 0);
+          }
+        },
+        mouseover: (e) => {
+          e.target.setStyle({
+            fillOpacity: paradaNaRota ? 0.52 : 0.88,
+            weight: paradaNaRota ? 3 : sel ? 3 : 2,
+          });
+          e.target.bringToFront();
+        },
+        mouseout: (e) => {
+          e.target.setStyle({
+            fillOpacity: paradaNaRota ? 0.38 : sel ? 0.72 : 0.55,
+            weight: paradaNaRota ? 2.5 : sel ? 3 : 1.5,
+            dashArray: paradaNaRota ? '6 4' : undefined,
+          });
+        },
+      }}
+    >
+      <Tooltip permanent={false} direction="top" offset={[0, -8]}>
+        {onRoteirizadorToggleChave
+          ? ehBase
+            ? 'Base da rota (Teresina). Ctrl+clique em outra bolha para simular.'
+            : 'Ctrl+clique: incluir ou remover da rota. Clique: detalhes.'
+          : 'Clique para ver detalhes'}
+      </Tooltip>
+      <Popup className="leaflet-popup-detalhes" minWidth={380} maxWidth={640}>
+        <PopupConteudo item={item} formatarValor={formatarValor} />
+      </Popup>
+    </Circle>
+    {paradaNaRota && (
+      <Marker
+        key={`${chave}-parada-${seq ?? 'sel'}`}
+        position={[item.lat, item.lng]}
+        icon={seq != null && seq > 0 ? iconeParadaRota(seq) : iconeParadaSelecao()}
+        interactive={false}
+        zIndexOffset={800}
+      />
+    )}
+    </Fragment>
+  );
+}
+
 export default function MapaMunicipios({
   filtros = {},
   layoutToken,
   onItensCarregados,
-  roteirizadorAtivo = false,
   roteirizadorChaves,
+  roteirizadorChaveBaseFixa,
   onRoteirizadorToggleChave,
   rotaPolyline,
+  paradaSequenciaPorChave,
+  paradasRoteiro,
+  mapaOverlaySuperiorEsquerdo,
 }: MapaMunicipiosProps) {
   const [resposta, setResposta] = useState<MapaMunicipiosResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -329,9 +455,7 @@ export default function MapaMunicipios({
           Heatmap
       </h3>
       <p className="text-xs text-slate-500 dark:text-slate-400 px-4 pb-1 shrink-0">
-        {roteirizadorAtivo
-          ? 'Modo roteirizador: clique nas bolhas para selecionar ou remover cidades. Duplo clique ou botão no painel para detalhes do município ainda podem ser usados fora do círculo.'
-          : 'Tamanho da bolha = valor pendente. Clique na bolha para abrir detalhes (pode rolar e usar o mapa com o painel aberto).'}
+        Tamanho da bolha = valor pendente. <strong>Teresina/PI</strong> é a base (sempre ativa). <strong>Ctrl+clique</strong> em outra bolha para incluir a cidade; clique normal abre detalhes. Use <strong>Roteirizar</strong> para o percurso Teresina → cidade → Teresina.
       </p>
       <div className="flex flex-wrap gap-x-4 gap-y-1 px-4 pb-2 shrink-0 text-xs">
         <span className="flex items-center gap-1.5">
@@ -371,7 +495,7 @@ export default function MapaMunicipios({
         <MapContainer
           center={CENTRO_BRASIL}
           zoom={ZOOM}
-          className="h-full w-full rounded-b-xl"
+          className="h-full w-full rounded-b-xl relative z-0"
           scrollWheelZoom={true}
           style={{ background: 'hsl(210 40% 96%)', height: '100%', minHeight: 280 }}
         >
@@ -381,67 +505,49 @@ export default function MapaMunicipios({
           />
           <FecharPopupComEsc />
           <RecalcularMapa token={layoutToken} />
-          <AjustarBounds items={dados} />
+          {rotaPolyline && paradasRoteiro && paradasRoteiro.length > 0 ? (
+            <AjustarBoundsRota
+              polyline={rotaPolyline}
+              paradas={paradasRoteiro}
+              token={layoutToken}
+            />
+          ) : (
+            <AjustarBounds items={dados} />
+          )}
           {dados.map((item, i) => {
             const key = mapaMunicipioChave(item, i);
             const raioKm = raioPorItem.get(key) ?? RAIO_MIN_KM;
             const cores = CORES_BOLHA[item.cor ?? 'verde'];
-            const sel = roteirizadorAtivo && roteirizadorChaves?.has(key);
             return (
-            <Circle
-              key={key}
-              center={[item.lat, item.lng]}
-              radius={raioKm * 1000}
-              pathOptions={{
-                fillColor: sel ? '#f97316' : cores.fillColor,
-                color: sel ? '#c2410c' : cores.color,
-                fillOpacity: sel ? 0.72 : 0.55,
-                weight: sel ? 3 : 1.5,
-              }}
-              eventHandlers={{
-                click: (e) => {
-                  if (roteirizadorAtivo && onRoteirizadorToggleChave) {
-                    L.DomEvent.stopPropagation(e as L.LeafletMouseEvent);
-                    onRoteirizadorToggleChave(key);
-                  }
-                },
-                mouseover: (e) => {
-                  const isSel = !!(roteirizadorAtivo && roteirizadorChaves?.has(key));
-                  e.target.setStyle({ fillOpacity: 0.88, weight: isSel ? 3 : 2 });
-                  e.target.bringToFront();
-                },
-                mouseout: (e) => {
-                  const isSel = !!(roteirizadorAtivo && roteirizadorChaves?.has(key));
-                  e.target.setStyle({
-                    fillOpacity: isSel ? 0.72 : 0.55,
-                    weight: isSel ? 3 : 1.5,
-                  });
-                },
-              }}
-            >
-              <Tooltip permanent={false} direction="top" offset={[0, -8]}>
-                {roteirizadorAtivo ? 'Clique para incluir ou remover da rota' : 'Clique para ver detalhes'}
-              </Tooltip>
-              {!roteirizadorAtivo && (
-                <Popup className="leaflet-popup-detalhes" minWidth={380} maxWidth={640}>
-                  <PopupConteudo item={item} formatarValor={formatarValor} />
-                </Popup>
-              )}
-            </Circle>
+              <BolhaMunicipioMapa
+                key={key}
+                item={item}
+                raioKm={raioKm}
+                cores={cores}
+                chave={key}
+                roteirizadorChaves={roteirizadorChaves}
+                roteirizadorChaveBaseFixa={roteirizadorChaveBaseFixa}
+                onRoteirizadorToggleChave={onRoteirizadorToggleChave}
+                sequenciaParada={paradaSequenciaPorChave?.get(key)}
+              />
             );
           })}
-          {rotaPolyline && rotaPolyline.length >= 2 && (
-            <Polyline
-              positions={rotaPolyline}
-              pathOptions={{
-                color: '#2563eb',
-                weight: 3,
-                opacity: 0.88,
-                dashArray: '10 6',
-              }}
-            />
-          )}
-          {roteirizadorAtivo && (
+          <Pane name="heatmap-rota-viaria" style={{ zIndex: 360 }}>
+            {rotaPolyline && rotaPolyline.length >= 2 && (
+              <Polyline
+                key={`rota-${rotaPolyline.length}-${rotaPolyline[0]![0].toFixed(4)}`}
+                positions={rotaPolyline}
+                pathOptions={{
+                  color: '#1d4ed8',
+                  weight: 4,
+                  opacity: 0.92,
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                }}
+              />
+            )}
+          </Pane>
+          {(roteirizadorChaveBaseFixa || (roteirizadorChaves && roteirizadorChaves.size > 0)) && (
             <CircleMarker
               center={[PONTO_RETORNO_TERESINA.lat, PONTO_RETORNO_TERESINA.lng]}
               radius={9}
@@ -458,6 +564,7 @@ export default function MapaMunicipios({
             </CircleMarker>
           )}
         </MapContainer>
+        {mapaOverlaySuperiorEsquerdo}
       </div>
     </div>
   );

@@ -1,13 +1,18 @@
 import type { Request, Response, NextFunction } from 'express';
 import { prisma } from '../config/prisma.js';
+import { usuarioTemAcessoMaster } from '../config/grupoMaster.js';
 
 /**
- * Exige que o usuário autenticado seja master, login admin, marquesfilho ou grupo admin.
+ * Exige que o usuário autenticado seja master, login admin, marquesfilho ou grupo admin/Master.
  * Deve ser usado após requireAuth.
  */
 export async function requireMasterOrAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
   const login = req.user?.login;
-  if (login === 'master' || login === 'admin' || login === 'marquesfilho') {
+  if (login && (await usuarioTemAcessoMaster(login))) {
+    next();
+    return;
+  }
+  if (login === 'admin') {
     next();
     return;
   }

@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { prisma } from '../config/prisma.js';
 import { PERMISSOES, TODAS_PERMISSOES, type CodigoPermissao } from '../config/permissoes.js';
+import { isGrupoMasterNome, isSuperLogin } from '../config/grupoMaster.js';
 
 function parsePermissoesJSON(json: string | null | undefined): string[] {
   if (!json) return [];
@@ -12,36 +13,30 @@ function parsePermissoesJSON(json: string | null | undefined): string[] {
   }
 }
 
-const SUPER_LOGINS = new Set(['master', 'marquesfilho']);
-
 /**
- * Retorna as permissões do usuário: se for master ou marquesfilho, todas; senão as do grupo.
+ * Retorna as permissões do usuário: login legado master, grupo Master ou permissões do grupo.
  */
 export async function getPermissoesUsuario(login: string): Promise<CodigoPermissao[]> {
-  if (SUPER_LOGINS.has(login)) {
-    // Mesmo para super-usuários, respeitamos `ativo`/`grupo.ativo`.
-    const usuario = await prisma.usuario.findUnique({
-      where: { login },
-      select: { ativo: true, grupo: { select: { ativo: true } } },
-    });
-    if (!usuario) return [];
-    if (usuario.ativo === false) return [];
-    if (usuario.grupo && usuario.grupo.ativo === false) return [];
+  const usuarioMasterCheck = await prisma.usuario.findUnique({
+    where: { login },
+    select: { ativo: true, grupo: { select: { ativo: true, nome: true } } },
+  });
+  if (!usuarioMasterCheck) return [];
+  if (usuarioMasterCheck.ativo === false) return [];
+  if (usuarioMasterCheck.grupo && usuarioMasterCheck.grupo.ativo === false) return [];
+
+  if (isSuperLogin(login) || isGrupoMasterNome(usuarioMasterCheck.grupo?.nome)) {
     return [...TODAS_PERMISSOES];
   }
   const usuario = await prisma.usuario.findUnique({
     where: { login },
     select: {
       id: true,
-      ativo: true,
-      permissoes: true,
-      grupo: { select: { ativo: true, nome: true, permissoes: true } },
+      grupo: { select: { nome: true, permissoes: true } },
     },
   });
 
   if (!usuario) return [];
-  if (usuario.ativo === false) return [];
-  if (usuario.grupo && usuario.grupo.ativo === false) return [];
 
   const groupPerms = parsePermissoesJSON(usuario.grupo?.permissoes);
   const union = [...new Set([...groupPerms])];

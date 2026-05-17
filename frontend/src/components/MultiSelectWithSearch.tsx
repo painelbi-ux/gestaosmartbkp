@@ -20,6 +20,8 @@ export interface MultiSelectWithSearchProps {
   optionLabel?: string;
   /** Display por valor interno (`value`), ex.: código — nome onde `value` é só o id numérico. */
   labelByValue?: Record<string, string>;
+  /** z-index do painel dropdown (útil dentro de modais). */
+  dropdownZIndex?: number;
 }
 
 export default function MultiSelectWithSearch({
@@ -33,6 +35,7 @@ export default function MultiSelectWithSearch({
   minWidth = '160px',
   optionLabel = 'itens',
   labelByValue,
+  dropdownZIndex = 100,
 }: MultiSelectWithSearchProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -106,7 +109,10 @@ export default function MultiSelectWithSearch({
         <span className="text-slate-400 shrink-0">{open ? '▲' : '▼'}</span>
       </button>
       {open && (
-        <div className="absolute z-[100] mt-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 shadow-lg min-w-full max-h-[280px] flex flex-col">
+        <div
+          className="absolute mt-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 shadow-lg min-w-full max-h-[280px] flex flex-col"
+          style={{ zIndex: dropdownZIndex }}
+        >
           <div className="p-2 border-b border-slate-200 dark:border-slate-600 shrink-0">
             <input
               ref={inputSearchRef}

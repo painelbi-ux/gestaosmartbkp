@@ -4,8 +4,12 @@
  */
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { TODAS_PERMISSOES } from '../src/config/permissoes.js';
+import { GRUPO_MASTER_NOME } from '../src/config/grupoMaster.js';
 
 const prisma = new PrismaClient();
+
+const PERM_MASTER = JSON.stringify([...TODAS_PERMISSOES]);
 
 const PERM_ALL = JSON.stringify([
   'dashboard.ver',
@@ -61,18 +65,32 @@ async function main() {
       permissoes: PERM_VISUALIZADOR,
     },
   });
-  console.log('Seed: grupos Administrador, Operador e Visualizador criados.');
+  const grupoMaster = await prisma.grupoUsuario.upsert({
+    where: { nome: GRUPO_MASTER_NOME },
+    update: {
+      permissoes: PERM_MASTER,
+      descricao: 'Acesso total ao sistema (equivalente ao usuário master)',
+      ativo: true,
+    },
+    create: {
+      nome: GRUPO_MASTER_NOME,
+      descricao: 'Acesso total ao sistema (equivalente ao usuário master)',
+      permissoes: PERM_MASTER,
+      ativo: true,
+    },
+  });
+  console.log('Seed: grupos Administrador, Operador, Visualizador e Master criados.');
 
-  // Usuário master (acesso principal) - grupo Administrador
+  // Usuário master (acesso principal) - grupo Master
   const senhaMaster = await bcrypt.hash('123', 10);
   await prisma.usuario.upsert({
     where: { login: 'master' },
-    update: { senhaHash: senhaMaster, grupoId: admin.id },
+    update: { senhaHash: senhaMaster, grupoId: grupoMaster.id },
     create: {
       login: 'master',
       senhaHash: senhaMaster,
       nome: 'Master',
-      grupoId: admin.id,
+      grupoId: grupoMaster.id,
     },
   });
   console.log('Seed: usuário master criado (login: master, senha: 123)');

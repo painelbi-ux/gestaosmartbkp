@@ -15,6 +15,7 @@ import {
   getResumoMotivos,
   getFiltrosOpcoes,
   getMapaMunicipios,
+  getMapaMunicipioDetalhes,
   ajustarPrevisao,
   ajustarPrevisaoLote,
   getHistorico,
@@ -65,6 +66,7 @@ router.get('/observacoes-resumo', verPedidos, getResumoObservacoes);
 router.get('/resumo-motivos', verPedidos, getResumoMotivos);
 router.get('/filtros-opcoes', verPedidos, getFiltrosOpcoes);
 router.get('/mapa-municipios', verPedidos, getMapaMunicipios);
+router.get('/mapa-municipios/detalhes', verPedidos, getMapaMunicipioDetalhes);
 router.get('/:id/historico', verPedidos, getHistorico);
 router.post('/check-sycro', verPedidos, checkIdPedidosEmSycro);
 

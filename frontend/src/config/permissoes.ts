@@ -65,6 +65,13 @@ export const PERMISSOES = {
   SUPORTE_CHAMADOS_ALTERAR_STATUS: 'suporte.chamados.alterar_status',
   SUPORTE_CONFIGURAR: 'suporte.configurar',
 
+  SISTEMA_WHATSAPP: 'sistema.whatsapp',
+  SISTEMA_SITUACAO_API: 'sistema.situacao_api',
+  PCP_LIMPAR_HISTORICO: 'pcp.limpar_historico',
+  USUARIOS_GRUPO_MASTER_ATRIBUIR: 'usuarios.grupo_master.atribuir',
+  USUARIOS_GRUPO_MASTER_REMOVER: 'usuarios.grupo_master.remover',
+  GRUPOS_MASTER_EDITAR: 'grupos.master.editar',
+
   // legado (mantido por compatibilidade)
   USUARIOS_GERENCIAR: 'usuarios.gerenciar',
 } as const;

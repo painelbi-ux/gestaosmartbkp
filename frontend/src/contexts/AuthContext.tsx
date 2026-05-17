@@ -13,6 +13,8 @@ interface AuthContextValue {
   telaInicialPath: string | null;
   permissoes: string[];
   isMaster: boolean;
+  /** Minutos sem interação antes do logout automático (definido no grupo). */
+  logoutInatividadeMinutos: number | null;
   /** True após a primeira tentativa de carregar o perfil (independente de sucesso/falha). */
   profileLoaded: boolean;
   hasPermission: (codigo: CodigoPermissao) => boolean;
@@ -33,6 +35,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [telaInicialPath, setTelaInicialPath] = useState<string | null>(null);
   const [permissoes, setPermissoes] = useState<string[]>([]);
+  const [isMaster, setIsMaster] = useState(false);
+  const [logoutInatividadeMinutos, setLogoutInatividadeMinutos] = useState<number | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
 
   const clearUser = useCallback(() => {
@@ -43,6 +47,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setMustChangePassword(false);
     setTelaInicialPath(null);
     setPermissoes([]);
+    setIsMaster(false);
+    setLogoutInatividadeMinutos(null);
   }, []);
 
   const refreshUser = useCallback(async () => {
@@ -55,6 +61,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setMustChangePassword(!!me.mustChangePassword);
       setTelaInicialPath(me.telaInicialPath ?? null);
       setPermissoes(me.permissoes ?? []);
+      setIsMaster(!!me.isMaster);
+      setLogoutInatividadeMinutos(
+        me.logoutInatividadeMinutos != null && me.logoutInatividadeMinutos > 0 ? me.logoutInatividadeMinutos : null
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err ?? '');
       const unauthorized = msg.toLowerCase().includes('não autorizado') || msg.toLowerCase().includes('nao autorizado');
@@ -73,8 +83,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refreshUser]);
 
   const hasPermission = useCallback(
-    (codigo: CodigoPermissao) => login === 'master' || login === 'marquesfilho' || permissoes.includes(codigo),
-    [login, permissoes]
+    (codigo: CodigoPermissao) => isMaster || permissoes.includes(codigo),
+    [isMaster, permissoes]
   );
 
   const setUser = useCallback(
@@ -104,13 +114,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       mustChangePassword,
       telaInicialPath,
       permissoes,
-      isMaster: login === 'master' || login === 'marquesfilho',
+      isMaster,
+      logoutInatividadeMinutos,
       profileLoaded,
       hasPermission,
       setUser,
       refreshUser,
     }),
-    [login, nome, grupo, isCommercialTeam, mustChangePassword, telaInicialPath, permissoes, profileLoaded, hasPermission, setUser, refreshUser]
+    [login, nome, grupo, isCommercialTeam, mustChangePassword, telaInicialPath, permissoes, isMaster, logoutInatividadeMinutos, profileLoaded, hasPermission, setUser, refreshUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

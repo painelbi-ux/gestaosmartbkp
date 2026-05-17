@@ -4,6 +4,13 @@ import { LABELS_PERMISSOES, PERMISSOES, type CodigoPermissao } from '../config/p
 import { criarGrupoSchema, atualizarGrupoSchema } from '../validators/grupos.js';
 import { getPermissoesUsuario } from '../middleware/requirePermission.js';
 import { validarTelaPrincipalParaPermissoesGrupo } from '../config/telaPrincipalGrupo.js';
+import {
+  GRUPO_MASTER_NOME,
+  isGrupoMasterNome,
+  podeEditarGrupoMaster,
+  serializePermissoesMaster,
+} from '../config/grupoMaster.js';
+import { TODAS_PERMISSOES } from '../config/permissoes.js';
 
 function parsePermissoes(json: string): CodigoPermissao[] {
   try {
@@ -31,6 +38,7 @@ export async function listarGrupos(_req: Request, res: Response): Promise<void> 
         descricao: true,
         permissoes: true,
         telaPrincipalInicial: true,
+        logoutInatividadeMinutos: true,
         ativo: true,
         _count: { select: { usuarios: true } },
       },
@@ -39,10 +47,12 @@ export async function listarGrupos(_req: Request, res: Response): Promise<void> 
       id: g.id,
       nome: g.nome,
       descricao: g.descricao,
-      permissoes: parsePermissoes(g.permissoes),
+      permissoes: isGrupoMasterNome(g.nome) ? [...TODAS_PERMISSOES] : parsePermissoes(g.permissoes),
       telaPrincipalInicial: g.telaPrincipalInicial ?? null,
+      logoutInatividadeMinutos: g.logoutInatividadeMinutos ?? null,
       ativo: g.ativo,
       totalUsuarios: g._count.usuarios,
+      isGrupoMaster: isGrupoMasterNome(g.nome),
     }));
     res.json(withParsed);
   } catch (err) {
@@ -68,7 +78,11 @@ export async function criarGrupo(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Dados inválidos', details: parsed.error.flatten() });
     return;
   }
-  const { nome, descricao, permissoes, ativo, telaPrincipalInicial } = parsed.data;
+  const { nome, descricao, permissoes, ativo, telaPrincipalInicial, logoutInatividadeMinutos } = parsed.data;
+  if (isGrupoMasterNome(nome)) {
+    res.status(400).json({ error: `O nome "${GRUPO_MASTER_NOME}" é reservado ao grupo de acesso total do sistema.` });
+    return;
+  }
   const checkTela = validarTelaPrincipalParaPermissoesGrupo(telaPrincipalInicial ?? null, permissoes);
   if (!checkTela.ok) {
     res.status(400).json({ error: checkTela.error });
@@ -81,6 +95,7 @@ export async function criarGrupo(req: Request, res: Response): Promise<void> {
         descricao: descricao ?? null,
         permissoes: serializePermissoes(permissoes),
         telaPrincipalInicial: checkTela.value,
+        logoutInatividadeMinutos: logoutInatividadeMinutos ?? null,
         ativo: ativo ?? true,
       },
       select: {
@@ -89,6 +104,7 @@ export async function criarGrupo(req: Request, res: Response): Promise<void> {
         descricao: true,
         permissoes: true,
         telaPrincipalInicial: true,
+        logoutInatividadeMinutos: true,
         ativo: true,
       },
     });
@@ -98,8 +114,10 @@ export async function criarGrupo(req: Request, res: Response): Promise<void> {
       descricao: grupo.descricao,
       permissoes: parsePermissoes(grupo.permissoes),
       telaPrincipalInicial: grupo.telaPrincipalInicial ?? null,
+      logoutInatividadeMinutos: grupo.logoutInatividadeMinutos ?? null,
       ativo: grupo.ativo,
       totalUsuarios: 0,
+      isGrupoMaster: false,
     });
   } catch (err) {
     const e = err as { code?: string };
@@ -155,10 +173,36 @@ export async function atualizarGrupo(req: Request, res: Response): Promise<void>
   try {
     const existente = await prisma.grupoUsuario.findUnique({
       where: { id },
-      select: { permissoes: true, telaPrincipalInicial: true },
+      select: { nome: true, permissoes: true, telaPrincipalInicial: true },
     });
     if (!existente) {
       res.status(404).json({ error: 'Grupo não encontrado.' });
+      return;
+    }
+
+    const ehGrupoMaster = isGrupoMasterNome(existente.nome);
+
+    if (ehGrupoMaster) {
+      if (parsed.data.nome !== undefined && parsed.data.nome !== GRUPO_MASTER_NOME) {
+        res.status(400).json({ error: `O grupo ${GRUPO_MASTER_NOME} não pode ser renomeado.` });
+        return;
+      }
+      if (parsed.data.permissoes !== undefined && !podeEditarGrupoMaster(userPerms)) {
+        res.status(403).json({ error: 'Sem permissão para alterar permissões do grupo Master.' });
+        return;
+      }
+      const camposMasterSemPermissao =
+        (parsed.data.descricao !== undefined ||
+          parsed.data.telaPrincipalInicial !== undefined ||
+          parsed.data.logoutInatividadeMinutos !== undefined ||
+          parsed.data.ativo !== undefined) &&
+        !podeEditarGrupoMaster(userPerms);
+      if (camposMasterSemPermissao) {
+        res.status(403).json({ error: 'Sem permissão para editar configurações do grupo Master.' });
+        return;
+      }
+    } else if (parsed.data.nome !== undefined && isGrupoMasterNome(parsed.data.nome)) {
+      res.status(400).json({ error: `O nome "${GRUPO_MASTER_NOME}" é reservado.` });
       return;
     }
     const precisaValidarTela =
@@ -187,13 +231,19 @@ export async function atualizarGrupo(req: Request, res: Response): Promise<void>
       permissoes?: string;
       ativo?: boolean;
       telaPrincipalInicial?: string | null;
+      logoutInatividadeMinutos?: number | null;
     } = {};
     if (parsed.data.nome !== undefined) data.nome = parsed.data.nome;
     if (parsed.data.descricao !== undefined) data.descricao = parsed.data.descricao ?? null;
-    if (parsed.data.permissoes !== undefined) data.permissoes = serializePermissoes(parsed.data.permissoes);
+    if (parsed.data.permissoes !== undefined) {
+      data.permissoes = ehGrupoMaster ? serializePermissoesMaster() : serializePermissoes(parsed.data.permissoes);
+    }
     if (parsed.data.ativo !== undefined) data.ativo = parsed.data.ativo;
     if (parsed.data.telaPrincipalInicial !== undefined) {
       data.telaPrincipalInicial = telaPrincipalInicialGravar ?? null;
+    }
+    if (parsed.data.logoutInatividadeMinutos !== undefined) {
+      data.logoutInatividadeMinutos = parsed.data.logoutInatividadeMinutos;
     }
     const grupo = await prisma.grupoUsuario.update({
       where: { id },
@@ -204,6 +254,7 @@ export async function atualizarGrupo(req: Request, res: Response): Promise<void>
         descricao: true,
         permissoes: true,
         telaPrincipalInicial: true,
+        logoutInatividadeMinutos: true,
         ativo: true,
         _count: { select: { usuarios: true } },
       },
@@ -212,10 +263,12 @@ export async function atualizarGrupo(req: Request, res: Response): Promise<void>
       id: grupo.id,
       nome: grupo.nome,
       descricao: grupo.descricao,
-      permissoes: parsePermissoes(grupo.permissoes),
+      permissoes: isGrupoMasterNome(grupo.nome) ? [...TODAS_PERMISSOES] : parsePermissoes(grupo.permissoes),
       telaPrincipalInicial: grupo.telaPrincipalInicial ?? null,
+      logoutInatividadeMinutos: grupo.logoutInatividadeMinutos ?? null,
       ativo: grupo.ativo,
       totalUsuarios: grupo._count.usuarios,
+      isGrupoMaster: isGrupoMasterNome(grupo.nome),
     });
   } catch (err) {
     const e = err as { code?: string };
@@ -242,6 +295,13 @@ export async function excluirGrupo(req: Request, res: Response): Promise<void> {
     const existente = await prisma.grupoUsuario.findUnique({ where: { id } });
     if (!existente) {
       res.status(404).json({ error: 'Grupo não encontrado.' });
+      return;
+    }
+    if (isGrupoMasterNome(existente.nome)) {
+      res.status(400).json({
+        error: `O grupo ${GRUPO_MASTER_NOME} é do sistema e não pode ser excluído.`,
+        orientacao: 'Remova os usuários do grupo ou inative-o.',
+      });
       return;
     }
 

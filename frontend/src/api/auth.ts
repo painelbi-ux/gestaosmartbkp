@@ -115,6 +115,10 @@ export interface MeResponse {
   permissoes: string[];
   /** Rota (pathname) para abrir após login quando definida no grupo do usuário. */
   telaInicialPath?: string | null;
+  /** Privilégios de master (login legado ou grupo Master). */
+  isMaster?: boolean;
+  /** Minutos sem interação antes do logout automático (grupo do usuário). */
+  logoutInatividadeMinutos?: number | null;
 }
 
 export async function getMe(): Promise<MeResponse> {

@@ -7,7 +7,8 @@ export const PONTO_RETORNO_TERESINA = {
 
 const ROAD_FACTOR_HAVERSINE = 1.22;
 
-export type RoteiroNivel = 'ok' | 'atencao' | 'pesado';
+/** Perfis OSRM: caminhão (HGV) quando o servidor aceitar; senão carro (ainda por malha viária). */
+export type OsrmPerfilViario = 'driving-hgv' | 'driving';
 
 export interface RoteiroLeg {
   de: string;
@@ -22,18 +23,15 @@ export interface RoteiroResultado {
   /** Última cidade visitada → Teresina. */
   retornoKm: number;
   totalKm: number;
-  /** Distâncias obtidas via OSRM (estrada); se false, estimativa Haversine × fator. */
+  /** Distâncias da matriz obtidas via OSRM (malha viária); se false, estimativa Haversine × fator. */
   usouOsrm: boolean;
-  /** Tempo aproximado em trânsito (50 km/h média em trechos mistos). */
-  horasEstimadas: number;
-  insight: {
-    nivel: RoteiroNivel;
-    titulo: string;
-    linhas: string[];
-    kmPorParada: number;
-    /** Total rota / (soma das distâncias em linha reta entre paradas consecutivas na mesma ordem). >1.4 indica trechos sinuosos ou desvio natural. */
-    fatorVsLinhaReta: number;
-  };
+  /** Perfil usado na matriz OSRM, quando aplicável. */
+  perfilOsrm: OsrmPerfilViario | null;
+  /**
+   * Geometria da rota sobre estradas (OSRM Route), [lat, lng].
+   * Ausente se a API de rota falhar; o mapa pode usar segmentos retos entre paradas.
+   */
+  mapaPolyline?: [number, number][];
 }
 
 export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -63,30 +61,230 @@ function buildHaversineMatrixKm(coords: RoteiroCoord[]): number[][] {
   return m;
 }
 
-/** Matriz de distâncias em km (simétrica). */
+async function osrmTableKm(
+  coords: RoteiroCoord[],
+  perfil: OsrmPerfilViario,
+  signal?: AbortSignal
+): Promise<number[][] | null> {
+  const lonLat = coords.map((c) => `${c.lng},${c.lat}`).join(';');
+  const url = `https://router.project-osrm.org/table/v1/${perfil}/${lonLat}?annotations=distance`;
+  const res = await fetch(url, { signal });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { distances?: number[][] };
+  const dm = data.distances;
+  if (!dm || dm.length !== coords.length) return null;
+  return dm.map((row) => row.map((meters) => (Number(meters) > 0 ? meters / 1000 : 0)));
+}
+
+/** Matriz de distâncias em km (simétrica), por estrada quando OSRM responde. */
 export async function obterMatrizDistanciasKm(
   coords: RoteiroCoord[],
   signal?: AbortSignal
-): Promise<{ matrixKm: number[][]; usouOsrm: boolean }> {
+): Promise<{ matrixKm: number[][]; usouOsrm: boolean; perfilOsrm: OsrmPerfilViario | null }> {
   if (coords.length <= 1) {
-    return { matrixKm: [[0]], usouOsrm: false };
+    return { matrixKm: [[0]], usouOsrm: false, perfilOsrm: null };
   }
   if (coords.length > 25) {
-    return { matrixKm: buildHaversineMatrixKm(coords), usouOsrm: false };
+    return { matrixKm: buildHaversineMatrixKm(coords), usouOsrm: false, perfilOsrm: null };
   }
+  const perfis: OsrmPerfilViario[] = ['driving-hgv', 'driving'];
+  for (const perfil of perfis) {
+    try {
+      const matrixKm = await osrmTableKm(coords, perfil, signal);
+      if (matrixKm) return { matrixKm, usouOsrm: true, perfilOsrm: perfil };
+    } catch {
+      /* tenta próximo perfil */
+    }
+  }
+  return { matrixKm: buildHaversineMatrixKm(coords), usouOsrm: false, perfilOsrm: null };
+}
+
+const OSRM_BASE = 'https://router.project-osrm.org';
+
+function mesmoParLatLng(a: RoteiroCoord, b: RoteiroCoord, eps = 1e-5): boolean {
+  return Math.abs(a.lat - b.lat) < eps && Math.abs(a.lng - b.lng) < eps;
+}
+
+/** Junta geometrias evitando ponto duplicado na emenda. */
+function mergePolylines(a: [number, number][], b: [number, number][]): [number, number][] {
+  if (a.length === 0) return b;
+  if (b.length === 0) return a;
+  const [la, lo] = a[a.length - 1]!;
+  const [fb, fo] = b[0]!;
+  const dup = Math.abs(la - fb) < 1e-5 && Math.abs(lo - fo) < 1e-5;
+  return dup ? [...a, ...b.slice(1)] : [...a, ...b];
+}
+
+type OsrmRouteJson = {
+  code?: string;
+  message?: string;
+  routes?: Array<{
+    distance?: number;
+    legs?: Array<{ distance?: number }>;
+    geometry?: { type?: string; coordinates?: [number, number][] };
+  }>;
+};
+
+function extrairPolylineELegsKm(data: OsrmRouteJson): {
+  polyline: [number, number][];
+  pernasKm: number[];
+  totalKm: number;
+} | null {
+  if (data.code != null && data.code !== 'Ok') return null;
+  if (!data.routes?.[0]) return null;
+  const route = data.routes[0];
+  const coords = route.geometry?.coordinates;
+  if (!coords?.length) return null;
+  const polyline = coords.map(([lng, lat]) => [lat, lng] as [number, number]);
+  const legs = route.legs ?? [];
+  let pernasKm = legs.map((leg) => (Number(leg.distance) > 0 ? leg.distance! / 1000 : 0));
+  const totalM = Number(route.distance);
+  const totalKm = totalM > 0 ? totalM / 1000 : pernasKm.reduce((s, x) => s + x, 0);
+  if (polyline.length < 2 || totalKm <= 0) return null;
+  if (pernasKm.length === 0 && totalKm > 0) {
+    pernasKm = [totalKm];
+  }
+  return { polyline, pernasKm, totalKm };
+}
+
+async function osrmRouteUmaChamada(
+  coords: RoteiroCoord[],
+  perfil: OsrmPerfilViario,
+  signal?: AbortSignal
+): Promise<{ polyline: [number, number][]; pernasKm: number[]; totalKm: number } | null> {
+  if (coords.length < 2) return null;
   const lonLat = coords.map((c) => `${c.lng},${c.lat}`).join(';');
-  const url = `https://router.project-osrm.org/table/v1/driving/${lonLat}?annotations=distance`;
-  try {
-    const res = await fetch(url, { signal });
-    if (!res.ok) throw new Error(String(res.status));
-    const data = (await res.json()) as { distances?: number[][] };
-    const dm = data.distances;
-    if (!dm || dm.length !== coords.length) throw new Error('matrix');
-    const matrixKm = dm.map((row) => row.map((meters) => (Number(meters) > 0 ? meters / 1000 : 0)));
-    return { matrixKm, usouOsrm: true };
-  } catch {
-    return { matrixKm: buildHaversineMatrixKm(coords), usouOsrm: false };
+  const url = `${OSRM_BASE}/route/v1/${perfil}/${lonLat}?overview=full&geometries=geojson&steps=false`;
+  const res = await fetch(url, { signal });
+  if (!res.ok) return null;
+  const data = (await res.json()) as OsrmRouteJson;
+  return extrairPolylineELegsKm(data);
+}
+
+/** Vários trechos A→B; falha se algum trecho falhar. */
+async function osrmRoutePorSegmentos(
+  coordsCadeia: RoteiroCoord[],
+  perfil: OsrmPerfilViario,
+  signal?: AbortSignal
+): Promise<{ polyline: [number, number][]; pernasKm: number[]; totalKm: number } | null> {
+  if (coordsCadeia.length < 2) return null;
+  let poly: [number, number][] = [];
+  const pernasKm: number[] = [];
+  for (let i = 0; i < coordsCadeia.length - 1; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 40));
+    const seg = await osrmRouteUmaChamada([coordsCadeia[i]!, coordsCadeia[i + 1]!], perfil, signal);
+    if (!seg) return null;
+    poly = mergePolylines(poly, seg.polyline);
+    pernasKm.push(seg.totalKm);
   }
+  const totalKm = pernasKm.reduce((s, x) => s + x, 0);
+  return poly.length >= 2 ? { polyline: poly, pernasKm, totalKm } : null;
+}
+
+/**
+ * Geometria da rota sobre estradas (OSRM).
+ * Tenta rota única; se o ciclo fecha na base (mesmo ponto início/fim), ida + volta em duas chamadas;
+ * se necessário, cai no encadeamento perna-a-perna (sempre segue a malha viária).
+ */
+export async function obterGeometriaRotaOsrm(
+  coordsNaOrdem: RoteiroCoord[],
+  perfilPreferido: OsrmPerfilViario | null,
+  signal?: AbortSignal
+): Promise<{ polyline: [number, number][]; pernasKm: number[]; totalKm: number; perfilUsado: OsrmPerfilViario } | null> {
+  if (coordsNaOrdem.length < 2) return null;
+  const perfis: OsrmPerfilViario[] = perfilPreferido
+    ? [perfilPreferido, perfilPreferido === 'driving-hgv' ? 'driving' : 'driving-hgv']
+    : ['driving-hgv', 'driving'];
+
+  const n = coordsNaOrdem.length;
+  const fechaNaBase =
+    n >= 3 && mesmoParLatLng(coordsNaOrdem[0]!, coordsNaOrdem[n - 1]!);
+
+  for (const perfil of perfis) {
+    try {
+      if (fechaNaBase) {
+        const ida = coordsNaOrdem.slice(0, -1);
+        const ultimaCidade = coordsNaOrdem[n - 2]!;
+        const base = coordsNaOrdem[n - 1]!;
+        const gIda = await osrmRouteUmaChamada(ida, perfil, signal);
+        const gVolta = await osrmRouteUmaChamada([ultimaCidade, base], perfil, signal);
+        if (gIda && gVolta) {
+          const polyline = mergePolylines(gIda.polyline, gVolta.polyline);
+          const pernasKm = [...gIda.pernasKm, ...gVolta.pernasKm];
+          const totalKm = gIda.totalKm + gVolta.totalKm;
+          if (polyline.length >= 2 && pernasKm.length > 0) {
+            return { polyline, pernasKm, totalKm, perfilUsado: perfil };
+          }
+        }
+      }
+
+      const single = await osrmRouteUmaChamada(coordsNaOrdem, perfil, signal);
+      if (single && single.pernasKm.length > 0) {
+        return { ...single, perfilUsado: perfil };
+      }
+      if (single && single.polyline.length >= 2) {
+        return { ...single, pernasKm: [single.totalKm], perfilUsado: perfil };
+      }
+
+      const porSeg = await osrmRoutePorSegmentos(coordsNaOrdem, perfil, signal);
+      if (porSeg) {
+        return { ...porSeg, perfilUsado: perfil };
+      }
+    } catch {
+      /* próximo perfil */
+    }
+  }
+  return null;
+}
+
+/** Custo do ciclo depósito (0) → ordem das cidades (índices 1..n-1) → depósito. */
+function custoCicloDeposito(matrix: number[][], ordemCidadesIdx: number[]): number {
+  if (ordemCidadesIdx.length === 0) return 0;
+  let s = matrix[0]![ordemCidadesIdx[0]!]!;
+  for (let i = 0; i < ordemCidadesIdx.length - 1; i++) {
+    s += matrix[ordemCidadesIdx[i]!]![ordemCidadesIdx[i + 1]!]!;
+  }
+  s += matrix[ordemCidadesIdx[ordemCidadesIdx.length - 1]!]![0]!;
+  return s;
+}
+
+/** Melhor ordem exata para até 9 cidades (9!); acima disso vizinho mais próximo + 2-opt. */
+function melhorOrdemIndices(matrix: number[][], nCoords: number): number[] {
+  const m = nCoords - 1;
+  if (m <= 0) return [];
+  const cidadeIdx = Array.from({ length: m }, (_, i) => i + 1);
+  if (m > 9) {
+    let tour = tourVizinhoMaisProximo(matrix);
+    if (tour[0] !== 0) {
+      const idx = tour.indexOf(0);
+      if (idx > 0) tour = [...tour.slice(idx), ...tour.slice(0, idx)];
+    }
+    const semDepInicio = tour.filter((x, i) => !(x === 0 && i > 0));
+    const ciclo = tourParaCicloFechado(semDepInicio);
+    const otimizado = doisOptCiclo(ciclo, matrix);
+    return otimizado.slice(1, -1);
+  }
+  let best = cidadeIdx.slice();
+  let bestCost = Infinity;
+  const rec = (prefix: number[], remaining: number[]) => {
+    if (remaining.length === 0) {
+      const cost = custoCicloDeposito(matrix, prefix);
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = prefix.slice();
+      }
+      return;
+    }
+    for (let i = 0; i < remaining.length; i++) {
+      const next = remaining[i]!;
+      rec(
+        [...prefix, next],
+        [...remaining.slice(0, i), ...remaining.slice(i + 1)]
+      );
+    }
+  };
+  rec([], cidadeIdx);
+  return best;
 }
 
 /** Vizinho mais próximo a partir do índice 0 (depósito). */
@@ -154,20 +352,13 @@ function tourParaCicloFechado(tourFromDepot: number[]): number[] {
 export function resolverRoteiroDeposito(
   coords: RoteiroCoord[],
   matrixKm: number[][],
-  usouOsrm: boolean
+  usouOsrm: boolean,
+  perfilOsrm: OsrmPerfilViario | null
 ): RoteiroResultado | null {
   if (coords.length < 2) return null;
 
-  let tour = tourVizinhoMaisProximo(matrixKm);
-  if (tour[0] !== 0) {
-    const idx = tour.indexOf(0);
-    if (idx > 0) tour = [...tour.slice(idx), ...tour.slice(0, idx)];
-  }
-  const semDepInicio = tour.filter((x, i) => !(x === 0 && i > 0));
-  const ciclo = tourParaCicloFechado(semDepInicio);
-  const otimizado = doisOptCiclo(ciclo, matrixKm);
-
-  const ordemIndices = otimizado.slice(1, -1);
+  const ordemIndices = melhorOrdemIndices(matrixKm, coords.length);
+  const otimizado = [0, ...ordemIndices, 0];
 
   const pernas: RoteiroLeg[] = [];
   for (let i = 0; i < otimizado.length - 1; i++) {
@@ -183,26 +374,6 @@ export function resolverRoteiroDeposito(
   const retornoKm = pernas.length > 0 ? pernas[pernas.length - 1]!.distanciaKm : 0;
   const pernasSemRetorno = pernas.slice(0, -1);
   const totalKm = pernas.reduce((s, p) => s + p.distanciaKm, 0);
-  const horasEstimadas = totalKm / 50;
-
-  let somaLinhaReta = 0;
-  for (let i = 0; i < otimizado.length - 1; i++) {
-    const a = otimizado[i]!;
-    const b = otimizado[i + 1]!;
-    somaLinhaReta += haversineKm(coords[a]!.lat, coords[a]!.lng, coords[b]!.lat, coords[b]!.lng);
-  }
-  const fatorVsLinhaReta = somaLinhaReta > 0 ? totalKm / somaLinhaReta : 1;
-  const nCidades = ordemIndices.length;
-  const kmPorParada = nCidades > 0 ? totalKm / nCidades : totalKm;
-
-  const insight = gerarInsight({
-    nCidades,
-    totalKm,
-    kmPorParada,
-    fatorVsLinhaReta,
-    horasEstimadas,
-    usouOsrm,
-  });
 
   return {
     ordemIndices,
@@ -210,81 +381,49 @@ export function resolverRoteiroDeposito(
     retornoKm,
     totalKm,
     usouOsrm,
-    horasEstimadas,
-    insight,
+    perfilOsrm,
   };
 }
 
-function gerarInsight(p: {
-  nCidades: number;
-  totalKm: number;
-  kmPorParada: number;
-  fatorVsLinhaReta: number;
-  horasEstimadas: number;
-  usouOsrm: boolean;
-}): RoteiroResultado['insight'] {
-  const linhas: string[] = [];
-  let nivel: RoteiroNivel = 'ok';
-  let titulo = 'Rota equilibrada para o conjunto';
+/** Coordenadas na ordem de visita (ida + volta ao depósito). */
+export function coordsOrdemVisita(coords: RoteiroCoord[], resultado: RoteiroResultado): RoteiroCoord[] {
+  const idxs = [0, ...resultado.ordemIndices, 0];
+  return idxs.map((i) => coords[i]!);
+}
 
-  if (p.nCidades === 0) {
-    return {
-      nivel: 'ok',
-      titulo: 'Selecione cidades no mapa',
-      linhas: [],
-      kmPorParada: 0,
-      fatorVsLinhaReta: 1,
-    };
+/** Enriquece o resultado com geometria e pernas alinhadas ao traçado OSRM Route (quando possível). */
+export async function enriquecerRotaComGeometriaOsrm(
+  coords: RoteiroCoord[],
+  resultado: RoteiroResultado,
+  signal?: AbortSignal
+): Promise<RoteiroResultado> {
+  const naOrdem = coordsOrdemVisita(coords, resultado);
+  const geo = await obterGeometriaRotaOsrm(naOrdem, resultado.perfilOsrm, signal);
+  if (!geo) return resultado;
+
+  const nSegs = naOrdem.length - 1;
+  const legsOk = geo.pernasKm.length === nSegs && geo.pernasKm.length > 0;
+  let pernasSemRetorno = resultado.pernas;
+  let retornoKm = resultado.retornoKm;
+  if (legsOk) {
+    const pernas: RoteiroLeg[] = [];
+    for (let i = 0; i < geo.pernasKm.length; i++) {
+      pernas.push({
+        de: naOrdem[i]!.label,
+        para: naOrdem[i + 1]!.label,
+        distanciaKm: geo.pernasKm[i]!,
+      });
+    }
+    retornoKm = geo.pernasKm[geo.pernasKm.length - 1]!;
+    pernasSemRetorno = pernas.slice(0, -1);
   }
 
-  if (p.totalKm > 1100) {
-    nivel = 'pesado';
-    titulo = 'Distância total muito elevada';
-    linhas.push('Considere dividir em duas ou mais rotas ou revisar o conjunto de cidades.');
-  } else if (p.totalKm > 700) {
-    nivel = 'atencao';
-    titulo = 'Viagem longa';
-    linhas.push('Dia de rota exigente: avalie descanso do motorista e janela de entrega.');
-  }
-
-  if (p.kmPorParada > 220 && p.nCidades >= 2) {
-    if (nivel === 'ok') nivel = 'atencao';
-    titulo = 'Trechos longos entre paradas';
-    linhas.push('Média alta de km por cidade — pernas podem cansar equipe e aumentar risco de atraso.');
-  }
-
-  if (p.fatorVsLinhaReta > 1.55) {
-    if (nivel === 'ok') nivel = 'atencao';
-    linhas.push(
-      'A rota em estrada é bem mais longa que o “atalho” em linha reta entre as paradas: terreno sinuoso ou desvio natural de rodovias.'
-    );
-  } else if (p.fatorVsLinhaReta < 1.12 && p.nCidades >= 3) {
-    linhas.push('Trajetória relativamente “direta” entre as paradas — bom aproveitamento geográfico.');
-  }
-
-  if (p.horasEstimadas > 10) {
-    nivel = 'pesado';
-    titulo = 'Muitas horas de estrada estimadas';
-    linhas.push('Acima de ~10 h de rolagem (estimativa bruta) costuma inviabilizar uma única janela útil de entrega.');
-  } else if (p.horasEstimadas > 7) {
-    if (nivel !== 'pesado') nivel = 'atencao';
-    linhas.push('Planeje paradas e abastecimento; verifique conformidade com jornada.');
-  }
-
-  if (p.nCidades > 12) {
-    if (nivel === 'ok') nivel = 'atencao';
-    linhas.push('Muitas paradas num único dia aumenta sensibilidade a imprevistos (trânsito, cliente ausente).');
-  }
-
-  if (!p.usouOsrm) {
-    linhas.push('Distâncias por estimativa (linha reta × fator). Conecte-se à internet para tentar cálculo por estrada (OSRM).');
-  } else {
-    linhas.push('Distâncias por matriz de estrada (OSRM — referência pública).');
-  }
-
-  if (linhas.length === 0) {
-    linhas.push('Volume e dispersão parecem razoáveis para uma rota de entrega em um dia, sujeito à operação real.');
-  }
-
-  return { nivel, titulo, linhas: [...new Set(linhas)], kmPorParada: p.kmPorParada, fatorVsLinhaReta: p.fatorVsLinhaReta };
+  return {
+    ...resultado,
+    pernas: pernasSemRetorno,
+    retornoKm,
+    totalKm: geo.totalKm > 0 ? geo.totalKm : resultado.totalKm,
+    mapaPolyline: geo.polyline.length >= 2 ? geo.polyline : resultado.mapaPolyline,
+    perfilOsrm: geo.perfilUsado,
+  };
 }

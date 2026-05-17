@@ -10,6 +10,7 @@ import {
   obterResumoMotivos,
   obterFiltrosOpcoes,
   obterMapaMunicipios,
+  obterDetalhesCompletosMunicipioMapa,
   registrarAjustePrevisao,
   registrarAjustesPrevisaoLote,
   buscarPedidoPorId,
@@ -27,6 +28,9 @@ import { ajustarPrevisaoSchema, ajustarPrevisaoLoteSchema, limparHistoricoSchema
 import { listarPedidosQuerySchema } from '../validators/pedidos.js';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../config/prisma.js';
+import { usuarioTemAcessoMaster } from '../config/grupoMaster.js';
+import { PERMISSOES } from '../config/permissoes.js';
+import { getPermissoesUsuario } from '../middleware/requirePermission.js';
 
 function normalizeRotaName(dm: string): string {
   return String(dm ?? '')
@@ -264,6 +268,34 @@ export async function getMapaMunicipios(req: Request, res: Response): Promise<vo
   } catch (err) {
     console.error('getMapaMunicipios', err);
     res.status(503).json({ error: 'Erro ao obter dados do mapa.' });
+  }
+}
+
+/**
+ * GET /api/pedidos/mapa-municipios/detalhes?chave=... — linhas completas do município (simulação de carga).
+ */
+export async function getMapaMunicipioDetalhes(req: Request, res: Response): Promise<void> {
+  const parsed = listarPedidosQuerySchema.safeParse(req.query);
+  const filtros = parsed.success ? parsed.data : {};
+  const { page: _pg, limit: _lm, ...filtrosMapa } = filtros as { page?: number; limit?: number; [k: string]: unknown };
+  const chaveAlvo = typeof req.query.chave === 'string' ? req.query.chave.trim() : '';
+  if (!chaveAlvo) {
+    res.status(400).json({ error: 'Parâmetro chave é obrigatório.' });
+    return;
+  }
+  try {
+    const dados = await obterDetalhesCompletosMunicipioMapa(
+      filtrosMapa as Parameters<typeof obterDetalhesCompletosMunicipioMapa>[0],
+      chaveAlvo
+    );
+    if (!dados) {
+      res.status(404).json({ error: 'Município não encontrado para os filtros atuais.' });
+      return;
+    }
+    res.json(dados);
+  } catch (err) {
+    console.error('getMapaMunicipioDetalhes', err);
+    res.status(503).json({ error: 'Erro ao obter detalhes do município.' });
   }
 }
 
@@ -591,15 +623,20 @@ export async function ajustarPrevisaoLote(req: Request, res: Response): Promise<
   res.json(resultados);
 }
 
-const LIMPAR_HISTORICO_LOGINS = new Set(['master', 'marquesfilho']);
-
 /**
- * POST /api/pedidos/limpar-historico - remove todos os registros de alteração (apenas master/marquesfilho, exige senha).
+ * POST /api/pedidos/limpar-historico - remove todos os registros de alteração (master ou permissão, exige senha).
  */
 export async function limparHistorico(req: Request, res: Response): Promise<void> {
   const userLogin = req.user?.login;
-  if (!userLogin || !LIMPAR_HISTORICO_LOGINS.has(userLogin)) {
-    res.status(403).json({ error: 'Apenas o usuário master pode limpar o histórico de alterações.' });
+  if (!userLogin) {
+    res.status(403).json({ error: 'Apenas usuários autorizados podem limpar o histórico de alterações.' });
+    return;
+  }
+  const perms = await getPermissoesUsuario(userLogin);
+  const autorizado =
+    (await usuarioTemAcessoMaster(userLogin)) || perms.includes(PERMISSOES.PCP_LIMPAR_HISTORICO);
+  if (!autorizado) {
+    res.status(403).json({ error: 'Apenas usuários autorizados podem limpar o histórico de alterações.' });
     return;
   }
   const parsed = limparHistoricoSchema.safeParse(req.body);

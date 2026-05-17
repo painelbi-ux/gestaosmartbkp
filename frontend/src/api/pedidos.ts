@@ -277,6 +277,7 @@ export interface TooltipDetalheRow {
   valorPendente: number;
   codigo: string;
   produto: string;
+  qtdePendenteReal: number;
 }
 
 export type CorBolhaMapa = 'vermelho' | 'verde' | 'amarelo' | 'roxo' | 'preto';
@@ -306,6 +307,28 @@ export async function obterMapaMunicipios(filtros: FiltrosPedidos = {}): Promise
   });
   const qs = params.toString();
   return apiJson<MapaMunicipiosResponse>(`/api/pedidos/mapa-municipios${qs ? `?${qs}` : ''}`);
+}
+
+export interface MapaMunicipioDetalhesResponse {
+  chave: string;
+  municipio: string;
+  uf: string;
+  valorPendente: number;
+  detalhes: TooltipDetalheRow[];
+  totalLinhas: number;
+}
+
+/** Detalhes completos de um município (simulação de carga na roteirização). */
+export async function obterDetalhesMapaMunicipio(
+  filtros: FiltrosPedidos,
+  chave: string
+): Promise<MapaMunicipioDetalhesResponse> {
+  const params = new URLSearchParams();
+  Object.entries(filtros).forEach(([k, v]) => {
+    if (v !== undefined && v !== '' && k !== 'page' && k !== 'limit') params.set(k, String(v));
+  });
+  params.set('chave', chave);
+  return apiJson<MapaMunicipioDetalhesResponse>(`/api/pedidos/mapa-municipios/detalhes?${params.toString()}`);
 }
 
 export interface HistoricoItem {

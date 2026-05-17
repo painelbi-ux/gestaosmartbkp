@@ -1252,6 +1252,8 @@ export interface TooltipDetalheRow {
   valorPendente: number;
   codigo: string;
   produto: string;
+  /** Quantidade unitária pendente (coluna Qtde Pendente Real do ERP). */
+  qtdePendenteReal: number;
 }
 
 export interface MunicipioAgregadoMapa {
@@ -1296,6 +1298,7 @@ async function obterAgregacaoPorMunicipioComDetalhes(filtros: FiltrosPedidos = {
     const aVista = getField(p, ['Entrada/A vista Ate 10d', 'Entrada/A vista Ate 10d ', 'entrada/a vista ate 10d']);
     const codigo = getField(p, ['Cod', 'cod']);
     const produto = getField(p, ['Descricao do produto', 'descricao do produto']);
+    const qtdePendenteReal = getNumberFromRowLoose(p, ['Qtde Pendente Real', 'qtde pendente real']);
     const row: TooltipDetalheRow = {
       rm,
       rota,
@@ -1306,6 +1309,7 @@ async function obterAgregacaoPorMunicipioComDetalhes(filtros: FiltrosPedidos = {
       valorPendente: valor,
       codigo,
       produto,
+      qtdePendenteReal,
     };
     const semRota = isSemRota(rota);
     const cur = map.get(key);
@@ -1353,6 +1357,75 @@ export interface MapaMunicipioItem {
 export interface MapaMunicipiosResponse {
   itens: MapaMunicipioItem[];
   semCoordenadas: { chave: string; municipio: string; uf: string; valorPendente: number }[];
+}
+
+export interface MapaMunicipioDetalhesResponse {
+  chave: string;
+  municipio: string;
+  uf: string;
+  valorPendente: number;
+  detalhes: TooltipDetalheRow[];
+  /** Quantidade de linhas de pedido no município (pode ser > detalhes.length no mapa resumido). */
+  totalLinhas: number;
+}
+
+/** Detalhes completos de um município (sem limite de 80) para simulação de carga na roteirização. */
+export async function obterDetalhesCompletosMunicipioMapa(
+  filtros: FiltrosPedidos,
+  chaveAlvo: string
+): Promise<MapaMunicipioDetalhesResponse | null> {
+  const chaveNorm = (chaveAlvo || '').trim();
+  if (!chaveNorm) return null;
+  const { data: pedidos } = await listarPedidos(filtros);
+  const detalhes: TooltipDetalheRow[] = [];
+  let municipio = '';
+  let uf = '';
+  let valorPendente = 0;
+  let totalLinhas = 0;
+  for (const p of pedidos) {
+    const municipioRow = getField(p, ['Municipio de entrega', 'municipio de entrega']);
+    const ufBruto = getField(p, ['UF', 'uf']);
+    const ufCor = corrigirUFMunicipio(municipioRow, ufBruto);
+    if (!municipioRow || municipioRow.toLowerCase().includes('retirada') || municipioRow.toLowerCase().includes('inserir')) {
+      continue;
+    }
+    const chave = chaveLocal(municipioRow.trim(), ufCor);
+    if (chave !== chaveNorm) continue;
+    const valorRaw = p['Saldo a Faturar Real'] ?? p['Valor Pendente Real'] ?? p['Valor Pendente'] ?? 0;
+    const valor = Number(valorRaw);
+    if (Number.isNaN(valor) || valor < 0) continue;
+    municipio = municipioRow.trim();
+    uf = ufCor;
+    valorPendente += valor;
+    totalLinhas += 1;
+    const rm = getField(p, ['RM', 'rm']);
+    const rota = getField(p, ['Observacoes', 'Observacoes ', 'Observações']);
+    const emissaoRaw = p['Emissao'] ?? getField(p, ['Emissao', 'emissao']);
+    const dataEmissao = emissaoRaw
+      ? typeof emissaoRaw === 'string'
+        ? emissaoRaw
+        : new Date(emissaoRaw as Date).toISOString().slice(0, 10)
+      : '';
+    const pedido = getField(p, ['PD', 'pd']);
+    const aVista = getField(p, ['Entrada/A vista Ate 10d', 'Entrada/A vista Ate 10d ', 'entrada/a vista ate 10d']);
+    const codigo = getField(p, ['Cod', 'cod']);
+    const produto = getField(p, ['Descricao do produto', 'descricao do produto']);
+    const qtdePendenteReal = getNumberFromRowLoose(p, ['Qtde Pendente Real', 'qtde pendente real']);
+    detalhes.push({
+      rm,
+      rota,
+      dataEmissao,
+      pedido,
+      municipio: municipioRow,
+      aVista,
+      valorPendente: valor,
+      codigo,
+      produto,
+      qtdePendenteReal,
+    });
+  }
+  if (totalLinhas === 0) return null;
+  return { chave: chaveNorm, municipio, uf, valorPendente, detalhes, totalLinhas };
 }
 
 /** Agregação por município com coordenadas; cada ponto é identificado pela chave "Município,UF,Brasil". */

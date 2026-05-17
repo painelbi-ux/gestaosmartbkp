@@ -84,12 +84,11 @@ const filtrosIniciais: FiltrosPedidosState = {
 };
 
 export default function PedidosPage() {
-  const { hasPermission, login } = useAuth();
+  const { hasPermission, login, isMaster } = useAuth();
   const podeExportarXlsx = hasPermission(PERMISSOES.PCP_EXPORTAR_XLSX) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
   const podeExportarGrade = hasPermission(PERMISSOES.PCP_EXPORTAR_GRADE) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
   const podeImportarXlsx = hasPermission(PERMISSOES.PCP_IMPORTAR_XLSX) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
   const podeAjustarPrevisao = hasPermission(PERMISSOES.PCP_AJUSTAR_PREVISAO) || hasPermission(PERMISSOES.PCP_TOTAL) || hasPermission(PERMISSOES.PEDIDOS_EDITAR);
-  const isMaster = login === 'master' || login === 'marquesfilho';
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);

@@ -4,6 +4,12 @@ import { prisma } from '../config/prisma.js';
 import { criarUsuarioSchema, atualizarUsuarioSchema } from '../validators/usuarios.js';
 import { PERMISSOES } from '../config/permissoes.js';
 import { getPermissoesUsuario } from '../middleware/requirePermission.js';
+import {
+  getGrupoMasterId,
+  isGrupoMasterNome,
+  podeGerenciarAtribuicaoGrupoMaster,
+  podeGerenciarRemocaoGrupoMaster,
+} from '../config/grupoMaster.js';
 
 const COMMERCIAL_TEAM_FLAG = '__time_comercial__';
 
@@ -88,6 +94,19 @@ export async function criarUsuario(req: Request, res: Response): Promise<void> {
     return;
   }
   const { login: loginUser, senha, nome, email, telefone, grupoId, fotoUrl, ativo, permissoes, isCommercialTeam } = parsed.data;
+
+  const loginReq = req.user?.login;
+  if (loginReq && grupoId) {
+    const grupoDestino = await prisma.grupoUsuario.findUnique({ where: { id: grupoId }, select: { nome: true } });
+    if (grupoDestino && isGrupoMasterNome(grupoDestino.nome)) {
+      const permsReq = await getPermissoesUsuario(loginReq);
+      if (!podeGerenciarAtribuicaoGrupoMaster(permsReq)) {
+        res.status(403).json({ error: 'Sem permissão para atribuir usuários ao grupo Master.' });
+        return;
+      }
+    }
+  }
+
   try {
     const senhaHash = await bcrypt.hash(senha, 10);
     const usuario = await prisma.usuario.create({
@@ -215,6 +234,21 @@ export async function atualizarUsuario(req: Request, res: Response): Promise<voi
       const grupoExiste = await prisma.grupoUsuario.findUnique({ where: { id: grupoId } });
       if (!grupoExiste) {
         res.status(400).json({ error: 'Grupo informado não existe.' });
+        return;
+      }
+    }
+
+    if (grupoId !== undefined && login) {
+      const masterId = await getGrupoMasterId();
+      const grupoAnteriorMaster = existente.grupoId != null && existente.grupoId === masterId;
+      const grupoNovoMaster = grupoId != null && grupoId === masterId;
+
+      if (grupoNovoMaster && !grupoAnteriorMaster && !podeGerenciarAtribuicaoGrupoMaster(userPerms)) {
+        res.status(403).json({ error: 'Sem permissão para atribuir usuários ao grupo Master.' });
+        return;
+      }
+      if (grupoAnteriorMaster && !grupoNovoMaster && !podeGerenciarRemocaoGrupoMaster(userPerms)) {
+        res.status(403).json({ error: 'Sem permissão para remover usuários do grupo Master.' });
         return;
       }
     }

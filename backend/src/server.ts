@@ -22,6 +22,7 @@ import { prisma } from './config/prisma.js';
 import app, { BUILD_ID } from './app.js';
 import { iniciarCronFaturamentoDiario } from './scheduler/faturamentoDiarioCron.js';
 import { backfillAguardaRespostaLabelsForPendingOrders } from './services/sycroOrderAguardaRespostaLabel.js';
+import { ensureGrupoMaster } from './config/ensureGrupoMaster.js';
 
 const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +58,11 @@ async function ensureDbReady(): Promise<void> {
     } catch (e) {
       console.error('[startup] Erro ao executar seed:', (e as Error)?.message ?? e);
     }
+  }
+  try {
+    await ensureGrupoMaster();
+  } catch (e) {
+    console.warn('[startup] ensureGrupoMaster:', (e as Error)?.message ?? e);
   }
 }
 

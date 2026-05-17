@@ -7,6 +7,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/prisma.js';
 import { PERMISSOES, type CodigoPermissao } from '../config/permissoes.js';
 import { getPermissoesUsuario } from '../middleware/requirePermission.js';
+import { usuarioTemAcessoMaster } from '../config/grupoMaster.js';
 
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_ACTION = 5;
@@ -43,10 +44,10 @@ type IncomingAttachment = {
   sizeBytes?: number;
 };
 
-const SUPER_LOGINS = new Set(['master', 'marquesfilho']);
-
-function isMaster(login?: string | null): boolean {
-  return SUPER_LOGINS.has(String(login ?? '').trim().toLowerCase());
+async function isMaster(login?: string | null): Promise<boolean> {
+  const l = String(login ?? '').trim();
+  if (!l) return false;
+  return usuarioTemAcessoMaster(l);
 }
 
 function normalizeString(v: unknown): string {
@@ -78,53 +79,53 @@ function hasLegacyChamadosAccess(perms: string[]): boolean {
 
 /** Acesso às telas/API de chamados (lista, detalhe, mensagens). */
 async function canAcessarChamadosSuporte(login: string): Promise<boolean> {
-  if (isMaster(login)) return true;
+  if (await isMaster(login)) return true;
   const perms = await getPermissoesUsuario(login);
   return perms.includes(PERMISSOES.SUPORTE_CHAMADOS_VER) || hasLegacyChamadosAccess(perms);
 }
 
 /** Catálogo de suporte: quem vê chamados ou quem só configura. */
 async function canAccessSuporteModulo(login: string): Promise<boolean> {
-  if (isMaster(login)) return true;
+  if (await isMaster(login)) return true;
   const perms = await getPermissoesUsuario(login);
   if (perms.includes(PERMISSOES.SUPORTE_CHAMADOS_VER) || hasLegacyChamadosAccess(perms)) return true;
   return perms.includes(PERMISSOES.SUPORTE_CONFIGURAR);
 }
 
 async function canCriarChamado(login: string): Promise<boolean> {
-  if (isMaster(login)) return true;
+  if (await isMaster(login)) return true;
   const perms = await getPermissoesUsuario(login);
   if (usesGranularSuportePerms(perms)) return perms.includes(PERMISSOES.SUPORTE_CHAMADOS_CRIAR);
   return hasLegacyChamadosAccess(perms);
 }
 
 async function canResponderChamado(login: string): Promise<boolean> {
-  if (isMaster(login)) return true;
+  if (await isMaster(login)) return true;
   const perms = await getPermissoesUsuario(login);
   if (usesGranularSuportePerms(perms)) return perms.includes(PERMISSOES.SUPORTE_CHAMADOS_RESPONDER);
   return hasLegacyChamadosAccess(perms);
 }
 
 async function canVerTodosChamados(login: string): Promise<boolean> {
-  if (isMaster(login)) return true;
+  if (await isMaster(login)) return true;
   const perms = await getPermissoesUsuario(login);
   return perms.includes(PERMISSOES.SUPORTE_CHAMADOS_VER_TODOS);
 }
 
 async function canAlterarStatusChamado(login: string): Promise<boolean> {
-  if (isMaster(login)) return true;
+  if (await isMaster(login)) return true;
   const perms = await getPermissoesUsuario(login);
   return perms.includes(PERMISSOES.SUPORTE_CHAMADOS_ALTERAR_STATUS);
 }
 
 async function canConfigurarSuporte(login: string): Promise<boolean> {
-  if (isMaster(login)) return true;
+  if (await isMaster(login)) return true;
   const perms = await getPermissoesUsuario(login);
   return perms.includes(PERMISSOES.SUPORTE_CONFIGURAR);
 }
 
-function toAuthorType(login: string): 'master' | 'usuario' {
-  return isMaster(login) ? 'master' : 'usuario';
+async function toAuthorType(login: string): Promise<'master' | 'usuario'> {
+  return (await isMaster(login)) ? 'master' : 'usuario';
 }
 
 function formatTicketNumber(id: number): string {
@@ -799,7 +800,7 @@ export async function createSupportTicketMessage(req: Request, res: Response): P
       ticketId: ticket.id,
       authorLogin: login,
       authorNome: me?.nome ?? null,
-      authorType: toAuthorType(login),
+      authorType: await toAuthorType(login),
       mensagem,
     },
   });
@@ -807,7 +808,7 @@ export async function createSupportTicketMessage(req: Request, res: Response): P
     await saveIncomingAttachments(ticket.id, created.id, files);
   }
 
-  const staff = verTodos || isMaster(login);
+  const staff = verTodos || (await isMaster(login));
   const notifyLogin = staff ? ticket.ownerLogin : 'master';
   await prisma.$transaction([
     prisma.supportTicket.update({
@@ -838,7 +839,7 @@ export async function setSupportTicketRead(req: Request, res: Response): Promise
     res.status(401).json({ error: 'Não autorizado.' });
     return;
   }
-  if (!isMaster(login)) {
+  if (!(await isMaster(login))) {
     res.status(403).json({ error: 'Apenas usuários master podem alterar o estado de leitura.' });
     return;
   }

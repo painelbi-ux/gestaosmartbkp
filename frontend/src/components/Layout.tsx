@@ -10,6 +10,7 @@ import StatusCard from './StatusCard';
 import { getSycroOrderNotifications } from '../api/sycroorder';
 import { getSupportUnreadCount } from '../api/suporte';
 import { LayoutFocoProvider, useLayoutFoco } from '../contexts/LayoutFocoContext';
+import { useAutoLogout } from '../hooks/useAutoLogout';
 
 function SunIcon() {
   return (
@@ -115,7 +116,7 @@ function LayoutInner() {
   const navigate = useNavigate();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
-  const { hasPermission, isMaster, grupo, nome, login, mustChangePassword, refreshUser, telaInicialPath } = useAuth();
+  const { hasPermission, isMaster, grupo, nome, login, mustChangePassword, refreshUser, telaInicialPath, logoutInatividadeMinutos } = useAuth();
   const { modoFoco, sairModoFoco } = useLayoutFoco();
 
   // Sai do modo foco ao pressionar Escape
@@ -381,7 +382,7 @@ function LayoutInner() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     try {
       await logout();
     } catch {
@@ -389,7 +390,11 @@ function LayoutInner() {
     }
     await refreshUser();
     navigate('/', { replace: true });
-  };
+  }, [navigate, refreshUser]);
+
+  useAutoLogout(logoutInatividadeMinutos, () => {
+    void handleLogout();
+  });
 
   const handleForcarTrocaSenha = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -708,7 +713,7 @@ function LayoutInner() {
                 )}
               </div>
             )}
-            {isMaster && (
+            {(isMaster || hasPermission(PERMISSOES.SISTEMA_WHATSAPP)) && (
               <NavLink
                 to="/whatsapp"
                 className={({ isActive }) =>
@@ -722,7 +727,7 @@ function LayoutInner() {
                 WhatsApp
               </NavLink>
             )}
-            {isMaster && (
+            {(isMaster || hasPermission(PERMISSOES.SISTEMA_SITUACAO_API)) && (
               <NavLink
                 to="/situacao-api"
                 className={({ isActive }) =>

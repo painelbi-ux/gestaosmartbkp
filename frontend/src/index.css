@@ -74,3 +74,10 @@ body {
   pointer-events: auto;
   user-select: text;
 }
+
+/* Marcador de parada no mapa do Heatmap (DivIcon) */
+.leaflet-div-icon.heatmap-seq-parada,
+.leaflet-div-icon.heatmap-parada-pin {
+  background: transparent !important;
+  border: none !important;
+}

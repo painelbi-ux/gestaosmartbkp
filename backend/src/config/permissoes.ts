@@ -67,6 +67,16 @@ export const PERMISSOES = {
   SUPORTE_CHAMADOS_ALTERAR_STATUS: 'suporte.chamados.alterar_status',
   SUPORTE_CONFIGURAR: 'suporte.configurar',
 
+  // Sistema (rotas antes restritas ao login master)
+  SISTEMA_WHATSAPP: 'sistema.whatsapp',
+  SISTEMA_SITUACAO_API: 'sistema.situacao_api',
+  PCP_LIMPAR_HISTORICO: 'pcp.limpar_historico',
+
+  // Grupo Master (acesso total configurável pela UI)
+  USUARIOS_GRUPO_MASTER_ATRIBUIR: 'usuarios.grupo_master.atribuir',
+  USUARIOS_GRUPO_MASTER_REMOVER: 'usuarios.grupo_master.remover',
+  GRUPOS_MASTER_EDITAR: 'grupos.master.editar',
+
   // Permissão legado (mantida para compatibilidade)
   USUARIOS_GERENCIAR: 'usuarios.gerenciar',
 } as const;
@@ -133,6 +143,13 @@ export const TODAS_PERMISSOES: CodigoPermissao[] = [
   PERMISSOES.SUPORTE_CHAMADOS_VER_TODOS,
   PERMISSOES.SUPORTE_CHAMADOS_ALTERAR_STATUS,
   PERMISSOES.SUPORTE_CONFIGURAR,
+
+  PERMISSOES.SISTEMA_WHATSAPP,
+  PERMISSOES.SISTEMA_SITUACAO_API,
+  PERMISSOES.PCP_LIMPAR_HISTORICO,
+  PERMISSOES.USUARIOS_GRUPO_MASTER_ATRIBUIR,
+  PERMISSOES.USUARIOS_GRUPO_MASTER_REMOVER,
+  PERMISSOES.GRUPOS_MASTER_EDITAR,
 
   // legado
   PERMISSOES.USUARIOS_GERENCIAR,
@@ -201,6 +218,13 @@ export const LABELS_PERMISSOES: Record<CodigoPermissao, string> = {
   [PERMISSOES.SUPORTE_CHAMADOS_VER_TODOS]: 'Suporte: ver chamados de todos os usuários',
   [PERMISSOES.SUPORTE_CHAMADOS_ALTERAR_STATUS]: 'Suporte: alterar status do chamado',
   [PERMISSOES.SUPORTE_CONFIGURAR]: 'Suporte: configurações (catálogo, campos da abertura)',
+
+  [PERMISSOES.SISTEMA_WHATSAPP]: 'Acessar integração WhatsApp',
+  [PERMISSOES.SISTEMA_SITUACAO_API]: 'Acessar situação da API',
+  [PERMISSOES.PCP_LIMPAR_HISTORICO]: 'Limpar histórico de alterações de pedidos',
+  [PERMISSOES.USUARIOS_GRUPO_MASTER_ATRIBUIR]: 'Atribuir usuários ao grupo Master',
+  [PERMISSOES.USUARIOS_GRUPO_MASTER_REMOVER]: 'Remover usuários do grupo Master',
+  [PERMISSOES.GRUPOS_MASTER_EDITAR]: 'Editar configurações do grupo Master',
 
   // legado
   [PERMISSOES.USUARIOS_GERENCIAR]: 'Gerenciar usuários e grupos',

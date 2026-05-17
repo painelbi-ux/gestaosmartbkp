@@ -3,6 +3,9 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { listarUsuarios, criarUsuario, atualizarUsuario, excluirUsuario, type Usuario } from '../api/usuarios';
 import { listarGrupos, listarPermissoes, criarGrupo, atualizarGrupo, excluirGrupo, type Grupo, type PermissaoItem } from '../api/grupos';
 import { OPCOES_TELA_PRINCIPAL, mensagemSeTelaPrincipalInvalidaParaGrupo } from '../config/telaPrincipalGrupo';
+import { useAuth } from '../contexts/AuthContext';
+import { PERMISSOES } from '../config/permissoes';
+import { isGrupoMasterNome } from '../config/grupoMaster';
 import { z } from 'zod';
 
 const MAX_FOTO_BASE64 = 700000;
@@ -44,6 +47,7 @@ const SECOES_PERMISSOES: Record<string, string> = {
   relatorios: 'Relatórios',
   integracao: 'Integração',
   financeiro: 'Financeiro',
+  sistema: 'Sistema',
 };
 
 const ORDEM_SECOES_PERMISSOES = [
@@ -59,6 +63,7 @@ const ORDEM_SECOES_PERMISSOES = [
   'Relatórios',
   'Integração',
   'Financeiro',
+  'Sistema',
 ];
 
 function agruparPermissoes(permissoes: PermissaoItem[]): { secao: string; itens: PermissaoItem[] }[] {
@@ -114,6 +119,13 @@ export default function UsuariosPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const inGrupos = location.pathname.startsWith('/usuarios/grupos');
+  const { hasPermission, isMaster } = useAuth();
+
+  const podeAtribuirGrupoMaster =
+    isMaster ||
+    hasPermission(PERMISSOES.USUARIOS_GRUPO_MASTER_ATRIBUIR) ||
+    hasPermission(PERMISSOES.USUARIOS_TOTAL) ||
+    hasPermission(PERMISSOES.USUARIOS_GERENCIAR);
 
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [grupos, setGrupos] = useState<Grupo[]>([]);
@@ -163,6 +175,7 @@ export default function UsuariosPage() {
   const [grupoPermissoes, setGrupoPermissoes] = useState<string[]>([]);
   const [grupoAtivo, setGrupoAtivo] = useState(true);
   const [grupoTelaPrincipal, setGrupoTelaPrincipal] = useState('');
+  const [grupoLogoutMinutos, setGrupoLogoutMinutos] = useState('');
   const [editandoGrupoId, setEditandoGrupoId] = useState<number | null>(null);
   const [salvandoGrupo, setSalvandoGrupo] = useState(false);
   const [formErrorGrupo, setFormErrorGrupo] = useState('');
@@ -193,6 +206,24 @@ export default function UsuariosPage() {
     setToast(message);
     setTimeout(() => setToast(null), 3000);
   };
+
+  const gruposParaSelect = useMemo(() => {
+    return grupos.filter((g) => !isGrupoMasterNome(g.nome) || podeAtribuirGrupoMaster);
+  }, [grupos, podeAtribuirGrupoMaster]);
+
+  const logoutMinutosGrupoSelecionado = useMemo(() => {
+    if (editGrupoId === '') return null;
+    const g = grupos.find((x) => x.id === Number(editGrupoId));
+    return g?.logoutInatividadeMinutos ?? null;
+  }, [grupos, editGrupoId]);
+
+  const logoutMinutosGrupoNovo = useMemo(() => {
+    if (grupoId === '') return null;
+    const g = grupos.find((x) => x.id === Number(grupoId));
+    return g?.logoutInatividadeMinutos ?? null;
+  }, [grupos, grupoId]);
+
+  const editandoGrupoMaster = isGrupoMasterNome(grupoNome);
 
   const usuariosFiltrados = useMemo(() => {
     return usuarios.filter((u) => {
@@ -371,6 +402,7 @@ export default function UsuariosPage() {
     setGrupoPermissoes([]);
     setGrupoAtivo(true);
     setGrupoTelaPrincipal('');
+    setGrupoLogoutMinutos('');
     setFormErrorGrupo('');
     setModalGrupoOpen(true);
   };
@@ -382,6 +414,7 @@ export default function UsuariosPage() {
     setGrupoPermissoes(g.permissoes ?? []);
     setGrupoAtivo(g.ativo);
     setGrupoTelaPrincipal(g.telaPrincipalInicial ?? '');
+    setGrupoLogoutMinutos(g.logoutInatividadeMinutos != null ? String(g.logoutInatividadeMinutos) : '');
     setFormErrorGrupo('');
     setModalGrupoOpen(true);
   };
@@ -393,12 +426,22 @@ export default function UsuariosPage() {
     setGrupoPermissoes([]);
     setGrupoAtivo(true);
     setGrupoTelaPrincipal('');
+    setGrupoLogoutMinutos('');
     setFormErrorGrupo('');
     setModalGrupoOpen(false);
   };
 
   const togglePermissao = (codigo: string) => {
+    if (editandoGrupoMaster) return;
     setGrupoPermissoes((prev) => (prev.includes(codigo) ? prev.filter((p) => p !== codigo) : [...prev, codigo]));
+  };
+
+  const parseLogoutMinutosPayload = (): number | null => {
+    const raw = grupoLogoutMinutos.trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1 || n > 24 * 60) return null;
+    return n;
   };
 
   const handleSubmitGrupo = async (e: React.FormEvent) => {
@@ -415,6 +458,11 @@ export default function UsuariosPage() {
         return;
       }
     }
+    const logoutPayload = parseLogoutMinutosPayload();
+    if (grupoLogoutMinutos.trim() && logoutPayload === null) {
+      setFormErrorGrupo('Logout automático: informe um número inteiro de minutos entre 1 e 1440.');
+      return;
+    }
     setSalvandoGrupo(true);
     try {
       const telaPayload = grupoTelaPrincipal || null;
@@ -425,6 +473,7 @@ export default function UsuariosPage() {
           permissoes: grupoPermissoes,
           ativo: grupoAtivo,
           telaPrincipalInicial: telaPayload,
+          logoutInatividadeMinutos: logoutPayload,
         });
         showToast('Grupo atualizado com sucesso.');
       } else {
@@ -434,6 +483,7 @@ export default function UsuariosPage() {
           permissoes: grupoPermissoes,
           ativo: grupoAtivo,
           telaPrincipalInicial: telaPayload,
+          logoutInatividadeMinutos: logoutPayload,
         });
         showToast('Grupo criado com sucesso.');
       }
@@ -459,6 +509,10 @@ export default function UsuariosPage() {
   };
 
   const handleExcluirGrupo = async (g: Grupo) => {
+    if (g.isGrupoMaster || isGrupoMasterNome(g.nome)) {
+      showToast('O grupo Master não pode ser excluído.');
+      return;
+    }
     if (!window.confirm(`Excluir o grupo "${g.nome}"?`)) return;
     try {
       await excluirGrupo(g.id);
@@ -565,7 +619,9 @@ export default function UsuariosPage() {
                     <td className="py-2 text-slate-600 dark:text-slate-400">{g.totalUsuarios ?? 0}</td>
                     <td className="py-2 flex gap-2">
                       <button type="button" onClick={() => abrirEditarGrupo(g)} className="text-primary-600 dark:text-primary-400 hover:underline text-sm">Editar</button>
-                      <button type="button" onClick={() => handleExcluirGrupo(g)} className="text-amber-600 dark:text-amber-400 hover:underline text-sm">Excluir</button>
+                      {!(g.isGrupoMaster || isGrupoMasterNome(g.nome)) && (
+                        <button type="button" onClick={() => handleExcluirGrupo(g)} className="text-amber-600 dark:text-amber-400 hover:underline text-sm">Excluir</button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -596,8 +652,16 @@ export default function UsuariosPage() {
                   <label className="block text-xs mb-1">Grupo *</label>
                   <select value={grupoId === '' ? '' : grupoId} onChange={(e) => setGrupoId(e.target.value === '' ? '' : Number(e.target.value))} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm">
                     <option value="">Selecione</option>
-                    {grupos.map((g) => <option key={g.id} value={g.id}>{g.nome}</option>)}
+                    {gruposParaSelect.map((g) => <option key={g.id} value={g.id}>{g.nome}</option>)}
                   </select>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-xs mb-1 text-slate-500 dark:text-slate-400">Logout automático por inatividade</label>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 rounded-lg bg-slate-50 dark:bg-slate-700/40 px-3 py-2 border border-slate-200 dark:border-slate-600">
+                    {logoutMinutosGrupoNovo != null
+                      ? `O grupo selecionado desconecta após ${logoutMinutosGrupoNovo} minuto(s) sem interação no sistema.`
+                      : 'O grupo selecionado não define limite de inatividade (configure em Grupos de usuários).'}
+                  </p>
                 </div>
                 <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={ativoNovo} onChange={(e) => setAtivoNovo(e.target.checked)} /> Usuário ativo</label>
                 <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={isCommercialTeamNovo} onChange={(e) => setIsCommercialTeamNovo(e.target.checked)} /> Time comercial</label>
@@ -624,8 +688,16 @@ export default function UsuariosPage() {
                 <label className="block text-xs mb-1">Grupo</label>
                 <select value={editGrupoId === '' ? '' : editGrupoId} onChange={(e) => setEditGrupoId(e.target.value === '' ? '' : Number(e.target.value))} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm">
                   <option value="">Sem grupo</option>
-                  {grupos.map((g) => <option key={g.id} value={g.id}>{g.nome}</option>)}
+                  {gruposParaSelect.map((g) => <option key={g.id} value={g.id}>{g.nome}</option>)}
                 </select>
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-xs mb-1 text-slate-500 dark:text-slate-400">Logout automático por inatividade</label>
+                <p className="text-xs text-slate-600 dark:text-slate-400 rounded-lg bg-slate-50 dark:bg-slate-700/40 px-3 py-2 border border-slate-200 dark:border-slate-600">
+                  {logoutMinutosGrupoSelecionado != null
+                    ? `O grupo selecionado desconecta após ${logoutMinutosGrupoSelecionado} minuto(s) sem interação no sistema.`
+                    : 'O grupo selecionado não define limite de inatividade (configure em Grupos de usuários).'}
+                </p>
               </div>
               <div className="flex items-center gap-5">
                 <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={editAtivo} onChange={(e) => setEditAtivo(e.target.checked)} /> Usuário ativo</label>
@@ -649,7 +721,7 @@ export default function UsuariosPage() {
       {modalGrupoOpen && (
         <ModalContainer title={editandoGrupoId ? 'Editar grupo' : 'Cadastrar novo grupo'} onClose={fecharFormGrupo}>
           <form onSubmit={handleSubmitGrupo} className="space-y-4">
-            <div><label className="block text-xs mb-1">Nome do grupo</label><input value={grupoNome} onChange={(e) => setGrupoNome(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
+            <div><label className="block text-xs mb-1">Nome do grupo</label><input value={grupoNome} onChange={(e) => setGrupoNome(e.target.value)} disabled={editandoGrupoMaster} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
             <div><label className="block text-xs mb-1">Descrição</label><input value={grupoDescricao} onChange={(e) => setGrupoDescricao(e.target.value)} className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm" /></div>
             <div>
               <label className="block text-xs mb-1 text-slate-700 dark:text-slate-300">Tela principal ao iniciar</label>
@@ -669,6 +741,21 @@ export default function UsuariosPage() {
                 Usuários deste grupo passam a abrir nesta tela ao entrar no sistema. É necessário que o grupo tenha permissão para acessar a área escolhida.
               </p>
             </div>
+            <div>
+              <label className="block text-xs mb-1 text-slate-700 dark:text-slate-300">Logout automático por inatividade (minutos)</label>
+              <input
+                type="number"
+                min={1}
+                max={1440}
+                value={grupoLogoutMinutos}
+                onChange={(e) => setGrupoLogoutMinutos(e.target.value)}
+                placeholder="Vazio = sem logout automático"
+                className="w-full rounded-lg bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm"
+              />
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Usuários deste grupo serão desconectados após esse tempo sem interação no sistema (medida de segurança).
+              </p>
+            </div>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={grupoAtivo} onChange={(e) => setGrupoAtivo(e.target.checked)} /> Grupo ativo</label>
             <div className="space-y-3">
               {agruparPermissoes(permissoesLista).map(({ secao, itens }) => (
@@ -677,7 +764,7 @@ export default function UsuariosPage() {
                   <div className="flex flex-wrap gap-x-4 gap-y-2">
                     {itens.map((p) => (
                       <label key={p.codigo} className="flex items-center gap-2 text-sm cursor-pointer">
-                        <input type="checkbox" checked={grupoPermissoes.includes(p.codigo)} onChange={() => togglePermissao(p.codigo)} />
+                        <input type="checkbox" checked={grupoPermissoes.includes(p.codigo)} onChange={() => togglePermissao(p.codigo)} disabled={editandoGrupoMaster} />
                         {p.label}
                       </label>
                     ))}
@@ -704,3 +791,6 @@ export default function UsuariosPage() {
     </div>
   );
 }
+
+
+

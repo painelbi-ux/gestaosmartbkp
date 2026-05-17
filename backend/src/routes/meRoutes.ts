@@ -6,6 +6,7 @@ import { prisma } from '../config/prisma.js';
 import { changePasswordSchema } from '../validators/auth.js';
 import { validateCsrf } from '../middleware/csrf.js';
 import { resolveTelaInicialPathParaUsuario } from '../config/telaPrincipalGrupo.js';
+import { isGrupoMasterNome, isSuperLogin, usuarioTemAcessoMaster } from '../config/grupoMaster.js';
 
 const COMMERCIAL_TEAM_FLAG = '__time_comercial__';
 
@@ -35,7 +36,7 @@ router.get('/', async (req: Request, res: Response) => {
       nome: string | null;
       permissoes?: string | null;
       mustChangePassword?: boolean;
-      grupo?: { nome: string; telaPrincipalInicial: string | null } | null;
+      grupo?: { nome: string; telaPrincipalInicial: string | null; logoutInatividadeMinutos: number | null } | null;
     } | null = null;
     try {
       usuario = await prisma.usuario.findUnique({
@@ -46,7 +47,7 @@ router.get('/', async (req: Request, res: Response) => {
           nome: true,
           permissoes: true,
           mustChangePassword: true,
-          grupo: { select: { nome: true, telaPrincipalInicial: true } },
+          grupo: { select: { nome: true, telaPrincipalInicial: true, logoutInatividadeMinutos: true } },
         },
       });
     } catch (dbErr) {
@@ -70,11 +71,19 @@ router.get('/', async (req: Request, res: Response) => {
     } catch (_) {
       // mantém permissoes vazio em caso de falha (ex.: coluna/tabela ausente)
     }
-    const SUPER_LOGINS_ME = new Set(['master', 'marquesfilho']);
-    const telaInicialPath =
-      SUPER_LOGINS_ME.has(login)
-        ? null
-        : resolveTelaInicialPathParaUsuario(usuario?.grupo?.telaPrincipalInicial ?? null, permissoes);
+    const acessoMaster = isSuperLogin(login) || isGrupoMasterNome(usuario?.grupo?.nome);
+    const telaInicialPath = acessoMaster
+      ? null
+      : resolveTelaInicialPathParaUsuario(usuario?.grupo?.telaPrincipalInicial ?? null, permissoes);
+
+    let isMaster = false;
+    try {
+      isMaster = await usuarioTemAcessoMaster(login);
+    } catch {
+      isMaster = acessoMaster;
+    }
+
+    const logoutInatividadeMinutos = usuario?.grupo?.logoutInatividadeMinutos ?? null;
 
     res.json({
       login: usuario?.login ?? login,
@@ -84,6 +93,8 @@ router.get('/', async (req: Request, res: Response) => {
       mustChangePassword: !!usuario?.mustChangePassword,
       permissoes,
       telaInicialPath,
+      isMaster,
+      logoutInatividadeMinutos,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

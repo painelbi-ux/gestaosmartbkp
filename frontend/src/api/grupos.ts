@@ -7,8 +7,11 @@ export interface Grupo {
   permissoes: string[];
   /** Chave da tela inicial (ex.: gerenciador_pedidos). Null = padrão do sistema. */
   telaPrincipalInicial?: string | null;
+  /** Minutos sem interação antes do logout automático; null = desativado. */
+  logoutInatividadeMinutos?: number | null;
   ativo: boolean;
   totalUsuarios?: number;
+  isGrupoMaster?: boolean;
 }
 
 export interface PermissaoItem {
@@ -30,6 +33,7 @@ export async function criarGrupo(payload: {
   permissoes: string[];
   ativo?: boolean;
   telaPrincipalInicial?: string | null;
+  logoutInatividadeMinutos?: number | null;
 }): Promise<Grupo> {
   const res = await apiFetch('/api/grupos', {
     method: 'POST',
@@ -50,6 +54,7 @@ export async function atualizarGrupo(
     permissoes?: string[];
     ativo?: boolean;
     telaPrincipalInicial?: string | null;
+    logoutInatividadeMinutos?: number | null;
   }
 ): Promise<Grupo> {
   const res = await apiFetch(`/api/grupos/${id}`, {

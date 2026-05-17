@@ -29,10 +29,11 @@ export const ROTA_PERMISSAO: Record<string, CodigoPermissao[]> = {
   '/integracao/alteracao-data-entrega-compra': [PERMISSOES.INTEGRACAO_VER],
   '/integracao/faturamento-diario': [PERMISSOES.INTEGRACAO_VER],
   '/usuarios': [PERMISSOES.USUARIOS_TELA_VER, PERMISSOES.USUARIOS_TOTAL, PERMISSOES.GRUPOS_TELA_VER, PERMISSOES.GRUPOS_TOTAL, PERMISSOES.USUARIOS_GERENCIAR],
-  '/situacao-api': [PERMISSOES.DASHBOARD_VER],
-  '/whatsapp': [PERMISSOES.USUARIOS_GERENCIAR],
+  '/situacao-api': [PERMISSOES.SISTEMA_SITUACAO_API, PERMISSOES.DASHBOARD_VER],
+  '/whatsapp': [PERMISSOES.SISTEMA_WHATSAPP, PERMISSOES.USUARIOS_GERENCIAR],
 };
 
+/** @deprecated Rotas agora usam permissões em ROTA_PERMISSAO; mantido para compatibilidade. */
 export const ROTAS_APENAS_MASTER = ['/situacao-api', '/whatsapp'];
 
 export const ROTAS_ORDEM = [
@@ -66,9 +67,8 @@ export const ROTAS_ORDEM = [
   '/whatsapp',
 ] as const;
 
-export function primeiraRotaPermitida(hasPermission: (codigo: CodigoPermissao) => boolean, isMaster = false): string | null {
+export function primeiraRotaPermitida(hasPermission: (codigo: CodigoPermissao) => boolean, _isMaster = false): string | null {
   for (const path of ROTAS_ORDEM) {
-    if (ROTAS_APENAS_MASTER.includes(path) && !isMaster) continue;
     const perms = ROTA_PERMISSAO[path];
     if (perms && perms.some((p) => hasPermission(p))) return path;
   }

@@ -57,6 +57,8 @@ model GrupoUsuario {
   permissoes  String   // JSON array: ["dashboard.ver", "pedidos.ver", ...]
   /// Chave da tela inicial (ex.: gerenciador_pedidos). Null = padrão do sistema.
   telaPrincipalInicial String?
+  /// Minutos sem interação antes do logout automático; null = desativado.
+  logoutInatividadeMinutos Int?
   ativo       Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
